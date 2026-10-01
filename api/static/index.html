@@ -27,6 +27,21 @@
       color: #ffffff;
       font-weight: 700;
     }
+    /* Hover-explain helper: dotted underline + info icon + rich tooltip */
+    .tip { border-bottom: 1px dotted rgba(148,163,184,.6); cursor: help; }
+    .tip-icon { color: #818cf8; font-size: 10px; margin-left: 4px; cursor: help; }
+    [data-tip] { position: relative; }
+    [data-tip]:hover::after {
+      content: attr(data-tip);
+      position: absolute; z-index: 60;
+      bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+      width: max-content; max-width: 260px; white-space: normal;
+      background: #0f172a; color: #e2e8f0; font-size: 11px; font-weight: 400;
+      text-transform: none; letter-spacing: normal; line-height: 1.45;
+      border: 1px solid rgba(129,140,248,.4); border-radius: 10px;
+      padding: 8px 10px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+      pointer-events: none;
+    }
   </style>
 </head>
 <body class="h-full font-sans antialiased bg-radial from-slate-900 via-slate-950 to-black relative selection:bg-indigo-500 selection:text-white" x-data="radiusApp()" x-init="initApp()" x-cloak>
@@ -152,7 +167,7 @@
           <!-- PKCS#12 Password (optional) -->
           <div>
             <label class="block text-slate-300 font-medium mb-1">PKCS#12 Password <span class="text-slate-500 font-normal">(if required)</span></label>
-            <input type="password" x-model="certForm.p12_password" placeholder="Default: whatever"
+            <input type="password" x-model="certForm.p12_password" placeholder="Certificate password (set at issuance)"
                    class="w-full bg-slate-950/90 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-purple-500 outline-none transition-all placeholder:text-slate-600 font-mono">
           </div>
 
@@ -444,10 +459,10 @@
           <table class="w-full text-left text-xs">
             <thead class="bg-slate-950/60 text-slate-400 uppercase border-b border-slate-800 text-[10px]">
               <tr>
-                <th class="px-6 py-3.5">Username</th>
-                <th class="px-6 py-3.5">Group</th>
-                <th class="px-6 py-3.5">EAP-TLS Certificate</th>
-                <th class="px-6 py-3.5">Reply Attributes</th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('user-name')">Username</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('user-name')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('group')">Group</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('group')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('eap-tls')">EAP-TLS Certificate</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('eap-tls')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('reply-attributes')">Reply Attributes</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('reply-attributes')"></i></th>
                 <th class="px-6 py-3.5 text-right">Actions</th>
               </tr>
             </thead>
@@ -489,9 +504,9 @@
                   <td class="px-6 py-4">
                     <div class="flex flex-wrap gap-1">
                       <template x-for="attr in user.reply_attributes" :key="attr.id">
-                        <span class="px-2 py-0.5 rounded bg-cyan-950/60 text-cyan-300 text-[10px] font-mono border border-cyan-800/40" x-text="attr.attribute + ' ' + attr.op + ' ' + attr.value"></span>
+                        <span class="px-2 py-0.5 rounded bg-cyan-950/60 text-cyan-300 text-[10px] font-mono border border-cyan-800/40 tip" :title="attrTip(attr.attribute, attr.value)" x-text="attr.attribute + ' ' + attr.op + ' ' + attr.value"></span>
                       </template>
-                      <span x-show="!user.reply_attributes.length" class="text-slate-600 italic">Default</span>
+                      <span x-show="!user.reply_attributes.length" class="text-slate-600 italic" title="Simple: no extra rules — user just gets their group plan.">Default</span>
                     </div>
                   </td>
                   <td class="px-6 py-4 text-right space-x-1 whitespace-nowrap">
@@ -545,8 +560,8 @@
                 <input type="text" x-model="certForm.username" required placeholder="e.g. raj or macbook-pro" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:border-indigo-500 outline-none">
               </div>
               <div>
-                <label class="block text-slate-300 mb-1">PKCS#12 Export Password</label>
-                <input type="text" x-model="certForm.cert_password" placeholder="whatever" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:border-indigo-500 outline-none font-mono">
+                <label class="block text-slate-300 mb-1">PKCS#12 Export Password <span class="text-slate-500 font-normal">(blank = auto-generate)</span></label>
+                <input type="text" x-model="certForm.cert_password" placeholder="Leave blank for a random password" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:border-indigo-500 outline-none font-mono">
               </div>
               <div>
                 <label class="block text-slate-300 mb-1">Validity (Days)</label>
@@ -671,33 +686,33 @@
                   <p class="text-slate-200 text-xs leading-relaxed" x-text="group.summary || 'Standard open access policy.'"></p>
                 </div>
 
-                <!-- Policy Feature Badges -->
+                <!-- Policy Feature Badges (hover each for simple meaning) -->
                 <div class="grid grid-cols-2 gap-2 text-[11px] font-mono">
-                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2" :title="tip('simultaneous-use')">
                     <i class="fa-solid fa-mobile-screen text-indigo-400 text-xs"></i>
                     <div>
-                      <div class="text-[10px] text-slate-400">Max Devices</div>
+                      <div class="text-[10px] text-slate-400">Max Devices <i class="fa-solid fa-circle-info tip-icon"></i></div>
                       <div class="text-white font-bold" x-text="group.simultaneous_use ? group.simultaneous_use + ' Device(s)' : 'Unlimited'"></div>
                     </div>
                   </div>
-                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2" title="Simple: max download/upload speed. Example: 50M / 25M. Uncapped = full speed.">
                     <i class="fa-solid fa-gauge-high text-emerald-400 text-xs"></i>
                     <div>
-                      <div class="text-[10px] text-slate-400">Bandwidth</div>
+                      <div class="text-[10px] text-slate-400">Bandwidth <i class="fa-solid fa-circle-info tip-icon"></i></div>
                       <div class="text-white font-bold" x-text="group.bandwidth_down_kbps ? (group.bandwidth_down_kbps/1000) + 'M / ' + (group.bandwidth_up_kbps/1000 || 0) + 'M' : (group.mikrotik_rate_limit || 'Uncapped')"></div>
                     </div>
                   </div>
-                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2" :title="tip('tunnel-private-group-id')">
                     <i class="fa-solid fa-network-wired text-cyan-400 text-xs"></i>
                     <div>
-                      <div class="text-[10px] text-slate-400">VLAN Tag</div>
+                      <div class="text-[10px] text-slate-400">VLAN Tag <i class="fa-solid fa-circle-info tip-icon"></i></div>
                       <div class="text-white font-bold" x-text="group.vlan_id ? 'VLAN ' + group.vlan_id : 'Default (Untagged)'"></div>
                     </div>
                   </div>
-                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2" :title="tip('idle-timeout')">
                     <i class="fa-solid fa-hourglass-half text-amber-400 text-xs"></i>
                     <div>
-                      <div class="text-[10px] text-slate-400">Timeouts</div>
+                      <div class="text-[10px] text-slate-400">Timeouts <i class="fa-solid fa-circle-info tip-icon"></i></div>
                       <div class="text-white font-bold" x-text="group.idle_timeout ? (group.idle_timeout/60) + 'm idle' : 'No timeout'"></div>
                     </div>
                   </div>
@@ -721,11 +736,11 @@
                   <i class="fa-solid fa-chevron-down text-[10px] transition-transform group-open/details:rotate-180"></i>
                 </summary>
                 <div class="mt-2.5 space-y-1.5 text-[10px] font-mono">
-                  <!-- Reply Attributes -->
+                  <!-- Reply Attributes (hover name or value for simple meaning) -->
                   <template x-for="attr in group.reply_attributes" :key="attr.id">
-                    <div class="bg-slate-950 p-2 rounded-lg border border-slate-800 space-y-0.5">
+                    <div class="bg-slate-950 p-2 rounded-lg border border-slate-800 space-y-0.5" :title="attr.explanation || attrTip(attr.attribute, attr.value)">
                       <div class="flex justify-between items-center">
-                        <span class="text-indigo-400 font-bold" x-text="attr.attribute"></span>
+                        <span class="text-indigo-400 font-bold tip" x-text="attr.attribute"></span>
                         <span class="text-emerald-400 font-bold" x-text="attr.value"></span>
                       </div>
                       <div class="text-[9px] text-slate-400 font-sans" x-text="attr.explanation"></div>
@@ -733,9 +748,9 @@
                   </template>
                   <!-- Check Attributes -->
                   <template x-for="attr in group.check_attributes" :key="attr.id">
-                    <div class="bg-slate-950 p-2 rounded-lg border border-slate-800 space-y-0.5">
+                    <div class="bg-slate-950 p-2 rounded-lg border border-slate-800 space-y-0.5" :title="attr.explanation || attrTip(attr.attribute, attr.value)">
                       <div class="flex justify-between items-center">
-                        <span class="text-amber-400 font-bold" x-text="attr.attribute"></span>
+                        <span class="text-amber-400 font-bold tip" x-text="attr.attribute"></span>
                         <span class="text-purple-300 font-bold" x-text="attr.value"></span>
                       </div>
                       <div class="text-[9px] text-slate-400 font-sans" x-text="attr.explanation"></div>
@@ -764,10 +779,10 @@
           <table class="w-full text-left text-xs">
             <thead class="bg-slate-950/60 text-slate-400 uppercase text-[10px]">
               <tr>
-                <th class="px-6 py-3.5">IP Address / CIDR</th>
-                <th class="px-6 py-3.5">Short Name</th>
-                <th class="px-6 py-3.5">Type</th>
-                <th class="px-6 py-3.5">Shared Secret</th>
+                <th class="px-6 py-3.5"><span class="tip" title="Simple: which router IPs are allowed. Example: 192.168.1.10 = one router, 192.168.1.0/24 = whole office.">IP Address / CIDR</span><i class="fa-solid fa-circle-info tip-icon" title="Simple: which router IPs are allowed. Example: 192.168.1.10 = one router, 192.168.1.0/24 = whole office."></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('nas')">Short Name</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('nas')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" title="Simple: router brand/type, e.g. mikrotik, unifi, other. Just a label.">Type</span><i class="fa-solid fa-circle-info tip-icon" title="Simple: router brand/type, e.g. mikrotik, unifi, other. Just a label."></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('shared-secret')">Shared Secret</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('shared-secret')"></i></th>
                 <th class="px-6 py-3.5 text-right">Actions</th>
               </tr>
             </thead>
@@ -804,21 +819,21 @@
           <table class="w-full text-left text-xs">
             <thead class="bg-slate-950/60 text-slate-400 uppercase text-[10px]">
               <tr>
-                <th class="px-6 py-3.5">User</th>
-                <th class="px-6 py-3.5">Framed IP</th>
-                <th class="px-6 py-3.5">Calling Station (MAC)</th>
-                <th class="px-6 py-3.5">NAS IP</th>
-                <th class="px-6 py-3.5">Connected At</th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('user-name')">User</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('user-name')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('framed-ip-address')">Framed IP</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('framed-ip-address')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('calling-station-id')">Calling Station (MAC)</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('calling-station-id')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('nas-ip-address')">NAS IP</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('nas-ip-address')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('acct-start-time')">Connected At</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('acct-start-time')"></i></th>
                 <th class="px-6 py-3.5 text-right">Actions</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800">
               <template x-for="s in sessions" :key="s.radacctid">
                 <tr class="hover:bg-slate-800/40">
-                  <td class="px-6 py-4 font-semibold text-white" x-text="s.username"></td>
-                  <td class="px-6 py-4 font-mono text-emerald-400" x-text="s.framedipaddress || 'DHCP'"></td>
-                  <td class="px-6 py-4 font-mono text-slate-400" x-text="s.callingstationid || 'N/A'"></td>
-                  <td class="px-6 py-4 font-mono text-slate-400" x-text="s.nasipaddress"></td>
+                  <td class="px-6 py-4 font-semibold text-white" :title="attrTip('User-Name', s.username)" x-text="s.username"></td>
+                  <td class="px-6 py-4 font-mono text-emerald-400 tip" :title="attrTip('Framed-IP-Address', s.framedipaddress || 'DHCP')" x-text="s.framedipaddress || 'DHCP'"></td>
+                  <td class="px-6 py-4 font-mono text-slate-400 tip" :title="attrTip('Calling-Station-Id', s.callingstationid || 'N/A')" x-text="s.callingstationid || 'N/A'"></td>
+                  <td class="px-6 py-4 font-mono text-slate-400 tip" :title="attrTip('NAS-IP-Address', s.nasipaddress)" x-text="s.nasipaddress"></td>
                   <td class="px-6 py-4 text-slate-400" x-text="s.acctstarttime"></td>
                   <td class="px-6 py-4 text-right">
                     <button @click="disconnectSession(s)" class="px-3 py-1 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white rounded-lg text-[11px] font-semibold transition-all">
@@ -898,24 +913,25 @@
           <table class="w-full text-left text-xs">
             <thead class="bg-slate-950/60 text-slate-400 uppercase text-[10px]">
               <tr>
-                <th class="px-6 py-3.5">User</th>
-                <th class="px-6 py-3.5">Result</th>
-                <th class="px-6 py-3.5">Server Reply</th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('user-name')">User</span></th>
+                <th class="px-6 py-3.5"><span class="tip" title="Simple: green Accepted = password OK, let in. Red Rejected = wrong password or blocked.">Result</span><i class="fa-solid fa-circle-info tip-icon" title="Simple: green Accepted = password OK, let in. Red Rejected = wrong password or blocked."></i></th>
+                <th class="px-6 py-3.5"><span class="tip" title="Simple: exact answer the server gave — Access-Accept (yes) or Access-Reject (no).">Server Reply</span><i class="fa-solid fa-circle-info tip-icon" title="Simple: exact answer the server gave — Access-Accept (yes) or Access-Reject (no)."></i></th>
                 <th class="px-6 py-3.5">Time</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800">
               <template x-for="log in logs" :key="log.id">
                 <tr class="hover:bg-slate-800/40">
-                  <td class="px-6 py-3.5 font-semibold text-white font-mono" x-text="log.username"></td>
+                  <td class="px-6 py-3.5 font-semibold text-white font-mono" :title="attrTip('User-Name', log.username)" x-text="log.username"></td>
                   <td class="px-6 py-3.5">
                     <span class="px-2 py-0.5 rounded-full text-[10px] font-mono border inline-flex items-center gap-1"
-                          :class="log.event === 'accept' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : (log.event === 'reject' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-slate-800 text-slate-400 border-slate-700')">
+                          :class="log.event === 'accept' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : (log.event === 'reject' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-slate-800 text-slate-400 border-slate-700')"
+                          :title="log.event === 'accept' ? tip('access-accept') : (log.event === 'reject' ? tip('access-reject') : log.reply)">
                       <i :class="log.event === 'accept' ? 'fa-solid fa-check' : (log.event === 'reject' ? 'fa-solid fa-xmark' : 'fa-solid fa-question')"></i>
                       <span x-text="log.event === 'accept' ? 'Accepted' : (log.event === 'reject' ? 'Rejected' : log.reply)"></span>
                     </span>
                   </td>
-                  <td class="px-6 py-3.5 font-mono text-slate-400" x-text="log.reply"></td>
+                  <td class="px-6 py-3.5 font-mono text-slate-400 tip" :title="log.reply === 'Access-Accept' ? tip('access-accept') : (log.reply === 'Access-Reject' ? tip('access-reject') : log.reply)" x-text="log.reply"></td>
                   <td class="px-6 py-3.5 text-slate-500 whitespace-nowrap" :title="log.timestamp" x-text="relTime(log.timestamp)"></td>
                 </tr>
               </template>
@@ -1120,12 +1136,12 @@
       <form @submit.prevent="saveGroup()" class="space-y-4 text-xs">
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label class="block text-slate-300 mb-1 font-medium">Group / Role Name</label>
+            <label class="block text-slate-300 mb-1 font-medium"><span class="tip" :title="tip('group')">Group / Role Name</span> <i class="fa-solid fa-circle-info tip-icon" :title="tip('group')"></i></label>
             <input type="text" x-model="groupModal.form.groupname" :disabled="groupModal.isEditing" required placeholder="e.g. staff, guests, vip" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono disabled:opacity-60">
           </div>
           <div>
-            <label class="block text-slate-300 mb-1 font-medium">Max Simultaneous Devices</label>
-            <input type="number" x-model.number="groupModal.form.simultaneous_use" min="1" max="50" placeholder="e.g. 3 (Default: 3)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+            <label class="block text-slate-300 mb-1 font-medium"><span class="tip" :title="tip('simultaneous-use')">Max Simultaneous Devices</span> <i class="fa-solid fa-circle-info tip-icon" :title="tip('simultaneous-use')"></i></label>
+            <input type="number" x-model.number="groupModal.form.simultaneous_use" min="1" max="50" placeholder="e.g. 3 (Default: 3)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono" :title="tip('simultaneous-use')">
           </div>
         </div>
 
@@ -1158,24 +1174,24 @@
         <!-- Session & Idle Timeouts -->
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label class="block text-slate-300 mb-1 font-medium">Max Session Duration (Hours)</label>
-            <input type="number" x-model.number="groupModal.form.session_timeout_hours" min="1" max="720" placeholder="e.g. 24 (Leave blank = Unlimited)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+            <label class="block text-slate-300 mb-1 font-medium"><span class="tip" :title="tip('session-timeout')">Max Session Duration (Hours)</span> <i class="fa-solid fa-circle-info tip-icon" :title="tip('session-timeout')"></i></label>
+            <input type="number" x-model.number="groupModal.form.session_timeout_hours" min="1" max="720" placeholder="e.g. 24 (Leave blank = Unlimited)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono" :title="tip('session-timeout')">
           </div>
           <div>
-            <label class="block text-slate-300 mb-1 font-medium">Inactivity Idle Disconnect (Minutes)</label>
-            <input type="number" x-model.number="groupModal.form.idle_timeout_mins" min="1" max="1440" placeholder="e.g. 30 (Default: 30)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+            <label class="block text-slate-300 mb-1 font-medium"><span class="tip" :title="tip('idle-timeout')">Inactivity Idle Disconnect (Minutes)</span> <i class="fa-solid fa-circle-info tip-icon" :title="tip('idle-timeout')"></i></label>
+            <input type="number" x-model.number="groupModal.form.idle_timeout_mins" min="1" max="1440" placeholder="e.g. 30 (Default: 30)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono" :title="tip('idle-timeout')">
           </div>
         </div>
 
         <!-- Network Segmentation (VLAN & IP Pool) -->
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label class="block text-slate-300 mb-1 font-medium">802.1Q Dynamic VLAN ID</label>
-            <input type="number" x-model.number="groupModal.form.vlan_id" min="1" max="4094" placeholder="e.g. 10 (Optional)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+            <label class="block text-slate-300 mb-1 font-medium"><span class="tip" :title="tip('tunnel-private-group-id')">802.1Q Dynamic VLAN ID</span> <i class="fa-solid fa-circle-info tip-icon" :title="tip('tunnel-private-group-id')"></i></label>
+            <input type="number" x-model.number="groupModal.form.vlan_id" min="1" max="4094" placeholder="e.g. 10 (Optional)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono" :title="tip('tunnel-private-group-id')">
           </div>
           <div>
-            <label class="block text-slate-300 mb-1 font-medium">DHCP Framed-Pool Name</label>
-            <input type="text" x-model="groupModal.form.framed_pool" placeholder="e.g. staff_pool (Optional)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+            <label class="block text-slate-300 mb-1 font-medium"><span class="tip" :title="tip('framed-pool')">DHCP Framed-Pool Name</span> <i class="fa-solid fa-circle-info tip-icon" :title="tip('framed-pool')"></i></label>
+            <input type="text" x-model="groupModal.form.framed_pool" placeholder="e.g. staff_pool (Optional)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono" :title="tip('framed-pool')">
           </div>
         </div>
 
@@ -1205,8 +1221,51 @@
   </div>
 
   <script>
+    /* Simple-words RADIUS glossary for hover tooltips (mirrors /radius/api/glossary). */
+    const RADIUS_GLOSSARY = {
+      "user-name": "Simple: the login name. Example: User-Name = 'raj'.",
+      "simultaneous-use": "Simple: how many devices can use this login together. Example: 2 = only 2 at once.",
+      "session-timeout": "Simple: max Wi-Fi time before auto-logout. Example: 7200 = 2 hours.",
+      "idle-timeout": "Simple: cuts Wi-Fi if no internet use for this long. Example: 900 = 15 mins idle.",
+      "acct-interim-interval": "Simple: router sends 'still online' update every X secs. Example: 300 = 5 mins.",
+      "wispr-bandwidth-max-down": "Simple: max download speed. Example: 50000000 = 50 Mbps.",
+      "wispr-bandwidth-max-up": "Simple: max upload speed. Example: 25000000 = 25 Mbps.",
+      "mikrotik-rate-limit": "Simple: router speed rule, e.g. 25M/50M = 25 up / 50 down.",
+      "tunnel-private-group-id": "Simple: which separate network (VLAN) the user joins. Example: 10 = staff, 30 = guest.",
+      "tunnel-type": "Simple: code that says 'use VLAN'. 13 = VLAN.",
+      "tunnel-medium-type": "Simple: code that says 'over ethernet/Wi-Fi'. 6 = normal network.",
+      "framed-ip-address": "Simple: Wi-Fi address given to the phone/laptop. Example: Framed-IP-Address = 10.10.0.12.",
+      "framed-pool": "Simple: name of the address box the router picks IPs from, e.g. staff_pool.",
+      "calling-station-id": "Simple: the phone/laptop's own Wi-Fi ID (MAC). Tells which device connected.",
+      "called-station-id": "Simple: which Wi-Fi box (AP + name) the user joined.",
+      "nas-ip-address": "Simple: the Wi-Fi router's address that asked 'can this user join?'.",
+      "nas-port-type": "Simple: connection type. 19 = Wi-Fi wireless.",
+      "acct-session-id": "Simple: bill-slip number for this connection. Used to kick one device.",
+      "service-type": "Simple: Framed-User = normal Wi-Fi. Administrative-User = can open admin page.",
+      "access-accept": "Simple: login OK — allowed in.",
+      "access-reject": "Simple: login failed — wrong password or blocked by rule.",
+      "coa": "Simple: remote kick button to disconnect a live device (port 3799).",
+      "ssid": "Simple: Wi-Fi name shown on phones, e.g. RajLabs-Enterprise.",
+      "vlan": "Simple: separate virtual network. Example: VLAN 10 = staff, VLAN 30 = guests.",
+      "nas": "Simple: the Wi-Fi router/box that asks this server before allowing internet.",
+      "shared-secret": "Simple: secret password between router and server. Must match on both sides.",
+      "eap-tls": "Simple: login with certificate, no password needed.",
+      "reply-attributes": "Simple: extra rules sent back to the router on login (speed, VLAN, time).",
+      "group": "Simple: a plan like staff/guest that sets speed, time and network together."
+    };
     function radiusApp() {
       return {
+        glossary: RADIUS_GLOSSARY,
+        tip(term) {
+          if (!term) return '';
+          const k = String(term).trim().toLowerCase().replace(/_/g, '-').replace(/\s+/g, '-');
+          return (this.glossary && (this.glossary[k] || this.glossary[String(term).trim().toLowerCase()])) || '';
+        },
+        attrTip(attr, val) {
+          const t = this.tip(attr);
+          if (!t) return attr + (val ? ' = ' + val : '');
+          return val ? (attr + ' = ' + val + ' — ' + t) : t;
+        },
         isAuthenticated: false,
         currentUser: 'raj',
         authLoading: false,
@@ -1224,7 +1283,7 @@
         certForm: {
           cert_pem: '',
           p12_b64: '',
-          p12_password: 'whatever',
+          p12_password: '',
           username: '',
           valid_days: 365
         },
@@ -1784,7 +1843,7 @@
         },
 
         async deleteUser(username) {
-          if (!confirm(`Are you sure you want to delete user ${username}?`)) return;
+          if (!confirm(`Delete user ${username}? Their certificate (.p12/mobileconfig) will be revoked and removed too.`)) return;
           try {
             const res = await this.fetchWithAuth(`/radius/api/users/${username}`, { method: 'DELETE' });
             if (res.ok) {
@@ -1956,7 +2015,7 @@
             const res = await this.fetchWithAuth('/radius/api/certs/issue', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ username, cert_password: 'whatever', valid_days: 365 })
+              body: JSON.stringify({ username, valid_days: 365 })
             });
             if (res.ok) {
               this.showToast(`Certificate issued for ${username}!`);
@@ -2004,8 +2063,9 @@
               body: JSON.stringify({
                 username: this.testForm.username,
                 password: this.testForm.password,
-                nas_ip: '127.0.0.1',
-                secret: 'RajLabs_RadSec_9921#AuthX!'
+                nas_ip: '127.0.0.1'
+                // NOTE: no client-side secret — the server uses RADIUS_SECRET.
+                // Never put a shared secret in shipped JS (it becomes public).
               })
             });
             this.testResult = await res.json();

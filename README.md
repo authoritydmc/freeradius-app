@@ -79,12 +79,20 @@ POSTGRES_PASSWORD=YourStrongDatabasePassword123!
 
 RADIUS_SECRET=YourStrongRadiusSharedSecret_123!
 RADIUS_ADMIN_USER=admin
-RADIUS_ADMIN_PASSWORD=YourAdminPassword123!
-SESSION_SECRET=YourRandom32CharacterSessionKey_abc123!
+RADIUS_ADMIN_PASSWORD=change_me_to_a_strong_unique_password
+SESSION_SECRET=change_me_to_at_least_32_random_chars__openssl_rand_hex_32
 
 RADIUS_API_PORT=8090
 LOG_LEVEL=INFO
 ```
+
+> The container **refuses to boot** when `RADIUS_ADMIN_PASSWORD` / `SESSION_SECRET`
+> are missing, shorter than 32 chars (session secret), or equal to a published
+> default — the API fails closed the same way. Generate strong values with
+> `openssl rand -hex 32`. Rotate `RADIUS_SECRET` on the server **and** every
+> NAS/router together. Client `.p12` bundles get a fresh random password at
+> each issuance (returned once by the API); portal downloads require the
+> account password as proof of ownership.
 
 ### 3. Initialize Database Schema
 If starting with a fresh PostgreSQL database, import the FreeRADIUS schema:
@@ -240,6 +248,32 @@ For detailed cloud ingress rules (**Oracle Cloud OCI**, **AWS EC2**, **GCP**, **
 - **Event logs**: admin login success/fail (failures warn with username + client IP, never the password), password generate/reset, cert issue, CoA disconnect, test-auth results.
 - **Audit trail**: persistent `admin_audit_log` table (auto-created at startup), queryable at `GET /radius/api/audit` and rendered in Admin Console → Logs.
 - **Status page**: Admin Console → **Status** tab consolidates everything — core services (API / PostgreSQL / FreeRADIUS daemon), PKI signer state, RADIUS endpoints, usage snapshot, and latest admin activity — with Refresh-all and 15s auto-refresh.
+
+### ⏱️ Rate limits, CORS & cookies
+
+- **Rate limits** (per IP, sliding 60s window, `429 + Retry-After`): login `10/min`, portal enroll `5/min`, test-auth `20/min`, cert issue `10/min`. Tune via `RL_LOGIN_PER_MIN`, `RL_ENROLL_PER_MIN`, `RL_TEST_AUTH_PER_MIN`, `RL_CERT_ISSUE_PER_MIN` (0 = off).
+- **CORS**: same-origin only by default. Set `CORS_ORIGINS=https://admin.example.com,https://portal.example.com` to allow dashboard origins (wildcard + credentials is never used).
+- **Cookies**: `Secure` by default. For plain-HTTP LAN testing set `COOKIE_SECURE=0` (trusted LAN only) — otherwise the browser silently drops the session cookie and only the Bearer-token path works.
+- **Reverse proxy**: run with `--proxy-headers` already enabled; add hardening headers from 👉 **[Reverse-Proxy Headers Guide](docs/REVERSE_PROXY_HEADERS.md)**.
+
+### 💾 Backup & restore
+
+```bash
+# Back up DB + CA/certs volume (keeps newest 14 of each)
+POSTGRES_PASSWORD=... ./scripts/backup.sh ./backups
+# Restore on a clean stack
+POSTGRES_PASSWORD=... ./scripts/restore.sh ./backups/radius-db-<ts>.sql.gz ./backups/radius-certs-<ts>.tar.gz
+```
+
+Schedule `backup.sh` daily (cron) and copy both files encrypted offsite — losing the certs archive means re-issuing every certificate. Table retention: `AUDIT_RETENTION_DAYS` / `ACCOUNTING_RETENTION_DAYS` (default 365, `0` = keep forever), purged at startup.
+
+### 🧪 Tests & CI
+
+```bash
+python -m pytest tests/ -q   # no database required
+```
+
+GitHub Actions runs `py_compile` + pytest + secret-grep guards (fails on `shell=True`, well-known password literals, hardcoded frontend secrets) on every push/PR. Orphaned certs (deleted users, pre-fix installs): `GET /radius/api/certs/orphans` lists them, `DELETE /radius/api/certs/orphans/{username}` removes them.
 
 ---
 

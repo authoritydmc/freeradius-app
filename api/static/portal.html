@@ -286,7 +286,7 @@
       el.type = el.type === 'password' ? 'text' : 'password';
     }
 
-    function showAlert(type, title, msg) {
+    function showAlert(type, title, msg, msgHtml) {
       const alertBox = document.getElementById('alertBox');
       const alertMsg = document.getElementById('alertMsg');
       const alertIcon = document.getElementById('alertIcon');
@@ -303,7 +303,20 @@
         alertIcon.className = 'fa-solid fa-circle-info text-indigo-400 mt-0.5 text-base';
       }
 
-      alertMsg.innerHTML = `<strong>${title}</strong><div class="mt-0.5 text-slate-300">${msg}</div>`;
+      // XSS-safe (issue #13): server/user-influenced strings go through
+      // textContent. Only explicit trusted markup uses msgHtml.
+      alertMsg.textContent = '';
+      const strong = document.createElement('strong');
+      strong.textContent = title;
+      const div = document.createElement('div');
+      div.className = 'mt-0.5 text-slate-300';
+      if (msgHtml) {
+        div.innerHTML = msgHtml; // trusted, caller-built markup only
+      } else {
+        div.textContent = msg;
+      }
+      alertMsg.appendChild(strong);
+      alertMsg.appendChild(div);
     }
 
     // Web login form handler (fallback for live browser testing outside router)
@@ -326,7 +339,7 @@
           });
           const data = await res.json();
           if (res.ok && data.success) {
-            showAlert('success', 'Authentication Successful!', `Welcome <strong>${u}</strong>. Your enterprise credentials were authenticated with FreeRADIUS.`);
+            showAlert('success', 'Authentication Successful!', `Welcome ${u}. Your enterprise credentials were authenticated with FreeRADIUS.`);
           } else {
             showAlert('error', 'Authentication Failed', data.detail || 'Invalid username or password. Please verify your credentials.');
           }
@@ -359,17 +372,22 @@
         const data = await res.json();
 
         if (res.ok && data.success) {
-          showAlert('success', 'Certificate Generated Successfully!', `Device certificate created for <strong>${u}</strong>. Download your platform profile below.`);
-          
-          // Setup download links
+          // Owner-only downloads: password stays in POST body, never in the URL.
+          window._portalCreds = { username: u, password: p };
+          const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          const trustedHtml = `Device certificate created for <strong>${esc(u)}</strong>.` +
+            (data.p12_password
+              ? ` Import password (shown once — save it now): <code class="font-mono font-bold text-amber-300">${esc(data.p12_password)}</code>`
+              : '') +
+            ` Download your platform profile below.`;
+          showAlert('success', 'Certificate Generated Successfully!', '', trustedHtml);
+
+          // Setup download buttons (authenticated POST → file blob)
           const downloadSection = document.getElementById('certDownloadSection');
           downloadSection.classList.remove('hidden');
 
-          const btnApple = document.getElementById('btnAppleProfile');
-          const btnBundle = document.getElementById('btnCertBundle');
-
-          btnApple.href = `/radius/api/portal/download-mobileconfig?username=${encodeURIComponent(u)}`;
-          btnBundle.href = `/radius/api/portal/download-cert?username=${encodeURIComponent(u)}`;
+          document.getElementById('btnAppleProfile').onclick = (ev) => { ev.preventDefault(); downloadPortalFile('mobileconfig'); };
+          document.getElementById('btnCertBundle').onclick = (ev) => { ev.preventDefault(); downloadPortalFile('p12'); };
         } else {
           showAlert('error', 'Enrollment Failed', data.detail || 'Could not verify account credentials to generate certificate.');
         }
@@ -378,6 +396,34 @@
       } finally {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-id-card-clip"></i> <span>Generate Secure Device Certificate</span>';
+      }
+    }
+
+    // Authenticated owner-only download (POST keeps the password out of URLs/logs)
+    async function downloadPortalFile(kind) {
+      const creds = window._portalCreds;
+      if (!creds) { showAlert('error', 'Session Expired', 'Please generate your certificate again first.'); return; }
+      const endpoint = kind === 'p12' ? '/radius/api/portal/download-cert' : '/radius/api/portal/download-mobileconfig';
+      const filename = kind === 'p12' ? `RajLabs_${creds.username}_Certificate.p12` : `RajLabs_${creds.username}_WiFi.mobileconfig`;
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(creds)
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          showAlert('error', 'Download Failed', err.detail || 'Could not verify ownership. Please re-enter your password and retry.');
+          return;
+        }
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+      } catch(err) {
+        showAlert('error', 'Download Failed', 'Network error while downloading your certificate.');
       }
     }
 

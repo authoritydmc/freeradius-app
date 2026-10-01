@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install fastapi "uvicorn[standard]" pydantic psycopg2-binary pytest
+
+      - name: Compile check
+        run: python -m py_compile api/app.py
+
+      - name: Unit tests (no DB required)
+        run: python -m pytest tests/ -q
+
+      - name: Secret grep guard
+        run: |
+          set -e
+          echo "--- no shell=True in backend ---"
+          ! grep -rn "shell=True" api/ --include="*.py" | grep -v "no shell=True anywhere" || (echo "FAIL: shell=True found"; exit 1)
+          echo "--- no well-known p12 password in shipped code/UI ---"
+          ! grep -rni "whatever" api/app.py api/static/ || (echo "FAIL: well-known password literal"; exit 1)
+          echo "--- no hardcoded RADIUS secret in shipped frontend ---"
+          ! grep -rn "RadSec_9921\|secret: *'" api/static/ || (echo "FAIL: hardcoded secret in frontend"; exit 1)
+          echo "secret guards passed"

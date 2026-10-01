@@ -1,4 +1,6 @@
 import os
+import re
+import ipaddress
 import subprocess
 import secrets
 import shutil
@@ -12,6 +14,7 @@ import json
 import logging
 import urllib.request
 import urllib.error
+from xml.sax.saxutils import escape as _xml_escape
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from contextlib import asynccontextmanager
@@ -66,6 +69,334 @@ _SIGNER_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
 ADMIN_FALLBACK_USER = os.getenv("RADIUS_ADMIN_USER", "admin")
 ADMIN_FALLBACK_PASS = os.getenv("RADIUS_ADMIN_PASSWORD", "admin123")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change_this_session_secret_in_production_32_chars!")
+
+# Table retention in days (issue #9, 0 = keep forever). Purged once at startup.
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365") or 365)
+ACCOUNTING_RETENTION_DAYS = int(os.getenv("ACCOUNTING_RETENTION_DAYS", "365") or 365)
+
+def purge_expired_tables() -> None:
+    """Best-effort startup purge so audit/accounting tables can't grow forever."""
+    from datetime import timedelta
+    jobs = []
+    if AUDIT_RETENTION_DAYS > 0:
+        jobs.append(("admin_audit_log", "ts", AUDIT_RETENTION_DAYS))
+    if ACCOUNTING_RETENTION_DAYS > 0:
+        jobs.append(("radacct", "acctstarttime", ACCOUNTING_RETENTION_DAYS))
+    if not jobs:
+        return
+    try:
+        conn = get_db_connection()
+    except Exception as e:
+        logger.warning("Retention purge skipped (DB unreachable): %s", e)
+        return
+    try:
+        with conn.cursor() as cur:
+            for table, col, days in jobs:
+                try:
+                    cur.execute(
+                        f"DELETE FROM {table} WHERE {col} < NOW() - (%s || ' days')::interval",
+                        (str(days),),
+                    )
+                    n = cur.rowcount
+                    conn.commit()
+                    if n:
+                        logger.info("Retention purge: removed %s row(s) from %s older than %s days", n, table, days)
+                except Exception as e:
+                    conn.rollback()
+                    logger.warning("Retention purge failed for %s: %s", table, e)
+    finally:
+        conn.close()
+
+# ----------------------------------------------------------------------------
+# Startup secret hygiene (GitHub issue #5): refuse to boot on published defaults.
+# ----------------------------------------------------------------------------
+_KNOWN_BAD_SECRETS = frozenset({
+    "", "testing123", "admin123", "password", "changeme", "change-me",
+    "change_this_session_secret_in_production_32_chars!",
+    "YourStrongRadiusSharedSecret_123!",
+    "YourAdminPassword123!",
+    "YourStrongAdminPassword_123!",
+    "YourRandomSecretKeyForSigningSessions_32_Chars",
+    "YourRandom32CharacterSessionKey_abc123!",
+})
+
+def _is_weak_secret(value: Optional[str]) -> bool:
+    if not value:
+        return True
+    return value.strip() in _KNOWN_BAD_SECRETS
+
+
+def check_startup_secrets() -> None:
+    """Fail closed when admin/session secrets are missing, default, or short.
+
+    RADIUS_SECRET keeps a warning (routers need *some* value to interoperate),
+    but SESSION_SECRET and RADIUS_ADMIN_PASSWORD are fatal: the former mints
+    admin session tokens via HMAC and the latter guards the fallback login.
+    """
+    errors = []
+    if _is_weak_secret(SESSION_SECRET) or len(SESSION_SECRET or "") < 32:
+        errors.append(
+            "SESSION_SECRET is missing, a published default, or shorter than 32 chars. "
+            "Set a strong random value (e.g. `openssl rand -hex 32`). Refusing to boot."
+        )
+    if _is_weak_secret(ADMIN_FALLBACK_PASS):
+        errors.append(
+            "RADIUS_ADMIN_PASSWORD is missing or a published default (e.g. admin123). "
+            "Set a strong admin password. Refusing to boot."
+        )
+    if _is_weak_secret(RADIUS_SECRET):
+        logger.warning(
+            "RADIUS_SECRET is a published default (testing123) — rotate it now and "
+            "update every NAS/router; accepting it only so existing routers keep working."
+        )
+    if errors:
+        for e in errors:
+            logger.error("Startup secret check FAILED: %s", e)
+        raise RuntimeError("Refusing to boot: " + " ".join(errors))
+
+
+# ----------------------------------------------------------------------------
+# Shared input validators + CoA helper (GitHub issue #2: no shell=True anywhere)
+# ----------------------------------------------------------------------------
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_ACCT_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._\-/:]{1,128}$")
+
+def validate_username(value: str) -> str:
+    if not value or not _USERNAME_RE.fullmatch(value):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid username. Use 1-64 chars: letters, digits, dot, underscore, hyphen.",
+        )
+    return value
+
+
+def validate_nas_ip(value: str) -> str:
+    if not value:
+        raise HTTPException(status_code=422, detail="nas_ip is required.")
+    v = value.strip()
+    # Strip an optional :port suffix callers sometimes include; we always use 3799.
+    if v.count(":") == 1 and v.rsplit(":", 1)[1].isdigit():
+        v = v.rsplit(":", 1)[0]
+    try:
+        ipaddress.ip_address(v)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid nas_ip '{value}'. Must be an IPv4/IPv6 address.")
+    return v
+
+
+def validate_acct_session_id(value: Optional[str]) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    if not _ACCT_SESSION_ID_RE.fullmatch(value):
+        raise HTTPException(status_code=422, detail="Invalid Acct-Session-Id.")
+    return value
+
+
+def send_coa_disconnect(username: str, nas_ip: str, secret: str,
+                         acct_session_id: Optional[str] = None,
+                         framed_ip: Optional[str] = None) -> tuple[bool, str]:
+    """Send a Disconnect-Request via radclient without ever invoking a shell.
+
+    Returns (success, raw_output). All inputs are validated; radclient receives
+    attributes on stdin and argv carries no user-controlled shell syntax.
+    """
+    username = validate_username(username)
+    nas_ip = validate_nas_ip(nas_ip)
+    acct_session_id = validate_acct_session_id(acct_session_id)
+    if framed_ip not in (None, ""):
+        try:
+            ipaddress.ip_address(framed_ip.strip())
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid Framed-IP-Address.")
+    if not secret or len(secret) > 256:
+        raise HTTPException(status_code=422, detail="Invalid NAS secret.")
+    lines = [f'User-Name = "{username}"']
+    if acct_session_id:
+        lines.append(f'Acct-Session-Id = "{acct_session_id}"')
+    if framed_ip:
+        lines.append(f'Framed-IP-Address = "{framed_ip.strip()}"')
+    attrs = "\n".join(lines)
+    cmd = ["radclient", "-r", "1", f"{nas_ip}:3799", "disconnect", secret]
+    try:
+        res = subprocess.run(cmd, input=attrs, capture_output=True, text=True, timeout=5)
+    except subprocess.TimeoutExpired:
+        return False, "radclient timed out after 5s"
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="radclient binary not found on server.")
+    output = (res.stdout or "") + (res.stderr or "")
+    success = "Disconnect-ACK" in output or "CoA-ACK" in output
+    return success, output.strip()
+
+
+def verify_portal_user(username: str, password: str) -> None:
+    """Same credential check as enroll: username + password proof required."""
+    validate_username(username)
+    if not password:
+        raise HTTPException(status_code=401, detail="Authentication failed. Invalid username or password.")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rc.username, rc.value FROM radcheck rc "
+                "WHERE rc.username = %s AND rc.attribute LIKE '%%Password'",
+                (username,),
+            )
+            row = cur.fetchone()
+            if not row or not secrets.compare_digest(str(row["value"]), password):
+                raise HTTPException(status_code=401, detail="Authentication failed. Invalid username or password.")
+    finally:
+        conn.close()
+
+
+def generate_p12_password(length: int = 20) -> str:
+    """Per-issuance random PKCS#12 password (never a well-known default)."""
+    alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%-_=+"
+    return "".join(secrets.choice(alphabet) for _ in range(max(12, min(length, 64))))
+
+
+def safe_client_path(username: str, suffix: str) -> str:
+    """Join CLIENT_CERTS_DIR safely; rejects traversal even if regex is bypassed."""
+    validate_username(username)
+    p = os.path.abspath(os.path.join(CLIENT_CERTS_DIR, f"{username}{suffix}"))
+    base = os.path.abspath(CLIENT_CERTS_DIR)
+    if p != base and not p.startswith(base + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid username.")
+    return p
+
+
+def repackage_p12_for_mobileconfig(username: str) -> tuple[bytes, str]:
+    """Build a fresh .p12 (random password) from stored key/crt/chain for Apple profiles.
+
+    The stored bundle's password is never persisted server-side, so re-exporting
+    per download keeps every mobileconfig self-consistent without a static secret.
+    """
+    key_path = safe_client_path(username, ".key")
+    crt_path = safe_client_path(username, ".crt")
+    chain_path = safe_client_path(username, "-chain.crt")
+    if not (os.path.exists(key_path) and os.path.exists(crt_path)):
+        raise HTTPException(status_code=404, detail="Client certificate not found. Enroll first.")
+    fresh_pass = generate_p12_password()
+    with tempfile.NamedTemporaryFile(suffix=".p12", delete=False) as tmp:
+        tmp_path = tmp.name
+    try:
+        cmd = ["openssl", "pkcs12", "-export", "-in", crt_path, "-inkey", key_path,
+               "-out", tmp_path, "-name", f"RajLabs RADIUS - {username}",
+               "-password", f"pass:{fresh_pass}"]
+        if os.path.exists(chain_path):
+            cmd[cmd.index("-inkey") + 2:cmd.index("-inkey") + 2] = ["-certfile", chain_path]
+        subprocess.run(cmd, check=True, capture_output=True)
+        with open(tmp_path, "rb") as f:
+            return f.read(), fresh_pass
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or b"").decode("utf-8", "replace") if e.stderr else str(e)
+        raise HTTPException(status_code=500, detail=f"Failed to package Apple profile: {err}")
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+
+def build_mobileconfig(username: str, ssid: str, p12_bytes: bytes, p12_password: str) -> str:
+    """Render Apple .mobileconfig XML with escaped values (no static passwords)."""
+    ca_path = os.path.join(CERTS_DIR, "ca.pem")
+    if not os.path.exists(ca_path):
+        raise HTTPException(status_code=404, detail="CA certificate not found.")
+    with open(ca_path, "rb") as f:
+        ca_b64 = base64.b64encode(f.read()).decode("utf-8")
+    p12_b64 = base64.b64encode(p12_bytes).decode("utf-8")
+    safe_user = _xml_escape(username)
+    safe_ssid = _xml_escape(ssid or "RajLabs-Enterprise")
+    safe_pass = _xml_escape(p12_password)
+    profile_uuid, wifi_uuid, cert_uuid, ca_uuid = (str(uuid.uuid4()) for _ in range(4))
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadDisplayName</key>
+    <string>RajLabs Wi-Fi ({safe_user})</string>
+    <key>PayloadIdentifier</key>
+    <string>in.rajlabs.radius.wifi.{safe_user}</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>{profile_uuid}</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadCertificateFileName</key>
+            <string>RajLabs_Root_CA.cer</string>
+            <key>PayloadContent</key>
+            <data>{ca_b64}</data>
+            <key>PayloadDisplayName</key>
+            <string>RajLabs RADIUS Root CA</string>
+            <key>PayloadIdentifier</key>
+            <string>in.rajlabs.radius.ca</string>
+            <key>PayloadType</key>
+            <string>cops.root</string>
+            <key>PayloadUUID</key>
+            <string>{ca_uuid}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+        <dict>
+            <key>Password</key>
+            <string>{safe_pass}</string>
+            <key>PayloadCertificateFileName</key>
+            <string>{safe_user}.p12</string>
+            <key>PayloadContent</key>
+            <data>{p12_b64}</data>
+            <key>PayloadDisplayName</key>
+            <string>RajLabs User Identity ({safe_user})</string>
+            <key>PayloadIdentifier</key>
+            <string>in.rajlabs.radius.usercert.{safe_user}</string>
+            <key>PayloadType</key>
+            <string>com.apple.security.pkcs12</string>
+            <key>PayloadUUID</key>
+            <string>{cert_uuid}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+        <dict>
+            <key>AutoJoin</key>
+            <true/>
+            <key>EncryptionType</key>
+            <string>WPA2</string>
+            <key>HIDDEN_NETWORK</key>
+            <false/>
+            <key>PayloadDisplayName</key>
+            <string>Wi-Fi ({safe_ssid})</string>
+            <key>PayloadIdentifier</key>
+            <string>in.rajlabs.radius.wifi.config</string>
+            <key>PayloadType</key>
+            <string>com.apple.wifi.managed</string>
+            <key>PayloadUUID</key>
+            <string>{wifi_uuid}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>SSID_STR</key>
+            <string>{safe_ssid}</string>
+            <key>EAPClientConfiguration</key>
+            <dict>
+                <key>AcceptEAPTypes</key>
+                <array>
+                    <integer>13</integer>
+                </array>
+                <key>PayloadCertificateAnchorUUID</key>
+                <array>
+                    <string>{ca_uuid}</string>
+                </array>
+                <key>UserPayloadCertificateIdentityUUID</key>
+                <string>{cert_uuid}</string>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>"""
 
 # ----------------------------------------------------------------------------
 # Password policy & secure generation (single source of truth, mirrored in UI)
@@ -184,6 +515,99 @@ def generate_session_token(username: str) -> str:
     raw = f"{data}:{sig}"
     return base64.urlsafe_b64encode(raw.encode()).decode()
 
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def ensure_revoked_tokens_table() -> None:
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS revoked_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    reason TEXT
+                )
+            """)
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("Could not ensure revoked_tokens table: %s", e)
+
+
+def revoke_session_token(token: str, reason: str = "logout") -> None:
+    """Server-side logout (issue #6): a revoked token is rejected even before TTL."""
+    ensure_revoked_tokens_table()
+    username = None
+    try:
+        raw = base64.urlsafe_b64decode(token.encode()).decode()
+        username = raw.split(":")[0]
+    except Exception:
+        username = "unknown"
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO revoked_tokens (token_hash, username, reason) VALUES (%s, %s, %s) "
+                "ON CONFLICT (token_hash) DO NOTHING",
+                (_token_hash(token), username, reason),
+            )
+            # Prune entries older than the max token TTL (7d) — no unbounded growth.
+            cur.execute("DELETE FROM revoked_tokens WHERE revoked_at < NOW() - INTERVAL '8 days'")
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def revoke_all_user_tokens(username: str, reason: str = "password_reset") -> int:
+    """Sign-out-everywhere for one admin (issue #6). Stateless HMAC tokens can't be
+    enumerated, so record a per-user cutoff: tokens minted before it are rejected."""
+    ensure_revoked_tokens_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO revoked_tokens (token_hash, username, reason) VALUES (%s, %s, %s) "
+                "ON CONFLICT (token_hash) DO NOTHING",
+                (f"ALL:{username}", username, reason),
+            )
+            cur.execute(
+                "UPDATE revoked_tokens SET revoked_at = NOW(), reason = %s "
+                "WHERE token_hash = %s",
+                (reason, f"ALL:{username}"),
+            )
+            cur.execute("DELETE FROM revoked_tokens WHERE revoked_at < NOW() - INTERVAL '8 days'")
+            conn.commit()
+            return cur.rowcount
+    finally:
+        conn.close()
+
+
+def _user_cutoff(username: str) -> float:
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT revoked_at FROM revoked_tokens WHERE token_hash = %s", (f"ALL:{username}",))
+            row = cur.fetchone()
+            if row and row["revoked_at"]:
+                return row["revoked_at"].timestamp()
+    except Exception:
+        pass
+    return 0.0
+
+
+def _is_token_revoked(token: str) -> bool:
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM revoked_tokens WHERE token_hash = %s", (_token_hash(token),))
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
 def verify_session_token(token: str) -> Optional[str]:
     try:
         raw = base64.urlsafe_b64decode(token.encode()).decode()
@@ -196,8 +620,14 @@ def verify_session_token(token: str) -> Optional[str]:
         if time.time() - timestamp > 7 * 86400:
             return None
         expected_sig = hmac.new(SESSION_SECRET.encode(), f"{username}:{timestamp}".encode(), hashlib.sha256).hexdigest()
-        if secrets.compare_digest(sig, expected_sig):
-            return username
+        if not secrets.compare_digest(sig, expected_sig):
+            return None
+        # Rejected if individually revoked or minted before a sign-out-everywhere cutoff.
+        if timestamp < _user_cutoff(username):
+            return None
+        if _is_token_revoked(token):
+            return None
+        return username
     except Exception:
         pass
     return None
@@ -227,10 +657,10 @@ def verify_admin_user(user: str, passwd: str) -> bool:
         return True
     return False
 
-def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password: str = "whatever") -> str:
+def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password: Optional[str] = None) -> str:
     with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as f_cert:
         cert_path = f_cert.name
-        
+
     try:
         if b"-----BEGIN CERTIFICATE-----" in cert_pem_or_p12_bytes:
             with open(cert_path, "wb") as f:
@@ -239,8 +669,11 @@ def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password:
             with tempfile.NamedTemporaryFile(suffix=".p12", delete=False) as f_p12:
                 f_p12.write(cert_pem_or_p12_bytes)
                 p12_path = f_p12.name
-            
-            cmd = ["openssl", "pkcs12", "-in", p12_path, "-nokeys", "-out", cert_path, "-passin", f"pass:{p12_password}"]
+
+            # No well-known default: caller must supply the per-issuance p12 password
+            # (legacy bundles whose password the user still knows keep working when typed in).
+            cmd = ["openssl", "pkcs12", "-in", p12_path, "-nokeys", "-out", cert_path,
+                   "-passin", f"pass:{p12_password or ''}"]
             res = subprocess.run(cmd, capture_output=True, text=True)
             if os.path.exists(p12_path):
                 os.remove(p12_path)
@@ -319,6 +752,12 @@ def authenticate_admin(request: Request) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail closed on published default secrets (issue #5) before touching the DB.
+    check_startup_secrets()
+    try:
+        purge_expired_tables()
+    except Exception as e:
+        logger.warning("Retention purge error: %s", e)
     # Startup check
     try:
         conn = get_db_connection()
@@ -330,6 +769,10 @@ async def lifespan(app: FastAPI):
         ensure_audit_table()
     except Exception as e:
         logger.warning("Audit table init failed: %s", e)
+    try:
+        ensure_revoked_tokens_table()
+    except Exception as e:
+        logger.warning("Revoked-tokens table init failed: %s", e)
     yield
 
 app = FastAPI(
@@ -342,13 +785,83 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Browser transport hardening (issue #8): same-origin by default; explicit allowlist
+# via CORS_ORIGINS (comma-separated). A wildcard is only used when credentials
+# are off, since browsers reject `*` + credentials anyway.
+_CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+_CORS_ALLOW_CREDENTIALS = bool(_CORS_ORIGINS)
+if not _CORS_ORIGINS:
+    logger.info("CORS: same-origin only (set CORS_ORIGINS to allow dashboard origins).")
+
+# Cookie transport: Secure cookies need HTTPS. Behind plain-HTTP LAN testing the
+# browser silently drops Secure cookies, so allow opting out explicitly.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "1") != "0"
+if not COOKIE_SECURE:
+    logger.warning("COOKIE_SECURE=0 — admin_session cookie without Secure flag (use only on trusted LAN / HTTP testing).")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_CORS_ORIGINS if _CORS_ORIGINS else ["*"],
+    allow_credentials=_CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def set_admin_session_cookie(response: Response, token: str, remember: bool = True) -> None:
+    response.set_cookie(
+        key="admin_session",
+        value=token,
+        max_age=7 * 86400 if remember else None,
+        httponly=True,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+    )
+
+
+# ----------------------------------------------------------------------------
+# Lightweight per-IP rate limiting (issue #7). No extra dependencies: a
+# sliding-window counter in memory. Tunable via env; 429 + Retry-After.
+# NOTE: single-process memory. Behind multiple uvicorn workers each worker
+# enforces its own budget (fail-safe direction for availability).
+# ----------------------------------------------------------------------------
+import threading as _threading
+
+_RL_BUCKETS: Dict[str, List[float]] = {}
+_RL_LOCK = _threading.Lock()
+RL_LOGIN_PER_MIN = int(os.getenv("RL_LOGIN_PER_MIN", "10") or 10)
+RL_ENROLL_PER_MIN = int(os.getenv("RL_ENROLL_PER_MIN", "5") or 5)
+RL_TEST_AUTH_PER_MIN = int(os.getenv("RL_TEST_AUTH_PER_MIN", "20") or 20)
+RL_CERT_ISSUE_PER_MIN = int(os.getenv("RL_CERT_ISSUE_PER_MIN", "10") or 10)
+
+
+def _client_ip(request: Optional[Request]) -> str:
+    try:
+        if request and request.client:
+            return request.client.host or "unknown"
+    except Exception:
+        pass
+    return "unknown"
+
+
+def check_rate_limit(request: Optional[Request], scope: str, per_minute: int) -> None:
+    if per_minute <= 0:
+        return
+    now = time.time()
+    window = 60.0
+    key = f"{scope}:{_client_ip(request)}"
+    with _RL_LOCK:
+        hits = _RL_BUCKETS.get(key, [])
+        hits = [t for t in hits if now - t < window]
+        if len(hits) >= per_minute:
+            retry_after = int(window - (now - hits[0])) + 1
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many requests. Try again in {retry_after}s.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        hits.append(now)
+        _RL_BUCKETS[key] = hits
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -434,7 +947,7 @@ class DisconnectSessionRequest(BaseModel):
 
 class IssueCertRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
-    cert_password: Optional[str] = "whatever"
+    cert_password: Optional[str] = None
     valid_days: Optional[int] = 365
     email: Optional[str] = None
 
@@ -446,12 +959,13 @@ class AdminLoginRequest(BaseModel):
 class CertLoginRequest(BaseModel):
     cert_pem: Optional[str] = None
     p12_b64: Optional[str] = None
-    p12_password: Optional[str] = "whatever"
+    p12_password: Optional[str] = None
 
 # Authentication Endpoints
 @app.post("/radius/api/auth/login", tags=["Authentication"])
 @app.post("/api/auth/login", tags=["Authentication"])
 def admin_login(payload: AdminLoginRequest, response: Response, request: Request):
+    check_rate_limit(request, "login", RL_LOGIN_PER_MIN)
     if not verify_admin_user(payload.username, payload.password):
         client = request.client.host if request.client else "?"
         logger.warning("Admin login FAILED username=%s client=%s", payload.username, client)
@@ -462,15 +976,7 @@ def admin_login(payload: AdminLoginRequest, response: Response, request: Request
     logger.info("Admin login success username=%s", payload.username)
     
     token = generate_session_token(payload.username)
-    max_age = 7 * 86400 if payload.remember else None
-    response.set_cookie(
-        key="admin_session",
-        value=token,
-        max_age=max_age,
-        httponly=True,
-        samesite="lax",
-        secure=True
-    )
+    set_admin_session_cookie(response, token, remember=bool(payload.remember))
     return {
         "status": "success",
         "token": token,
@@ -481,7 +987,8 @@ def admin_login(payload: AdminLoginRequest, response: Response, request: Request
 
 @app.post("/radius/api/auth/cert-login", tags=["Authentication"])
 @app.post("/api/auth/cert-login", tags=["Authentication"])
-def admin_cert_login(payload: CertLoginRequest, response: Response):
+def admin_cert_login(payload: CertLoginRequest, response: Response, request: Request):
+    check_rate_limit(request, "login", RL_LOGIN_PER_MIN)
     cert_data = None
     if payload.cert_pem and payload.cert_pem.strip():
         cert_data = payload.cert_pem.encode("utf-8")
@@ -494,21 +1001,14 @@ def admin_cert_login(payload: CertLoginRequest, response: Response):
         raise HTTPException(status_code=400, detail="Please provide a valid PEM certificate or PKCS#12 bundle.")
 
     try:
-        admin_user = verify_certificate_and_get_admin(cert_data, payload.p12_password or "whatever")
+        admin_user = verify_certificate_and_get_admin(cert_data, payload.p12_password)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Certificate verification failure: {str(e)}")
 
     token = generate_session_token(admin_user)
-    response.set_cookie(
-        key="admin_session",
-        value=token,
-        max_age=7 * 86400,
-        httponly=True,
-        samesite="lax",
-        secure=True
-    )
+    set_admin_session_cookie(response, token, remember=True)
     return {
         "status": "success",
         "token": token,
@@ -520,8 +1020,19 @@ def admin_cert_login(payload: CertLoginRequest, response: Response):
 
 @app.post("/radius/api/auth/logout", tags=["Authentication"])
 @app.post("/api/auth/logout", tags=["Authentication"])
-def admin_logout(response: Response):
-    response.delete_cookie(key="admin_session")
+def admin_logout(request: Request, response: Response):
+    # Revoke the presented token server-side when possible (issue #6); the
+    # cookie is best-effort (Secure/HttpOnly flags must match to clear it).
+    raw = request.cookies.get("admin_session")
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Bearer "):
+        raw = header[7:].strip() or raw
+    if raw:
+        try:
+            revoke_session_token(raw, reason="logout")
+        except Exception:
+            pass
+    response.delete_cookie(key="admin_session", samesite="lax", secure=COOKIE_SECURE, path="/")
     return {"status": "success", "message": "Logged out successfully"}
 
 @app.get("/radius/api/auth/me", tags=["Authentication"])
@@ -815,6 +1326,7 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
 @app.delete("/radius/api/users/{username}", tags=["Users"])
 @app.delete("/api/users/{username}", tags=["Users"])
 def delete_user(username: str, admin_user: str = Depends(authenticate_admin)):
+    username = validate_username(username)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -822,8 +1334,26 @@ def delete_user(username: str, admin_user: str = Depends(authenticate_admin)):
             cur.execute("DELETE FROM radreply WHERE username = %s", (username,))
             cur.execute("DELETE FROM radusergroup WHERE username = %s", (username,))
             conn.commit()
-            log_audit(admin_user, "user_delete", username, None)
-            return {"status": "success", "message": f"User '{username}' deleted successfully"}
+            # Revoke EAP-TLS identity too (issue #10): a deleted user must not
+            # keep a working certificate. Portal downloads then 404.
+            removed_certs = 0
+            for suffix in (".key", ".csr", ".crt", ".p12", "-chain.crt"):
+                try:
+                    p = safe_client_path(username, suffix)
+                except HTTPException:
+                    continue
+                try:
+                    if os.path.exists(p):
+                        os.remove(p)
+                        removed_certs += 1
+                except OSError as e:
+                    logger.warning("Cert cleanup failed for %s%s: %s", username, suffix, e)
+            log_audit(admin_user, "user_delete", username,
+                      f"cert_files_removed={removed_certs}" if removed_certs else None)
+            msg = f"User '{username}' deleted successfully"
+            if removed_certs:
+                msg += f" (revoked + removed {removed_certs} certificate file(s))"
+            return {"status": "success", "message": msg, "cert_files_removed": removed_certs}
     finally:
         conn.close()
 
@@ -858,17 +1388,24 @@ def update_user_password(username: str, payload: PasswordChangeRequest, admin_us
             conn2.close()
             for nas_ip in nas_ips:
                 try:
-                    cmd = ["radclient", "-r", "1", f"{nas_ip}:3799", "disconnect", RADIUS_SECRET]
-                    inp = f'User-Name = "{username}"'
-                    res = subprocess.run(cmd, input=inp, capture_output=True, text=True, timeout=5)
-                    if "Disconnect-ACK" in (res.stdout + res.stderr) or "CoA-ACK" in (res.stdout + res.stderr):
+                    ok, _ = send_coa_disconnect(username, nas_ip, RADIUS_SECRET)
+                    if ok:
                         disconnected += 1
                 except Exception:
                     continue
         except Exception as e:
             logger.warning("CoA disconnect after password reset failed for %s: %s", username, e)
+    # Self-reset signs out everywhere (issue #6): the old admin password must not
+    # leave other sessions valid.
+    sessions_revoked = False
+    if username == admin_user:
+        try:
+            revoke_all_user_tokens(admin_user, reason="self_password_reset")
+            sessions_revoked = True
+        except Exception as e:
+            logger.warning("Sign-out-everywhere failed for %s: %s", admin_user, e)
     from datetime import datetime, timezone
-    logger.info("Password reset username=%s by=%s disconnect=%s sessions_dropped=%s", username, admin_user, payload.disconnect_active, disconnected)
+    logger.info("Password reset username=%s by=%s disconnect=%s sessions_dropped=%s sessions_revoked=%s", username, admin_user, payload.disconnect_active, disconnected, sessions_revoked)
     return {
         "status": "success",
         "message": f"Password updated for user '{username}'" + (f" ({disconnected} session(s) disconnected)" if payload.disconnect_active else ""),
@@ -1083,36 +1620,120 @@ GROUP_PRESETS = [
     }
 ]
 
+# ----------------------------------------------------------------------------
+# Human-readable RADIUS glossary (single source of truth for hover tooltips).
+# Keys are lower-cased attribute / term names; values are plain-English help.
+# The frontend fetches the same map via GET /radius/api/glossary.
+# ----------------------------------------------------------------------------
+RADIUS_GLOSSARY: Dict[str, str] = {
+    "user-name": "Simple: the login name. Example: User-Name = 'raj'. This is who is trying to connect.",
+    "cleartext-password": "Simple: the password saved for this user. Hidden as ******** in the screen for safety.",
+    "simultaneous-use": "Simple: how many phones/laptops can use this login at the same time. Example: 2 = only 2 devices together.",
+    "session-timeout": "Simple: max Wi-Fi time before auto-logout. Example: 7200 = 2 hours, then user must login again.",
+    "idle-timeout": "Simple: if phone sits idle (no internet use) for this long, Wi-Fi cuts off. Example: 900 = 15 mins idle.",
+    "acct-interim-interval": "Simple: how often the router sends 'still online + data used' updates. Example: 300 = every 5 mins.",
+    "wispr-bandwidth-max-down": "Simple: max download speed. Example: 50000000 = 50 Mbps download limit.",
+    "wispr-bandwidth-max-up": "Simple: max upload speed. Example: 25000000 = 25 Mbps upload limit.",
+    "mikrotik-rate-limit": "Simple: MikroTik speed rule. Example: '25M/50M' = 25 Mbps upload / 50 Mbps download.",
+    "mikrotik-group": "Simple: which MikroTik profile this user gets (like staff or guest speed settings).",
+    "tunnel-type": "Simple: technical code that says 'use VLAN'. Value 13 always means VLAN.",
+    "tunnel-medium-type": "Simple: technical code that says 'over ethernet cable/Wi-Fi'. Value 6 = normal network.",
+    "tunnel-private-group-id": "Simple: which separate network (VLAN) the user goes to. Example: 10 = staff network, 30 = guest network.",
+    "framed-ip-address": "Simple: the Wi-Fi address given to this phone/laptop. Example: Framed-IP-Address = 10.10.0.12 means that device got 10.10.0.12.",
+    "framed-ip-netmask": "Simple: tells how big the local network is. Example: 255.255.255.0 = about 250 devices can fit.",
+    "framed-pool": "Simple: name of the address box the router picks IPs from. Example: 'staff_pool'.",
+    "framed-protocol": "Simple: how internet is delivered to the device. Usually PPP or Wi-Fi login.",
+    "calling-station-id": "Simple: the phone/laptop's own Wi-Fi ID (MAC). Example: AA-BB-CC-DD-EE-FF. Tells which exact device connected.",
+    "called-station-id": "Simple: which Wi-Fi box (AP) the user joined. Shows AP address + name like 'MyWiFi'.",
+    "nas-ip-address": "Simple: the Wi-Fi router's address that asked us 'can this user join?'. That router must be added in NAS Clients.",
+    "nas-identifier": "Simple: nickname of the Wi-Fi router (instead of its IP number).",
+    "nas-port": "Simple: which plug/port of the router the user came from. Mostly just info.",
+    "nas-port-type": "Simple: what kind of connection it is. 19 = Wi-Fi wireless.",
+    "acct-session-id": "Simple: bill-slip number for this one connection. Needed to disconnect one device without touching others.",
+    "acct-start-time": "Simple: when this Wi-Fi connection started.",
+    "acct-stop-time": "Simple: when it ended. If empty, user is still online now.",
+    "acct-session-time": "Simple: total time connected, in seconds. Example: 3600 = 1 hour.",
+    "acct-input-octets": "Simple: how much the user uploaded. Example: 1000000 = about 1 MB uploaded.",
+    "acct-output-octets": "Simple: how much the user downloaded. Example: 100000000 = about 100 MB downloaded.",
+    "acct-terminate-cause": "Simple: why Wi-Fi ended. Examples: user turned Wi-Fi off, idle too long, time over, admin kicked.",
+    "acct-status-type": "Simple: what happened now — Started, Still going (update), or Stopped.",
+    "service-type": "Simple: what access is given. Framed-User = normal Wi-Fi. Administrative-User = can open admin page.",
+    "reply-message": "Simple: message shown to user, like 'wrong password' or 'welcome back'.",
+    "filter-id": "Simple: rule-name that blocks/allows sites. Example: 'guest_acl' = guests can only open basic sites.",
+    "login-time": "Simple: allowed hours. Example: 'Wk0800-1800' = weekdays 8am to 6pm only.",
+    "expiration": "Simple: expiry date of this account. After this date login stops. Good for guests.",
+    "auth-type": "Simple: how password is checked (PAP, CHAP, EAP). You normally don't need to change this.",
+    "eap-type": "Simple: Wi-Fi login style. EAP-TLS = with certificate (no password). PEAP = with username + password.",
+    "access-accept": "Simple: login OK — password correct, allowed in.",
+    "access-reject": "Simple: login failed — wrong password or blocked by rule (like too many devices).",
+    "coa": "Simple: remote kick button. Sends 'disconnect now' to the router on port 3799.",
+    "nas-secret": "Simple: secret password between router and this server. Must be exactly same on both sides, else Wi-Fi login silently fails.",
+    "cidr": "Simple: short way to write many IPs. Example: 192.168.1.0/24 = all 192.168.1.x addresses.",
+}
+
+def _fmt_duration(seconds: str) -> str:
+    try:
+        s = int(seconds)
+        if s >= 3600 and s % 3600 == 0:
+            return f"{s // 3600}h ({seconds}s)"
+        if s >= 3600:
+            return f"{s / 3600:.1f}h ({seconds}s)"
+        if s >= 60:
+            return f"{s // 60} min ({seconds}s)"
+        return f"{seconds}s"
+    except Exception:
+        return str(seconds)
+
+def glossary_lookup(term: str) -> str:
+    """Case-insensitive glossary lookup with normalised key matching."""
+    if not term:
+        return ""
+    key = term.strip().lower()
+    if key in RADIUS_GLOSSARY:
+        return RADIUS_GLOSSARY[key]
+    compact = key.replace("_", "-").replace(" ", "-")
+    if compact in RADIUS_GLOSSARY:
+        return RADIUS_GLOSSARY[compact]
+    return ""
+
 def explain_attribute(attr: str, val: str) -> str:
-    attr_lower = attr.lower()
+    """Value-aware one-liner in simple words: '<Attr> = <val> — what it means.'"""
+    attr_lower = (attr or "").strip().lower()
+    base = glossary_lookup(attr_lower)
     if "simultaneous-use" in attr_lower:
-        return f"Limits user to {val} concurrent active device login(s)."
+        return f"Simultaneous-Use = {val} — simple: only {val} device(s) can use this login together."
     elif "bandwidth-max-down" in attr_lower:
-        mbps = f"{int(val)/1_000_000:.0f}" if val.isdigit() else val
-        return f"Caps download speed at {mbps} Mbps (WISPr)."
+        try:
+            mbps = f"{int(val) // 1_000_000} Mbps" if str(val).isdigit() else str(val)
+        except Exception:
+            mbps = str(val)
+        return f"WISPr-Bandwidth-Max-Down = {val} — simple: download speed limit {mbps}."
     elif "bandwidth-max-up" in attr_lower:
-        mbps = f"{int(val)/1_000_000:.0f}" if val.isdigit() else val
-        return f"Caps upload speed at {mbps} Mbps (WISPr)."
+        try:
+            mbps = f"{int(val) // 1_000_000} Mbps" if str(val).isdigit() else str(val)
+        except Exception:
+            mbps = str(val)
+        return f"WISPr-Bandwidth-Max-Up = {val} — simple: upload speed limit {mbps}."
     elif "mikrotik-rate-limit" in attr_lower:
-        return f"MikroTik RouterOS rate-limit queue: {val}."
+        return f"Mikrotik-Rate-Limit = {val} — simple: router speed rule {val} (upload/download)."
     elif "session-timeout" in attr_lower:
-        mins = int(val) // 60 if val.isdigit() else val
-        return f"Max session duration: {mins} min ({val}s)."
+        return f"Session-Timeout = {val} — simple: Wi-Fi cuts after {_fmt_duration(val)}, login again."
     elif "idle-timeout" in attr_lower:
-        mins = int(val) // 60 if val.isdigit() else val
-        return f"Inactivity disconnect: {mins} min ({val}s)."
+        return f"Idle-Timeout = {val} — simple: if no internet use for {_fmt_duration(val)}, Wi-Fi cuts."
     elif "acct-interim-interval" in attr_lower:
-        return f"Telemetry update frequency: every {val}s."
+        return f"Acct-Interim-Interval = {val} — simple: router sends usage update every {val} secs."
     elif "tunnel-private-group-id" in attr_lower:
-        return f"Dynamically isolates device on VLAN #{val}."
-    elif "tunnel-type" in attr_lower:
-        return "802.1X VLAN Protocol (13 = VLAN)."
-    elif "tunnel-medium-type" in attr_lower:
-        return "802.1X Medium (6 = 802.1Q Ethernet)."
+        return f"Tunnel-Private-Group-ID = {val} — simple: puts device in separate network #{val} (like staff vs guest)."
     elif "framed-pool" in attr_lower:
-        return f"Allocates IP from DHCP pool '{val}'."
-    elif "service-type" in attr_lower:
-        return f"Service role: {val}."
+        return f"Framed-Pool = {val} — simple: router picks IP from box named '{val}'."
+    elif "framed-ip-address" in attr_lower:
+        return f"Framed-IP-Address = {val} — simple: this is the Wi-Fi address given to the phone/laptop."
+    elif "calling-station-id" in attr_lower:
+        return f"Calling-Station-Id = {val} — simple: this is the phone/laptop's own Wi-Fi ID."
+    elif "called-station-id" in attr_lower:
+        return f"Called-Station-Id = {val} — simple: this is the Wi-Fi box the user joined."
+    if base:
+        return f"{attr} = {val} — {base}"
     return f"{attr} = {val}"
 
 def generate_policy_summary(sim_use, down_k, up_k, s_timeout, i_timeout, vlan, is_admin, mikrotik) -> str:
@@ -1142,6 +1763,13 @@ def generate_policy_summary(sim_use, down_k, up_k, s_timeout, i_timeout, vlan, i
 @app.get("/api/groups/presets", tags=["Groups"])
 def get_group_presets(_: str = Depends(authenticate_admin)):
     return GROUP_PRESETS
+
+
+@app.get("/radius/api/glossary", tags=["Groups"])
+@app.get("/api/glossary", tags=["Groups"])
+def get_glossary(_: str = Depends(authenticate_admin)):
+    """Simple-words dictionary for hover tooltips. Keys are lower-case terms."""
+    return RADIUS_GLOSSARY
 
 @app.get("/radius/api/groups", tags=["Groups"])
 @app.get("/api/groups", tags=["Groups"])
@@ -1411,12 +2039,21 @@ def delete_nas(nas_id: int, _: str = Depends(authenticate_admin)):
 # Logs & Accounting Sessions
 @app.get("/radius/api/accounting", tags=["Logs & Accounting"])
 @app.get("/api/accounting", tags=["Logs & Accounting"])
-def get_accounting(limit: int = 50, active_only: bool = False, username: Optional[str] = None, _: str = Depends(authenticate_admin)):
+def get_accounting(limit: int = 50, active_only: bool = False, username: Optional[str] = None,
+                   since: Optional[str] = None, until: Optional[str] = None,
+                   _: str = Depends(authenticate_admin)):
+    """Accounting records. `limit` is clamped 1..500 (LIMIT -1 would dump the table).
+    Optional `since`/`until` filter acctstarttime (ISO date or datetime)."""
+    from datetime import datetime
+    try:
+        limit = min(max(int(limit or 50), 1), 500)
+    except (TypeError, ValueError):
+        limit = 50
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             query = """
-                SELECT 
+                SELECT
                     radacctid, acctsessionid, username, nasipaddress::text,
                     acctstarttime, acctstoptime, acctsessiontime,
                     acctinputoctets, acctoutputoctets, acctterminatecause,
@@ -1424,13 +2061,22 @@ def get_accounting(limit: int = 50, active_only: bool = False, username: Optiona
                 FROM radacct
                 WHERE 1=1
             """
-            params = []
+            params: List[Any] = []
             if active_only:
                 query += " AND acctstoptime IS NULL"
             if username:
                 query += " AND username = %s"
                 params.append(username)
-            
+            for key, col, op in (("since", "acctstarttime", ">="), ("until", "acctstarttime", "<=")):
+                raw = {"since": since, "until": until}[key]
+                if raw:
+                    try:
+                        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    except ValueError:
+                        raise HTTPException(status_code=422, detail=f"Invalid {key} datetime. Use ISO format.")
+                    query += f" AND {col} {op} %s"
+                    params.append(ts)
+
             query += " ORDER BY radacctid DESC LIMIT %s"
             params.append(limit)
             cur.execute(query, tuple(params))
@@ -1485,20 +2131,19 @@ def get_auth_logs(limit: int = 50, username: Optional[str] = None, result: Optio
 @app.post("/api/sessions/disconnect", tags=["Sessions"])
 def disconnect_session(payload: DisconnectSessionRequest, _: str = Depends(authenticate_admin)):
     secret = payload.nas_secret or RADIUS_SECRET
-    cmd = f"echo 'User-Name = \"{payload.username}\"' | radclient -r 1 {payload.nas_ip}:3799 disconnect '{secret}'"
-    if payload.acct_session_id:
-        cmd = f"echo -e 'User-Name = \"{payload.username}\"\\nAcct-Session-Id = \"{payload.acct_session_id}\"' | radclient -r 1 {payload.nas_ip}:3799 disconnect '{secret}'"
-
     try:
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
-        output = res.stdout + res.stderr
-        success = "Disconnect-ACK" in output or "CoA-ACK" in output
+        success, output = send_coa_disconnect(
+            payload.username, payload.nas_ip, secret,
+            acct_session_id=payload.acct_session_id, framed_ip=payload.framed_ip,
+        )
         logger.info("CoA disconnect username=%s nas=%s success=%s by=%s", payload.username, payload.nas_ip, success, _)
         return {
             "success": success,
             "status": "Session Disconnected (ACK)" if success else "Sent / Response: " + output.strip(),
             "output": output.strip()
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send disconnect packet: {str(e)}")
 
@@ -1577,12 +2222,18 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
         raise HTTPException(status_code=500, detail="No certificate authority available (Cert-Signer unreachable and local CA missing).")
 
     temp_crt_path = user_csr_path + ".crt"
-    subprocess.run([
+    # CA_KEY_PASSWORD unlocks the local CA private key created by `certs/bootstrap`
+    # (upstream default for that key). It is NOT a client certificate password:
+    # every client .p12 gets its own random password via generate_p12_password().
+    ca_key_password = os.getenv("CA_KEY_PASSWORD", "") or None
+    sign_cmd = [
         "openssl", "x509", "-req", "-in", user_csr_path,
         "-CA", ca_pem, "-CAkey", ca_key, "-CAcreateserial",
         "-out", temp_crt_path, "-days", str(days),
-        "-passin", "pass:whatever"
-    ], check=True, capture_output=True)
+    ]
+    if ca_key_password:
+        sign_cmd += ["-passin", f"pass:{ca_key_password}"]
+    subprocess.run(sign_cmd, check=True, capture_output=True)
 
     with open(temp_crt_path, "r") as f:
         crt_pem = f.read()
@@ -1596,16 +2247,18 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
 
 @app.post("/radius/api/certs/issue", tags=["Certificates"])
 @app.post("/api/certs/issue", tags=["Certificates"])
-def issue_client_certificate(payload: IssueCertRequest, _: str = Depends(authenticate_admin)):
-    uname = payload.username
-    p12_pass = payload.cert_password or "whatever"
-    days = payload.valid_days or 365
+def issue_client_certificate(payload: IssueCertRequest, request: Request, _: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "cert-issue", RL_CERT_ISSUE_PER_MIN)
+    uname = validate_username(payload.username)
+    # Per-issuance random password (issue #3): never a well-known default.
+    p12_pass = payload.cert_password or generate_p12_password()
+    days = min(max(int(payload.valid_days or 365), 1), 825)
     email = payload.email or f"{uname}@rajlabs.in"
 
-    user_key = os.path.join(CLIENT_CERTS_DIR, f"{uname}.key")
-    user_csr = os.path.join(CLIENT_CERTS_DIR, f"{uname}.csr")
-    user_crt = os.path.join(CLIENT_CERTS_DIR, f"{uname}.crt")
-    user_p12 = os.path.join(CLIENT_CERTS_DIR, f"{uname}.p12")
+    user_key = safe_client_path(uname, ".key")
+    user_csr = safe_client_path(uname, ".csr")
+    user_crt = safe_client_path(uname, ".crt")
+    user_p12 = safe_client_path(uname, ".p12")
 
     try:
         # 1. Generate client private key
@@ -1632,8 +2285,12 @@ def issue_client_certificate(payload: IssueCertRequest, _: str = Depends(authent
             "-password", f"pass:{p12_pass}"
         ], check=True, capture_output=True)
 
-        # Set permissions
-        subprocess.run(["chmod", "644", user_p12, user_crt], check=False)
+        # Private key material: owner/group read only (never world-readable).
+        for _p in (user_key, user_p12, user_crt):
+            try:
+                os.chmod(_p, 0o600)
+            except OSError:
+                pass
 
         logger.info("Client certificate issued username=%s by=%s via=%s", uname, _, 'Rajlabs-CA API' if CERT_SIGNER_API_URL else 'Local CA')
         return {
@@ -1648,10 +2305,50 @@ def issue_client_certificate(payload: IssueCertRequest, _: str = Depends(authent
         err = e.stderr.decode() if e.stderr else str(e)
         raise HTTPException(status_code=500, detail=f"OpenSSL generation failed: {err}")
 
+@app.get("/radius/api/certs/orphans", tags=["Certificates"])
+@app.get("/api/certs/orphans", tags=["Certificates"])
+def list_orphaned_certificates(_: str = Depends(authenticate_admin)):
+    """One-off cleanup helper (issue #10): certs on disk with no matching radcheck row."""
+    try:
+        disk_users = {f[:-4] for f in os.listdir(CLIENT_CERTS_DIR) if f.endswith(".p12")}
+    except OSError:
+        return []
+    if not disk_users:
+        return []
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT username FROM radcheck")
+            db_users = {r["username"] for r in cur.fetchall()}
+    finally:
+        conn.close()
+    return sorted(disk_users - db_users)
+
+
+@app.delete("/radius/api/certs/orphans/{username}", tags=["Certificates"])
+@app.delete("/api/certs/orphans/{username}", tags=["Certificates"])
+def delete_orphaned_certificate(username: str, admin_user: str = Depends(authenticate_admin)):
+    """Remove cert material for an already-deleted user."""
+    username = validate_username(username)
+    removed = 0
+    for suffix in (".key", ".csr", ".crt", ".p12", "-chain.crt"):
+        p = safe_client_path(username, suffix)
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+                removed += 1
+        except OSError:
+            pass
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"No certificate material found for '{username}'.")
+    log_audit(admin_user, "orphan_cert_cleanup", username, f"cert_files_removed={removed}")
+    return {"status": "success", "message": f"Removed {removed} orphaned file(s) for '{username}'."}
+
+
 @app.get("/radius/api/certs/{username}/download", tags=["Certificates"])
 @app.get("/api/certs/{username}/download", tags=["Certificates"])
 def download_client_p12(username: str, _: str = Depends(authenticate_admin)):
-    p12_path = os.path.join(CLIENT_CERTS_DIR, f"{username}.p12")
+    p12_path = safe_client_path(validate_username(username), ".p12")
     if not os.path.exists(p12_path):
         raise HTTPException(status_code=404, detail=f"No certificate found for user '{username}'. Issue one first.")
     return FileResponse(p12_path, media_type="application/x-pkcs12", filename=f"{username}_rajlabs_radius.p12")
@@ -1659,115 +2356,10 @@ def download_client_p12(username: str, _: str = Depends(authenticate_admin)):
 @app.get("/radius/api/certs/{username}/mobileconfig", tags=["Certificates"])
 @app.get("/api/certs/{username}/mobileconfig", tags=["Certificates"])
 def download_apple_mobileconfig(username: str, ssid: str = "RajLabs-Enterprise", _: str = Depends(authenticate_admin)):
-    """Generates an Apple .mobileconfig WiFi Profile containing the client certificate for 1-click install on iOS / macOS."""
-    p12_path = os.path.join(CLIENT_CERTS_DIR, f"{username}.p12")
-    ca_path = os.path.join(CERTS_DIR, "ca.pem")
-
-    if not os.path.exists(p12_path) or not os.path.exists(ca_path):
-        raise HTTPException(status_code=404, detail="Client certificate or CA not found.")
-
-    with open(p12_path, "rb") as f:
-        p12_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    with open(ca_path, "rb") as f:
-        ca_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    profile_uuid = str(uuid.uuid4())
-    wifi_uuid = str(uuid.uuid4())
-    cert_uuid = str(uuid.uuid4())
-    ca_uuid = str(uuid.uuid4())
-
-    mobileconfig = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>PayloadDisplayName</key>
-    <string>RajLabs Wi-Fi ({username})</string>
-    <key>PayloadIdentifier</key>
-    <string>in.rajlabs.radius.wifi.{username}</string>
-    <key>PayloadRemovalDisallowed</key>
-    <false/>
-    <key>PayloadType</key>
-    <string>Configuration</string>
-    <key>PayloadUUID</key>
-    <string>{profile_uuid}</string>
-    <key>PayloadVersion</key>
-    <integer>1</integer>
-    <key>PayloadContent</key>
-    <array>
-        <!-- Root CA -->
-        <dict>
-            <key>PayloadCertificateFileName</key>
-            <string>RajLabs_Root_CA.cer</string>
-            <key>PayloadContent</key>
-            <data>{ca_b64}</data>
-            <key>PayloadDisplayName</key>
-            <string>RajLabs RADIUS Root CA</string>
-            <key>PayloadIdentifier</key>
-            <string>in.rajlabs.radius.ca</string>
-            <key>PayloadType</key>
-            <string>cops.root</string>
-            <key>PayloadUUID</key>
-            <string>{ca_uuid}</string>
-            <key>PayloadVersion</key>
-            <integer>1</integer>
-        </dict>
-        <!-- Client PKCS#12 Certificate -->
-        <dict>
-            <key>Password</key>
-            <string>whatever</string>
-            <key>PayloadCertificateFileName</key>
-            <string>{username}.p12</string>
-            <key>PayloadContent</key>
-            <data>{p12_b64}</data>
-            <key>PayloadDisplayName</key>
-            <string>RajLabs User Identity ({username})</string>
-            <key>PayloadIdentifier</key>
-            <string>in.rajlabs.radius.usercert.{username}</string>
-            <key>PayloadType</key>
-            <string>com.apple.security.pkcs12</string>
-            <key>PayloadUUID</key>
-            <string>{cert_uuid}</string>
-            <key>PayloadVersion</key>
-            <integer>1</integer>
-        </dict>
-        <!-- Wi-Fi EAP-TLS Profile -->
-        <dict>
-            <key>AutoJoin</key>
-            <true/>
-            <key>EncryptionType</key>
-            <string>WPA2</string>
-            <key>HIDDEN_NETWORK</key>
-            <false/>
-            <key>PayloadDisplayName</key>
-            <string>Wi-Fi ({ssid})</string>
-            <key>PayloadIdentifier</key>
-            <string>in.rajlabs.radius.wifi.config</string>
-            <key>PayloadType</key>
-            <string>com.apple.wifi.managed</string>
-            <key>PayloadUUID</key>
-            <string>{wifi_uuid}</string>
-            <key>PayloadVersion</key>
-            <integer>1</integer>
-            <key>SSID_STR</key>
-            <string>{ssid}</string>
-            <key>EAPClientConfiguration</key>
-            <dict>
-                <key>AcceptEAPTypes</key>
-                <array>
-                    <integer>13</integer> <!-- 13 = EAP-TLS -->
-                </array>
-                <key>PayloadCertificateAnchorUUID</key>
-                <array>
-                    <string>{ca_uuid}</string>
-                </array>
-                <key>UserPayloadCertificateIdentityUUID</key>
-                <string>{cert_uuid}</string>
-            </dict>
-        </dict>
-    </array>
-</dict>
-</plist>"""
+    """Generates an Apple .mobileconfig WiFi Profile (fresh random p12 password per download)."""
+    username = validate_username(username)
+    p12_bytes, fresh_pass = repackage_p12_for_mobileconfig(username)
+    mobileconfig = build_mobileconfig(username, ssid, p12_bytes, fresh_pass)
     return Response(
         content=mobileconfig,
         media_type="application/x-apple-aspen-config",
@@ -1777,7 +2369,8 @@ def download_apple_mobileconfig(username: str, ssid: str = "RajLabs-Enterprise",
 # Live RADIUS Testing (radtest)
 @app.post("/radius/api/test-auth", tags=["Testing"])
 @app.post("/api/test-auth", tags=["Testing"])
-def test_radius_authentication(payload: AuthTestRequest, _: str = Depends(authenticate_admin)):
+def test_radius_authentication(payload: AuthTestRequest, request: Request, _: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "test-auth", RL_TEST_AUTH_PER_MIN)
     secret = payload.secret or RADIUS_SECRET
     cmd = [
         "radtest",
@@ -1811,12 +2404,19 @@ class PortalEnrollCertRequest(BaseModel):
     username: str
     password: str
     device_name: Optional[str] = "Personal Device"
-    cert_password: Optional[str] = "whatever"
+    cert_password: Optional[str] = None
+
+
+class PortalDownloadRequest(BaseModel):
+    username: str
+    password: str
 
 # Public Self-Service Device Certificate Enrollment & Auto-Login
 @app.post("/radius/api/portal/enroll-certificate", tags=["Captive Portal"])
 @app.post("/api/portal/enroll-certificate", tags=["Captive Portal"])
-def portal_enroll_certificate(payload: PortalEnrollCertRequest):
+def portal_enroll_certificate(payload: PortalEnrollCertRequest, request: Request):
+    # Throttle BEFORE the 2048-bit RSA keygen: floods stay CPU-cheap (issue #7).
+    check_rate_limit(request, "enroll", RL_ENROLL_PER_MIN)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -1831,15 +2431,16 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest):
     finally:
         conn.close()
 
-    uname = payload.username
-    p12_pass = payload.cert_password or "whatever"
+    uname = validate_username(payload.username)
+    # Per-enrollment random password (issue #3): never a well-known default.
+    p12_pass = payload.cert_password or generate_p12_password()
     days = 365
     email = f"{uname}@rajlabs.in"
 
-    user_key = os.path.join(CLIENT_CERTS_DIR, f"{uname}.key")
-    user_csr = os.path.join(CLIENT_CERTS_DIR, f"{uname}.csr")
-    user_crt = os.path.join(CLIENT_CERTS_DIR, f"{uname}.crt")
-    user_p12 = os.path.join(CLIENT_CERTS_DIR, f"{uname}.p12")
+    user_key = safe_client_path(uname, ".key")
+    user_csr = safe_client_path(uname, ".csr")
+    user_crt = safe_client_path(uname, ".crt")
+    user_p12 = safe_client_path(uname, ".p12")
 
     try:
         # 1. Generate client private key & CSR
@@ -1851,8 +2452,8 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest):
         cert_pem, ca_chain_pem = sign_certificate_with_ca(uname, user_csr, days=days, san_list=[email, f"{uname}.local"])
         with open(user_crt, "w") as f:
             f.write(cert_pem)
-        
-        ca_chain_file = os.path.join(CLIENT_CERTS_DIR, f"{uname}-chain.crt")
+
+        ca_chain_file = safe_client_path(uname, "-chain.crt")
         with open(ca_chain_file, "w") as f:
             f.write(ca_chain_pem)
 
@@ -1863,7 +2464,11 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest):
             "-out", user_p12, "-name", f"RajLabs RADIUS - {uname}",
             "-password", f"pass:{p12_pass}"
         ], check=True, capture_output=True)
-        subprocess.run(["chmod", "644", user_p12, user_crt], check=False)
+        for _p in (user_key, user_p12, user_crt):
+            try:
+                os.chmod(_p, 0o600)
+            except OSError:
+                pass
 
         return {
             "status": "success",
@@ -1879,122 +2484,41 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest):
 
 @app.get("/radius/api/portal/download-mobileconfig", tags=["Captive Portal"])
 @app.get("/api/portal/download-mobileconfig", tags=["Captive Portal"])
-def portal_download_mobileconfig(username: str, ssid: str = "RajLabs-Enterprise"):
-    p12_path = os.path.join(CLIENT_CERTS_DIR, f"{username}.p12")
-    ca_path = os.path.join(CERTS_DIR, "ca.pem")
-
-    if not os.path.exists(p12_path) or not os.path.exists(ca_path):
-        raise HTTPException(status_code=404, detail="Client certificate not found. Enroll first.")
-
-    with open(p12_path, "rb") as f:
-        p12_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    with open(ca_path, "rb") as f:
-        ca_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-    profile_uuid = str(uuid.uuid4())
-    wifi_uuid = str(uuid.uuid4())
-    cert_uuid = str(uuid.uuid4())
-    ca_uuid = str(uuid.uuid4())
-
-    mobileconfig = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>PayloadDisplayName</key>
-    <string>RajLabs Wi-Fi ({username})</string>
-    <key>PayloadIdentifier</key>
-    <string>in.rajlabs.radius.wifi.{username}</string>
-    <key>PayloadRemovalDisallowed</key>
-    <false/>
-    <key>PayloadType</key>
-    <string>Configuration</string>
-    <key>PayloadUUID</key>
-    <string>{profile_uuid}</string>
-    <key>PayloadVersion</key>
-    <integer>1</integer>
-    <key>PayloadContent</key>
-    <array>
-        <dict>
-            <key>PayloadCertificateFileName</key>
-            <string>RajLabs_Root_CA.cer</string>
-            <key>PayloadContent</key>
-            <data>{ca_b64}</data>
-            <key>PayloadDisplayName</key>
-            <string>RajLabs RADIUS Root CA</string>
-            <key>PayloadIdentifier</key>
-            <string>in.rajlabs.radius.ca</string>
-            <key>PayloadType</key>
-            <string>cops.root</string>
-            <key>PayloadUUID</key>
-            <string>{ca_uuid}</string>
-            <key>PayloadVersion</key>
-            <integer>1</integer>
-        </dict>
-        <dict>
-            <key>Password</key>
-            <string>whatever</string>
-            <key>PayloadCertificateFileName</key>
-            <string>{username}.p12</string>
-            <key>PayloadContent</key>
-            <data>{p12_b64}</data>
-            <key>PayloadDisplayName</key>
-            <string>RajLabs Identity ({username})</string>
-            <key>PayloadIdentifier</key>
-            <string>in.rajlabs.radius.usercert.{username}</string>
-            <key>PayloadType</key>
-            <string>com.apple.security.pkcs12</string>
-            <key>PayloadUUID</key>
-            <string>{cert_uuid}</string>
-            <key>PayloadVersion</key>
-            <integer>1</integer>
-        </dict>
-        <dict>
-            <key>AutoJoin</key>
-            <true/>
-            <key>EncryptionType</key>
-            <string>WPA2</string>
-            <key>HIDDEN_NETWORK</key>
-            <false/>
-            <key>PayloadDisplayName</key>
-            <string>Wi-Fi ({ssid})</string>
-            <key>PayloadIdentifier</key>
-            <string>in.rajlabs.radius.wifi.config</string>
-            <key>PayloadType</key>
-            <string>com.apple.wifi.managed</string>
-            <key>PayloadUUID</key>
-            <string>{wifi_uuid}</string>
-            <key>PayloadVersion</key>
-            <integer>1</integer>
-            <key>SSID_STR</key>
-            <string>{ssid}</string>
-            <key>EAPClientConfiguration</key>
-            <dict>
-                <key>AcceptEAPTypes</key>
-                <array>
-                    <integer>13</integer>
-                </array>
-                <key>PayloadCertificateAnchorUUID</key>
-                <array>
-                    <string>{ca_uuid}</string>
-                </array>
-                <key>UserPayloadCertificateIdentityUUID</key>
-                <string>{cert_uuid}</string>
-            </dict>
-        </dict>
-    </array>
-</dict>
-</plist>"""
+def portal_download_mobileconfig(username: str, password: str = "", ssid: str = "RajLabs-Enterprise"):
+    """Owner-only Apple profile: requires the account password (issue #3)."""
+    verify_portal_user(username, password)
+    p12_bytes, fresh_pass = repackage_p12_for_mobileconfig(validate_username(username))
+    mobileconfig = build_mobileconfig(username, ssid, p12_bytes, fresh_pass)
     return Response(
         content=mobileconfig,
         media_type="application/x-apple-aspen-config",
         headers={"Content-Disposition": f'attachment; filename="RajLabs_{username}_WiFi.mobileconfig"'}
     )
 
+
+@app.post("/radius/api/portal/download-mobileconfig", tags=["Captive Portal"])
+@app.post("/api/portal/download-mobileconfig", tags=["Captive Portal"])
+def portal_download_mobileconfig_post(payload: PortalDownloadRequest, ssid: str = "RajLabs-Enterprise"):
+    """POST variant (password in body, not URL) for the portal UI."""
+    return portal_download_mobileconfig(payload.username, payload.password, ssid)
+
+
+@app.post("/radius/api/portal/download-cert", tags=["Captive Portal"])
+@app.post("/api/portal/download-cert", tags=["Captive Portal"])
+def portal_download_cert_post(payload: PortalDownloadRequest):
+    """Owner-only .p12 download: requires the account password (issue #3)."""
+    verify_portal_user(payload.username, payload.password)
+    p12_path = safe_client_path(validate_username(payload.username), ".p12")
+    if not os.path.exists(p12_path):
+        raise HTTPException(status_code=404, detail="Certificate not found. Enroll first.")
+    return FileResponse(p12_path, media_type="application/x-pkcs12", filename=f"RajLabs_{payload.username}_Certificate.p12")
+
 @app.get("/radius/api/portal/download-cert", tags=["Captive Portal"])
 @app.get("/api/portal/download-cert", tags=["Captive Portal"])
-def portal_download_cert(username: str):
-    p12_path = os.path.join(CLIENT_CERTS_DIR, f"{username}.p12")
+def portal_download_cert(username: str, password: str = ""):
+    """Owner-only .p12 download (GET variant): requires the account password (issue #3)."""
+    verify_portal_user(username, password)
+    p12_path = safe_client_path(validate_username(username), ".p12")
     if not os.path.exists(p12_path):
         raise HTTPException(status_code=404, detail="Certificate not found. Enroll first.")
     return FileResponse(p12_path, media_type="application/x-pkcs12", filename=f"RajLabs_{username}_Certificate.p12")
