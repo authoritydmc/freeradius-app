@@ -17,6 +17,8 @@ An enterprise-grade, containerized **FreeRADIUS v3.2** server powered by **Postg
 - **🎨 Glassmorphism UI**:
   - **Admin Console (`/radius/`)**: Multi-method authentication supporting **Admin Credentials** and **Digital X.509 Certificate Login** (zero-password PKI).
   - **User Captive Portal (`/radius/portal`)**: Self-service portal supporting Web Login, 1-Click Device Certificate Auto-Enrollment, and Network Diagnostics.
+- **🔑 User Password Management**: 1-click secure password regenerate (16-char, `secrets`-based), reset with strength meter + show/hide/copy, credential share card (copy, `.txt` download, QR, WhatsApp/Email), search + group filter, enforced policy (min 12 chars: upper + lower + digit + symbol).
+- **📋 Audit Trail & Structured Logging**: Every create / update / password-reset / delete is recorded (`GET /radius/api/audit`, visible in Admin Console → Logs) and logged server-side with secret redaction (`LOG_LEVEL` tunable).
 - **🚀 Coolify & Reverse Proxy Ready**: Native Docker Compose with volume persistence for CA keys and auto-integration with Traefik/Nginx reverse proxies.
 
 ---
@@ -81,6 +83,7 @@ RADIUS_ADMIN_PASSWORD=YourAdminPassword123!
 SESSION_SECRET=YourRandom32CharacterSessionKey_abc123!
 
 RADIUS_API_PORT=8090
+LOG_LEVEL=INFO
 ```
 
 ### 3. Initialize Database Schema
@@ -152,6 +155,40 @@ config wifi-iface 'default_radio0'
 
 ---
 
+## 👥 User Management & Password Operations
+
+From **Admin Console → Users** an admin can do everything without `curl`:
+
+| Action | How | Notes |
+| :--- | :--- | :--- |
+| **Add user** | `+ Add User` → auto-generated strong password | Strength meter, show/hide, copy |
+| **Reset password** | 🔑 per-row → **Regenerate** → Save | Warns before resetting your own admin login |
+| **Share credentials** | Result card after create/reset | Copy share text, download `.txt`, QR, WhatsApp / Email |
+| **Disconnect sessions** | ☑️ in reset modal (CoA, UDP `3799`) | Drops active sessions immediately |
+| **Find users** | Search box + group filter | Counts `filtered / total`, shows online + last-auth badges |
+| **Audit** | Admin Console → Logs → Audit Trail | `GET /radius/api/audit?limit=50` |
+
+API equivalents: `POST /radius/api/users/password/generate`, `PUT /radius/api/users/{username}/password` (`{"password","password_type","disconnect_active"}`), `GET /radius/api/users/password/policy`. Passwords are never returned by list/detail APIs (masked as `********`) and never written to logs.
+
+## 📶 Testing Clients from Your Laptop
+
+Turn a Linux laptop into a live **WPA2-Enterprise hotspot** backed by this server, or run a direct auth test — no dependencies to install, secrets are always prompted (never in the command):
+
+```bash
+# Linux: start Enterprise hotspot (hostapd + DHCP, prompts for RADIUS secret)
+curl -fsSL https://raw.githubusercontent.com/authoritydmc/freeradius-app/main/scripts/test-wifi-radius.sh | sudo bash -s -- --ap
+
+# Linux/macOS: direct RADIUS auth test (prompts for secret + credentials)
+curl -fsSL https://raw.githubusercontent.com/authoritydmc/freeradius-app/main/scripts/test-wifi-radius.sh | bash -s -- --test
+```
+
+```powershell
+# Windows (PowerShell): interactive auth test via SecureString prompts
+irm https://raw.githubusercontent.com/authoritydmc/freeradius-app/main/scripts/test-wifi-radius.ps1 | iex
+```
+
+> Note: `curl` only checks the HTTPS API (`/radius/api/health`). Real credential checks go over RADIUS/UDP `1812` — that is what the scripts above exercise. Full walkthrough (phone connect flow, flags like `--server`, `--ssid`, `--test`): 👉 **[Wi-Fi Testing & AP Simulation Guide](docs/WIFI_TESTING_AND_AP_SIMULATION_GUIDE.md)**
+
 ## 🛡️ Authentication Architecture
 
 | Interface | URL | Auth Mode | Capabilities |
@@ -174,6 +211,13 @@ For detailed cloud ingress rules (**Oracle Cloud OCI**, **AWS EC2**, **GCP**, **
 - **UDP `3799`**: RADIUS CoA / Disconnect (Inbound from NAS/Routers or `0.0.0.0/0`)
 - **TCP `443` / `80`**: HTTPS / HTTP for Traefik Reverse Proxy & Web UI
 - **TCP `22`**: SSH Management (Restricted to Admin IPs)
+
+### 📝 Logging & Audit
+
+- **Format**: `timestamp | LEVEL | freeradius | message` (one `freeradius` logger; `LOG_LEVEL=DEBUG` for verbose).
+- **Request log**: every API call logs `METHOD path status latency client` — health checks at `DEBUG`, `4xx/5xx` as warnings. Request **bodies are never logged** (they may contain passwords).
+- **Event logs**: admin login success/fail (failures warn with username + client IP, never the password), password generate/reset, cert issue, CoA disconnect, test-auth results.
+- **Audit trail**: persistent `admin_audit_log` table (auto-created at startup), queryable at `GET /radius/api/audit` and rendered in Admin Console → Logs.
 
 ---
 
