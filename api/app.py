@@ -53,9 +53,15 @@ POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 RADIUS_SECRET = os.getenv("RADIUS_SECRET", "testing123")
 
-# Central Rajlabs-CA Cert Signer API Integration
+# Central Rajlabs-CA Cert Signer API Integration (all env-based, no hardcoded URLs)
 CERT_SIGNER_API_URL = os.getenv("CERT_SIGNER_API_URL", "").rstrip("/")
 CERT_SIGNER_API_KEY = os.getenv("CERT_SIGNER_API_KEY", "")
+# Public RADIUS host shown in UI/docs (the UDP endpoint routers point at).
+# Defaults to the API host when unset; override when UDP and HTTPS differ.
+RADIUS_PUBLIC_HOST = os.getenv("RADIUS_PUBLIC_HOST", "")
+
+# Short-lived cache for the signer health probe (avoid blocking the UI)
+_SIGNER_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
 
 ADMIN_FALLBACK_USER = os.getenv("RADIUS_ADMIN_USER", "admin")
 ADMIN_FALLBACK_PASS = os.getenv("RADIUS_ADMIN_PASSWORD", "admin123")
@@ -887,6 +893,104 @@ def list_audit_log(limit: int = 50, _: str = Depends(authenticate_admin)):
             return rows
     finally:
         conn.close()
+
+# ============================================================================
+# Public client config + Cert-Signer connectivity status
+# ============================================================================
+def _probe_http_json(url: str, headers: Dict[str, str], timeout: int = 5) -> Dict[str, Any]:
+    """Single GET probe. Never raises; never logs secrets."""
+    start = time.time()
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(2048).decode("utf-8", "replace")
+            return {"ok": True, "status": resp.status, "body": body,
+                    "latency_ms": round((time.time() - start) * 1000, 1)}
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(512).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return {"ok": False, "status": e.code, "body": body,
+                "latency_ms": round((time.time() - start) * 1000, 1)}
+    except Exception as e:
+        return {"ok": False, "status": None, "body": f"{type(e).__name__}: {e}",
+                "latency_ms": round((time.time() - start) * 1000, 1)}
+
+@app.get("/radius/api/public-config", tags=["Health"])
+@app.get("/api/public-config", tags=["Health"])
+def get_public_config(request: Request):
+    """Unauthenticated client facts: RADIUS host/ports, portal path, signer presence (no secrets)."""
+    host = RADIUS_PUBLIC_HOST or (request.headers.get("host", "").split(":")[0] if request.headers.get("host") else "")
+    return {
+        "radius_host": host,
+        "radius_ports": {"auth": 1812, "acct": 1813, "coa": 3799},
+        "portal_path": "/radius/portal",
+        "signer_configured": bool(CERT_SIGNER_API_URL),
+    }
+
+@app.get("/radius/api/certs/signer-status", tags=["Certificates"])
+@app.get("/api/certs/signer-status", tags=["Certificates"])
+def cert_signer_status(refresh: bool = False, _: str = Depends(authenticate_admin)):
+    """Live Cert-Signer health: reachability + API-key validity. Key value never returned."""
+    from urllib.parse import urlparse
+    from datetime import datetime, timezone
+    now = time.time()
+    if not refresh and _SIGNER_STATUS_CACHE["data"] and now - _SIGNER_STATUS_CACHE["at"] < 30:
+        return _SIGNER_STATUS_CACHE["data"]
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if not CERT_SIGNER_API_URL:
+        data = {
+            "configured": False, "mode": "local", "reachable": True, "key_valid": None,
+            "status_code": None, "latency_ms": None, "host": None, "checked_at": checked_at,
+            "detail": "CERT_SIGNER_API_URL is not set — certificates are signed by the local FreeRADIUS CA. Set CERT_SIGNER_API_URL (+ CERT_SIGNER_API_KEY) to use the central Rajlabs-CA.",
+        }
+        _SIGNER_STATUS_CACHE.update({"at": now, "data": data})
+        return data
+
+    host = urlparse(CERT_SIGNER_API_URL).hostname or CERT_SIGNER_API_URL
+    headers = {"Accept": "application/json"}
+    if CERT_SIGNER_API_KEY:
+        headers["x-api-key"] = CERT_SIGNER_API_KEY
+
+    probe = None
+    tried = []
+    for path in ("/api/v1/health", "/health"):
+        r = _probe_http_json(CERT_SIGNER_API_URL + path, headers)
+        tried.append({"path": path, "status": r["status"]})
+        if r["ok"] or r["status"] in (401, 403):
+            probe = r
+            break
+        probe = r  # keep last network-level result if nothing answered
+
+    assert probe is not None
+    if probe["ok"]:
+        data = {
+            "configured": True, "mode": "remote", "reachable": True,
+            "key_valid": True if CERT_SIGNER_API_KEY else None,
+            "status_code": probe["status"], "latency_ms": probe["latency_ms"],
+            "host": host, "checked_at": checked_at,
+            "detail": f"Connected to central Cert-Signer at {host} ({probe['latency_ms']} ms). New certificates will be signed remotely."
+                      + ("" if CERT_SIGNER_API_KEY else " No API key configured — signer accepts unauthenticated health checks."),
+        }
+    elif probe["status"] in (401, 403):
+        data = {
+            "configured": True, "mode": "local-fallback", "reachable": True,
+            "key_valid": False, "status_code": probe["status"],
+            "latency_ms": probe["latency_ms"], "host": host, "checked_at": checked_at,
+            "detail": f"Signer at {host} is reachable but rejected our API key (HTTP {probe['status']}). Check CERT_SIGNER_API_KEY. Certificates will fall back to the local CA until the key is fixed.",
+        }
+    else:
+        data = {
+            "configured": True, "mode": "local-fallback", "reachable": False,
+            "key_valid": None, "status_code": probe["status"],
+            "latency_ms": probe["latency_ms"], "host": host, "checked_at": checked_at,
+            "detail": f"Cannot reach Cert-Signer at {host}: {probe['body'][:160]}. Certificates will fall back to the local CA. Check CERT_SIGNER_API_URL and network egress.",
+        }
+    logger.info("Signer status checked by=%s reachable=%s mode=%s host=%s", _, data["reachable"], data["mode"], host)
+    _SIGNER_STATUS_CACHE.update({"at": now, "data": data})
+    return data
 
 # ============================================================================
 # Group Policy Management & Presets

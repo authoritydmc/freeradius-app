@@ -116,9 +116,12 @@ Access the web interfaces:
    - `POSTGRES_USER`: `postgres`
    - `POSTGRES_PASSWORD`: `<your-db-password>`
    - `RADIUS_SECRET`: `<your-shared-secret>`
-   - `RADIUS_ADMIN_USER`: `<admin-username>`
-   - `RADIUS_ADMIN_PASSWORD`: `<admin-password>`
-   - `SESSION_SECRET`: `<random-secret-key>`
+    - `RADIUS_ADMIN_USER`: `<admin-username>`
+    - `RADIUS_ADMIN_PASSWORD`: `<admin-password>`
+    - `SESSION_SECRET`: `<random-secret-key>`
+    - `CERT_SIGNER_API_URL`: e.g. `https://backend.rajlabs.in/cert-signer` (optional; omit for local-CA signing)
+    - `CERT_SIGNER_API_KEY`: `<signer-api-key>` (optional)
+    - `RADIUS_PUBLIC_HOST`: e.g. `80.225.195.202` (optional; defaults to API host)
 5. In **Network / Ports**:
    - Expose UDP ports: `1812:1812/udp`, `1813:1813/udp`, `3799:3799/udp`.
    - Map domain: `https://backend.rajlabs.in` pointing to container port `8090`.
@@ -188,6 +191,24 @@ irm https://raw.githubusercontent.com/authoritydmc/freeradius-app/main/scripts/t
 ```
 
 > Note: `curl` only checks the HTTPS API (`/radius/api/health`). Real credential checks go over RADIUS/UDP `1812` — that is what the scripts above exercise. Full walkthrough (phone connect flow, flags like `--server`, `--ssid`, `--test`): 👉 **[Wi-Fi Testing & AP Simulation Guide](docs/WIFI_TESTING_AND_AP_SIMULATION_GUIDE.md)**
+
+## 🪪 Central Cert-Signer (optional, env-based)
+
+Client certificates are signed by the **central Rajlabs-CA** when configured, otherwise by the **local FreeRADIUS CA** — no URLs are hardcoded; everything comes from env:
+
+| Variable | Purpose |
+| :--- | :--- |
+| `CERT_SIGNER_API_URL` | e.g. `https://backend.rajlabs.in/cert-signer` — change it any time, no code change needed |
+| `CERT_SIGNER_API_KEY` | Sent as `x-api-key` on signer requests (value never logged or returned by any API) |
+| `RADIUS_PUBLIC_HOST` | Host shown in the dashboard/for routers (defaults to the API host) |
+
+**Am I connected?** Open **Admin Console → EAP-TLS** — the status banner shows live state (refreshed every 30s, `Re-check` forces it):
+- 🟢 `Connected (host)` — remote signing active (latency shown)
+- 🔴 `Unreachable` — falls back to local CA, reason shown (DNS/timeout/connection)
+- 🟡 `API key rejected (HTTP 401/403)` — reachable but `CERT_SIGNER_API_KEY` is wrong
+- ⚪ `Local CA` — signer not configured at all
+
+API: `GET /radius/api/certs/signer-status` (admin, `?refresh=true` to bypass cache) and `GET /radius/api/public-config` (public client facts, key/URL never exposed).
 
 ## 🛡️ Authentication Architecture
 

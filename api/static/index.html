@@ -251,7 +251,7 @@
           <button @click="activeTab = 'users'; fetchUsers()" :class="activeTab === 'users' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
             <i class="fa-solid fa-users"></i> Users (<span x-text="stats.total_users || 0"></span>)
           </button>
-          <button @click="activeTab = 'certs'; fetchCerts()" :class="activeTab === 'certs' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'certs'; fetchCerts(); fetchSignerStatus()" :class="activeTab === 'certs' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
             <i class="fa-solid fa-id-card-clip"></i> EAP-TLS Certificates
           </button>
           <button @click="activeTab = 'groups'; fetchGroups()" :class="activeTab === 'groups' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
@@ -323,8 +323,8 @@
           </h3>
           <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs font-mono">
             <div class="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
-              <div class="text-slate-400 mb-1">RADIUS Server IP:</div>
-              <div class="text-indigo-300 font-bold text-sm">80.225.195.202</div>
+              <div class="text-slate-400 mb-1">RADIUS Server (env RADIUS_PUBLIC_HOST):</div>
+              <div class="text-indigo-300 font-bold text-sm" x-text="publicConfig.radius_host || window.location.hostname"></div>
             </div>
             <div class="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
               <div class="text-slate-400 mb-1">Auth Port (UDP):</div>
@@ -441,6 +441,21 @@
           <a href="/radius/api/certs/ca" download class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2">
             <i class="fa-solid fa-download"></i> Download Root CA (.pem)
           </a>
+        </div>
+
+        <!-- Central Cert-Signer connectivity status (env: CERT_SIGNER_API_URL / CERT_SIGNER_API_KEY) -->
+        <div class="rounded-2xl border p-4 flex flex-wrap items-center gap-3"
+             :class="signerStatus.configured && signerStatus.reachable ? 'bg-emerald-950/40 border-emerald-500/30' : (signerStatus.configured ? 'bg-rose-950/40 border-rose-500/30' : 'bg-slate-900 border-slate-800')">
+          <span class="w-2.5 h-2.5 rounded-full shrink-0"
+                :class="signerStatus.configured && signerStatus.reachable ? 'bg-emerald-400 animate-pulse' : (signerStatus.configured ? 'bg-rose-400' : 'bg-slate-500')"></span>
+          <div class="flex-1 min-w-[200px]">
+            <div class="text-xs font-bold text-white" x-text="signerHeadline()"></div>
+            <div class="text-[11px] text-slate-400 mt-0.5" x-text="signerStatus.detail || 'Checking signer status...'"></div>
+          </div>
+          <div x-show="signerStatus.latency_ms" class="text-[11px] font-mono text-slate-400" x-text="signerStatus.latency_ms + ' ms'"></div>
+          <button @click="fetchSignerStatus(true)" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-[11px] font-semibold flex items-center gap-1.5">
+            <i class="fa-solid fa-rotate"></i> Re-check
+          </button>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -1128,6 +1143,8 @@
         sessions: [],
         logs: [],
         auditLogs: [],
+        publicConfig: { radius_host: '', radius_ports: {}, portal_path: '/radius/portal', signer_configured: false },
+        signerStatus: { configured: false, mode: 'local', reachable: true, key_valid: null, detail: 'Checking signer status...' },
         testForm: { username: 'raj', password: '' },
         testResult: null,
 
@@ -1290,6 +1307,32 @@
           this.fetchCerts();
           this.fetchGroups();
           this.fetchPresets();
+          this.fetchPublicConfig();
+          this.fetchSignerStatus();
+        },
+
+        async fetchPublicConfig() {
+          try {
+            const res = await fetch('/radius/api/public-config');
+            if (res.ok) this.publicConfig = await res.json();
+          } catch(e) {}
+        },
+
+        async fetchSignerStatus(force = false) {
+          try {
+            const res = await this.fetchWithAuth('/radius/api/certs/signer-status' + (force ? '?refresh=true' : ''));
+            if (res.ok) this.signerStatus = await res.json();
+          } catch(e) {
+            this.signerStatus = { configured: true, mode: 'local-fallback', reachable: false, detail: 'Status check failed — API unreachable. Certs fall back to local CA.' };
+          }
+        },
+
+        signerHeadline() {
+          const s = this.signerStatus || {};
+          if (!s.configured) return 'PKI Signer: Local FreeRADIUS CA (no central signer configured)';
+          if (s.reachable && s.key_valid === false) return `PKI Signer: reachable at ${s.host} — API key rejected (HTTP ${s.status_code})`;
+          if (s.reachable) return `PKI Signer: Connected (${s.host})`;
+          return `PKI Signer: Unreachable (${s.host || 'unknown host'}) — using local CA fallback`;
         },
 
         async fetchStats() {
@@ -1433,7 +1476,8 @@
         },
 
         credShareText() {
-          return `RajLabs Wi-Fi access\nSSID: RajLabs-Enterprise\nUsername: ${this.credResult.username}\nPassword: ${this.credResult.password}\nPortal: https://backend.rajlabs.in/radius/portal\n(Keep this password private)`;
+          const portal = window.location.origin + ((this.publicConfig && this.publicConfig.portal_path) || '/radius/portal');
+          return `RajLabs Wi-Fi access\nSSID: RajLabs-Enterprise\nUsername: ${this.credResult.username}\nPassword: ${this.credResult.password}\nPortal: ${portal}\n(Keep this password private)`;
         },
 
         whatsAppShareUrl() {
