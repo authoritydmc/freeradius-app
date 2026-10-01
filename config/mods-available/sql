@@ -1,0 +1,43 @@
+sql {
+    dialect = "postgresql"
+    driver = "rlm_sql_postgresql"
+
+    # PostgreSQL Connection parameters
+    server = "$ENV{POSTGRES_HOST}"
+    port = "$ENV{POSTGRES_PORT}"
+    login = "$ENV{POSTGRES_USER}"
+    password = "$ENV{POSTGRES_PASSWORD}"
+    radius_db = "$ENV{POSTGRES_DB}"
+
+    # Tables configuration
+    acct_table1 = "radacct"
+    acct_table2 = "radacct"
+    postauth_table = "radpostauth"
+    authcheck_table = "radcheck"
+    authreply_table = "radreply"
+    groupcheck_table = "radgroupcheck"
+    groupreply_table = "radgroupreply"
+    usergroup_table = "radusergroup"
+
+    # Read NAS clients from SQL table
+    read_clients = yes
+    client_table = "nas"
+
+    # Group attribute definition
+    group_attribute = "SQL-Group"
+
+    # Connection pool configuration
+    pool {
+        start = ${thread[pool].start_servers}
+        min = ${thread[pool].min_spare_servers}
+        max = ${thread[pool].max_servers}
+        spare = ${thread[pool].max_spare_servers}
+        uses = 0
+        retry_delay = 30
+        lifetime = 0
+        idle_timeout = 60
+    }
+
+    # Include PostgreSQL queries configuration
+    $INCLUDE ${modconfdir}/${.:name}/main/${dialect}/queries.conf
+}

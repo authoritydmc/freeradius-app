@@ -1,0 +1,47 @@
+name: freeradius-stack
+
+services:
+  freeradius:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: freeradius
+    restart: unless-stopped
+    ports:
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+      - "3799:3799/udp"
+      - "${RADIUS_API_PORT:-8090}:8090"
+    volumes:
+      - radius_certs:/etc/freeradius/3.0/certs
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-localhost}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-radius}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      RADIUS_SECRET: ${RADIUS_SECRET}
+      RADIUS_ADMIN_USER: ${RADIUS_ADMIN_USER:-admin}
+      RADIUS_ADMIN_PASSWORD: ${RADIUS_ADMIN_PASSWORD}
+      SESSION_SECRET: ${SESSION_SECRET}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/radius/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend-network
+      - coolify
+
+volumes:
+  radius_certs:
+    name: radius_certs
+
+networks:
+  backend-network:
+    name: dev-backend-network
+    external: true
+  coolify:
+    name: coolify
+    external: true

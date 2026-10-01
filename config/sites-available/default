@@ -1,0 +1,113 @@
+server default {
+    listen {
+        type = auth
+        ipaddr = *
+        port = 1812
+        limit {
+            max_connections = 16
+            lifetime = 0
+            idle_timeout = 30
+        }
+    }
+
+    listen {
+        ipaddr = *
+        port = 1813
+        type = acct
+        limit {
+            max_connections = 16
+            lifetime = 0
+            idle_timeout = 30
+        }
+    }
+
+    listen {
+        type = auth
+        ipv6addr = ::
+        port = 1812
+        limit {
+            max_connections = 16
+            lifetime = 0
+            idle_timeout = 30
+        }
+    }
+
+    listen {
+        ipv6addr = ::
+        port = 1813
+        type = acct
+        limit {
+            max_connections = 16
+            lifetime = 0
+            idle_timeout = 30
+        }
+    }
+
+    authorize {
+        preprocess
+        chap
+        mschap
+        digest
+        suffix
+        eap {
+            ok = return
+        }
+        files
+        -sql
+        expiration
+        logintime
+        pap
+    }
+
+    authenticate {
+        Auth-Type PAP {
+            pap
+        }
+        Auth-Type CHAP {
+            chap
+        }
+        Auth-Type MS-CHAP {
+            mschap
+        }
+        mschap
+        digest
+        eap
+    }
+
+    preacct {
+        preprocess
+        acct_unique
+        suffix
+        files
+    }
+
+    accounting {
+        detail
+        -sql
+        exec
+        attr_filter.accounting_response
+    }
+
+    session {
+        -sql
+    }
+
+    post-auth {
+        -sql
+        exec
+        remove_reply_message_if_eap
+        Post-Auth-Type REJECT {
+            -sql
+            attr_filter.access_reject
+            eap
+            remove_reply_message_if_eap
+        }
+    }
+
+    pre-proxy {
+    }
+
+    post-proxy {
+        eap
+    }
+}
