@@ -1114,6 +1114,12 @@ def get_stats(_: str = Depends(authenticate_admin)):
             cur.execute("SELECT COUNT(DISTINCT groupname) as group_count FROM radgroupreply;")
             group_count = cur.fetchone()["group_count"]
 
+            try:
+                cur.execute("SELECT COUNT(DISTINCT callingstationid) AS d FROM radacct WHERE callingstationid IS NOT NULL AND callingstationid <> '';")
+                known_devices = cur.fetchone()["d"]
+            except Exception:
+                known_devices = 0
+
             # Count issued client certificates
             issued_certs = len([f for f in os.listdir(CLIENT_CERTS_DIR) if f.endswith(".p12")])
 
@@ -1124,6 +1130,7 @@ def get_stats(_: str = Depends(authenticate_admin)):
                 "total_auth_logs": total_auth_logs,
                 "nas_clients": nas_count,
                 "total_groups": group_count,
+                "known_devices": known_devices,
                 "client_certificates": issued_certs
             }
     finally:
@@ -2083,6 +2090,177 @@ def get_accounting(limit: int = 50, active_only: bool = False, username: Optiona
             return cur.fetchall()
     finally:
         conn.close()
+
+# ----------------------------------------------------------------------------
+# Device inventory (MAC -> vendor + history), derived from radacct.
+# Calling-Station-Id is the device MAC the NAS reported; the OUI (first 3
+# bytes) identifies the manufacturer. MAC randomization means one physical
+# device can appear as several MACs — the UI notes this.
+# Curated top-vendor prefixes (full IEEE OUI list is 30k+ rows and needs
+# downloads; this covers the common phone/laptop/IoT makers offline).
+# ----------------------------------------------------------------------------
+OUI_VENDORS: Dict[str, str] = {
+    # Apple (large blocks)
+    "88E09F": "Apple", "8C8590": "Apple", "8C7B9D": "Apple", "903C92": "Apple",
+    "A45E60": "Apple", "A4B816": "Apple", "A8861D": "Apple", "AC3C7A": "Apple",
+    "B06541": "Apple", "B87424": "Apple", "BC926B": "Apple", "C82A14": "Apple",
+    "D02598": "Apple", "D89695": "Apple", "DC2B61": "Apple", "E0ACCB": "Apple",
+    "E4C283": "Apple", "F41B6C": "Apple", "F4F15A": "Apple", "F82793": "Apple",
+    "3C2EFF": "Apple", "0479E2": "Apple", "0C4DE9": "Apple", "283737": "Apple",
+    "5C96F3": "Apple", "60F587": "Apple", "6CB4F5": "Apple", "70ECE4": "Apple",
+    "7C6DF8": "Apple", "7CD657": "Apple",
+    # Samsung
+    "3C8BFE": "Samsung", "50CCF8": "Samsung", "80301D": "Samsung", "84CF0D": "Samsung",
+    "8C7712": "Samsung", "A8F239": "Samsung", "C4FE59": "Samsung", "D072DC": "Samsung",
+    "E4E0A6": "Samsung", "F02A4A": "Samsung", "001632": "Samsung",
+    # Xiaomi / Redmi / Poco
+    "0C98A6": "Xiaomi", "14F65A": "Xiaomi", "28E36A": "Xiaomi", "34CE00": "Xiaomi",
+    "3CF96C": "Xiaomi", "64CC2E": "Xiaomi", "7C1CF3": "Xiaomi", "989EC5": "Xiaomi",
+    # Huawei / Honor
+    "00E02C": "Huawei",
+    "00E0FC": "Huawei", "2C57A2": "Huawei", "48AD08": "Huawei", "5C7D5E": "Huawei",
+    "E4A748": "Huawei", "F4C714": "Huawei",
+    # Oppo / Vivo / Realme / OnePlus
+    "1C87A4": "Oppo", "A4C3F0": "Oppo", "2C5B7F": "Oppo",
+    "34E2FD": "Vivo", "68AB1E": "Vivo", "7CDD20": "Vivo",
+    "18EFD6": "Realme", "4839C4": "Realme",
+    "9CE230": "OnePlus", "F4B85C": "OnePlus", "3063F9": "OnePlus",
+    # Google / Motorola / Nothing
+    "F4F5D8": "Google", "94EB2D": "Google", "D8B36A": "Motorola",
+    "346607": "Motorola", "A0B439": "Motorola",
+    # Laptops / desktops
+    "001A11": "Google", "3C5A37": "Google",
+    "00A0C9": "Intel", "001E64": "Intel", "30D042": "Intel", "34F690": "Intel",
+    "DC7196": "Intel", "7CCB0D": "Intel",
+    "001B77": "Atheros", "040CCE": "Atheros", "B0C554": "Atheros",
+    "00265E": "Realtek", "00E04C": "Realtek", "52C28A": "Realtek",
+    "001320": "Ralink", "0C8411": "Ralink",
+    "000F66": "Cisco-Linksys", "0013C3": "Cisco-Linksys", "58BC27": "Cisco-Linksys",
+    "001E13": "D-Link", "1C5F2B": "D-Link", "7811DC": "D-Link",
+    "04D9F5": "Ubiquiti", "802AA8": "Ubiquiti", "F0E7E2": "Ubiquiti",
+    "9CADEF": "Ubiquiti", "B4FBF6": "Ubiquiti",
+    "00156D": "Ubiquiti", "DCEB69": "MikroTik", "6C3B6B": "MikroTik",
+    "CC2D8C": "MikroTik", "E48D8C": "MikroTik",
+    # IoT / misc
+    "24A160": "Espressif", "3C6105": "Espressif", "A0A3B3": "Espressif",
+    "B827EB": "Raspberry Pi", "DCA632": "Raspberry Pi", "E45F01": "Raspberry Pi",
+    "18B430": "Amazon",
+    "44650D": "Amazon", "74C246": "Amazon", "F0D2F1": "Amazon",
+    "000272": "Amazon", "38F73D": "Amazon",
+    "FC1910": "Amazon", "8871E5": "Amazon",
+    "0017C4": "Quanta", "D0577B": "Quanta",
+    "00236D": "Apple", "002500": "Apple",
+}
+
+# Remove any accidental non-hex placeholder keys (keeps map clean if edited).
+OUI_VENDORS = {k: v for k, v in OUI_VENDORS.items() if v and re.fullmatch(r"[0-9A-F]{6}", k)}
+
+
+def mac_vendor(mac: Optional[str]) -> str:
+    """Manufacturer from the MAC OUI prefix, or 'Unknown' / randomized hint."""
+    if not mac:
+        return "—"
+    clean = re.sub(r"[^0-9A-Fa-f]", "", mac).upper()
+    if len(clean) < 6:
+        return "Unknown"
+    oui = clean[:6]
+    if oui in OUI_VENDORS:
+        return OUI_VENDORS[oui]
+    # Locally-administered bit set (2nd hex digit 2/6/A/E) => often randomized MAC.
+    try:
+        if int(oui[1], 16) & 0b0010:
+            return "Unknown (likely randomized MAC)"
+    except ValueError:
+        pass
+    return "Unknown"
+
+
+def format_bytes(n: Any) -> str:
+    try:
+        v = int(n or 0)
+    except (TypeError, ValueError):
+        return "—"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if v < 1024 or unit == "TB":
+            return f"{v:.0f} {unit}" if unit == "B" else f"{v:.1f} {unit}"
+        v /= 1024
+    return f"{v:.1f} TB"
+
+
+@app.get("/radius/api/devices", tags=["Logs & Accounting"])
+@app.get("/api/devices", tags=["Logs & Accounting"])
+def list_devices(username: Optional[str] = None, limit: int = 200,
+                 _: str = Depends(authenticate_admin)):
+    """Known devices aggregated by Calling-Station-Id (device MAC).
+
+    Per MAC: vendor (OUI), owning user (most recent), first/last seen, session
+    count, bytes up/down, last IP / NAS / AP, and whether currently online.
+    """
+    try:
+        limit = min(max(int(limit or 200), 1), 1000)
+    except (TypeError, ValueError):
+        limit = 200
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            agg_q = """
+                SELECT callingstationid AS mac,
+                       COUNT(*) AS sessions,
+                       MIN(acctstarttime) AS first_seen,
+                       MAX(acctstarttime) AS last_seen,
+                       COALESCE(SUM(acctinputoctets), 0)::bigint AS up_bytes,
+                       COALESCE(SUM(acctoutputoctets), 0)::bigint AS down_bytes,
+                       COUNT(*) FILTER (WHERE acctstoptime IS NULL) AS online_count
+                FROM radacct
+                WHERE callingstationid IS NOT NULL AND callingstationid <> ''
+            """
+            params: List[Any] = []
+            if username:
+                agg_q += " AND username = %s"
+                params.append(username)
+            agg_q += " GROUP BY callingstationid ORDER BY last_seen DESC NULLS LAST LIMIT %s"
+            params.append(limit)
+            cur.execute(agg_q, tuple(params))
+            rows = cur.fetchall()
+
+            # Latest session detail per MAC (user, IP, NAS, AP).
+            cur.execute("""
+                SELECT DISTINCT ON (callingstationid) callingstationid AS mac,
+                       username, framedipaddress::text AS ip,
+                       nasipaddress::text AS nas, calledstationid AS ap,
+                       acctstarttime AS seen
+                FROM radacct
+                WHERE callingstationid IS NOT NULL AND callingstationid <> ''
+                ORDER BY callingstationid, acctstarttime DESC NULLS LAST
+            """)
+            latest = {r["mac"]: r for r in cur.fetchall()}
+
+            out = []
+            for r in rows:
+                mac = r["mac"]
+                lat = latest.get(mac, {})
+                fs, ls = r.get("first_seen"), r.get("last_seen")
+                out.append({
+                    "mac": mac,
+                    "vendor": mac_vendor(mac),
+                    "username": lat.get("username"),
+                    "sessions": int(r.get("sessions") or 0),
+                    "online": int(r.get("online_count") or 0) > 0,
+                    "first_seen": fs.isoformat() if hasattr(fs, "isoformat") else (str(fs) if fs else None),
+                    "last_seen": ls.isoformat() if hasattr(ls, "isoformat") else (str(ls) if ls else None),
+                    "up_bytes": int(r.get("up_bytes") or 0),
+                    "down_bytes": int(r.get("down_bytes") or 0),
+                    "up": format_bytes(r.get("up_bytes")),
+                    "down": format_bytes(r.get("down_bytes")),
+                    "total": format_bytes(int(r.get("up_bytes") or 0) + int(r.get("down_bytes") or 0)),
+                    "last_ip": lat.get("ip"),
+                    "last_nas": lat.get("nas"),
+                    "last_ap": lat.get("ap"),
+                })
+            return out
+    finally:
+        conn.close()
+
 
 @app.get("/radius/api/auth-logs", tags=["Logs & Accounting"])
 @app.get("/api/auth-logs", tags=["Logs & Accounting"])

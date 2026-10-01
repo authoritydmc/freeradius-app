@@ -167,6 +167,29 @@ def test_explain_attribute_value_aware():
     assert "Framed-IP-Address = 10.10.0.12" in text
 
 
+# --- device inventory ------------------------------------------------------------
+
+def test_mac_vendor_known_and_unknown():
+    assert app.mac_vendor("8c:85:90:11:22:33") == "Apple"
+    assert app.mac_vendor("50-CC-F8-AA-BB-CC") == "Samsung"
+    assert app.mac_vendor("24a160001122") == "Espressif"
+    assert app.mac_vendor("AA-BB-CC-DD-EE-FF") != ""
+    assert "random" in app.mac_vendor("021122334455").lower()  # locally-administered
+    assert app.mac_vendor("") == "—"
+    assert app.mac_vendor(None) == "—"
+
+
+def test_format_bytes_human():
+    assert app.format_bytes(0) == "0 B"
+    assert app.format_bytes(1500) == "1.5 KB"
+    assert app.format_bytes(104857600) == "100.0 MB"
+
+
+def test_devices_route_registered():
+    paths = {getattr(r, "path", "") for r in app.app.routes}
+    assert "/radius/api/devices" in paths
+
+
 # --- route registration smoke test ----------------------------------------------
 
 def test_critical_routes_registered():
@@ -182,6 +205,7 @@ def test_critical_routes_registered():
         "/radius/api/portal/download-mobileconfig",
         "/radius/api/certs/orphans",
         "/radius/api/accounting",
+        "/radius/api/devices",
     ):
         assert needed in paths, needed
 

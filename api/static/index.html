@@ -278,6 +278,9 @@
           <button @click="activeTab = 'sessions'; fetchSessions()" :class="activeTab === 'sessions' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
             <i class="fa-solid fa-signal"></i> Active Sessions (<span x-text="stats.active_sessions || 0"></span>)
           </button>
+          <button @click="activeTab = 'devices'; fetchDevices()" :class="activeTab === 'devices' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+            <i class="fa-solid fa-mobile-screen-button"></i> Devices (<span x-text="stats.known_devices || 0"></span>)
+          </button>
           <button @click="activeTab = 'test-auth'" :class="activeTab === 'test-auth' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
             <i class="fa-solid fa-vial-circle-check"></i> RADIUS Tester
           </button>
@@ -824,6 +827,8 @@
                 <th class="px-6 py-3.5"><span class="tip" :title="tip('calling-station-id')">Calling Station (MAC)</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('calling-station-id')"></i></th>
                 <th class="px-6 py-3.5"><span class="tip" :title="tip('nas-ip-address')">NAS IP</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('nas-ip-address')"></i></th>
                 <th class="px-6 py-3.5"><span class="tip" :title="tip('acct-start-time')">Connected At</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('acct-start-time')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('acct-session-time')">Duration</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('acct-session-time')"></i></th>
+                <th class="px-6 py-3.5"><span class="tip" title="Simple: data used in this connection — downloaded / uploaded.">Data</span><i class="fa-solid fa-circle-info tip-icon" title="Simple: data used in this connection — downloaded / uploaded."></i></th>
                 <th class="px-6 py-3.5 text-right">Actions</th>
               </tr>
             </thead>
@@ -834,7 +839,9 @@
                   <td class="px-6 py-4 font-mono text-emerald-400 tip" :title="attrTip('Framed-IP-Address', s.framedipaddress || 'DHCP')" x-text="s.framedipaddress || 'DHCP'"></td>
                   <td class="px-6 py-4 font-mono text-slate-400 tip" :title="attrTip('Calling-Station-Id', s.callingstationid || 'N/A')" x-text="s.callingstationid || 'N/A'"></td>
                   <td class="px-6 py-4 font-mono text-slate-400 tip" :title="attrTip('NAS-IP-Address', s.nasipaddress)" x-text="s.nasipaddress"></td>
-                  <td class="px-6 py-4 text-slate-400" x-text="s.acctstarttime"></td>
+                  <td class="px-6 py-4 text-slate-400 whitespace-nowrap" :title="s.acctstarttime" x-text="relTime(s.acctstarttime)"></td>
+                  <td class="px-6 py-4 font-mono text-slate-300 whitespace-nowrap" :title="tip('acct-session-time')" x-text="sessionSecs(s)"></td>
+                  <td class="px-6 py-4 font-mono text-slate-300 whitespace-nowrap" :title="'Downloaded ' + fmtBytes(s.acctoutputoctets) + ' / Uploaded ' + fmtBytes(s.acctinputoctets)" x-text="fmtBytes(s.acctoutputoctets) + ' / ' + fmtBytes(s.acctinputoctets)"></td>
                   <td class="px-6 py-4 text-right">
                     <button @click="disconnectSession(s)" class="px-3 py-1 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white rounded-lg text-[11px] font-semibold transition-all">
                       Disconnect
@@ -843,7 +850,65 @@
                 </tr>
               </template>
               <tr x-show="!sessions.length">
-                <td colspan="6" class="px-6 py-8 text-center text-slate-500 italic">No active RADIUS accounting sessions detected.</td>
+                <td colspan="8" class="px-6 py-8 text-center text-slate-500 italic">No active RADIUS accounting sessions detected.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- TAB: DEVICES -->
+      <section x-show="activeTab === 'devices'" class="space-y-6">
+        <div class="flex flex-wrap gap-3 justify-between items-center">
+          <div>
+            <h2 class="text-lg font-bold text-white">Known Devices <span class="text-xs font-normal text-slate-400" x-text="'(' + filteredDevices().length + ' / ' + devices.length + ')'"></span></h2>
+            <p class="text-xs text-slate-400 mt-1">Every device MAC ever seen (Calling-Station-Id), with maker, owner, history and data use. Note: phones with MAC randomization appear as several devices.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="relative">
+              <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-500 text-[11px]"></i>
+              <input type="text" x-model="deviceSearch" placeholder="Search MAC / vendor / user..." class="bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-2 text-xs text-white focus:border-indigo-500 outline-none w-56">
+            </div>
+            <button @click="fetchDevices()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-2">
+              <i class="fa-solid fa-rotate"></i> Refresh
+            </button>
+          </div>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-x-auto">
+          <table class="w-full text-left text-xs min-w-[900px]">
+            <thead class="bg-slate-950/60 text-slate-400 uppercase border-b border-slate-800 text-[10px]">
+              <tr>
+                <th class="px-6 py-3.5">Status</th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('calling-station-id')">Device (MAC)</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('calling-station-id')"></i></th>
+                <th class="px-6 py-3.5">Maker</th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('user-name')">User</span></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('framed-ip-address')">Last IP</span></th>
+                <th class="px-6 py-3.5"><span class="tip" :title="tip('called-station-id')">Last AP</span><i class="fa-solid fa-circle-info tip-icon" :title="tip('called-station-id')"></i></th>
+                <th class="px-6 py-3.5">Last Seen</th>
+                <th class="px-6 py-3.5">Sessions</th>
+                <th class="px-6 py-3.5">Data Used</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+              <template x-for="d in filteredDevices()" :key="d.mac">
+                <tr class="hover:bg-slate-800/40 transition-colors">
+                  <td class="px-6 py-4">
+                    <span x-show="d.online" class="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 text-[10px] font-mono border border-emerald-500/20 whitespace-nowrap">● online</span>
+                    <span x-show="!d.online" class="px-2 py-0.5 rounded-full bg-slate-800 text-slate-500 text-[10px] font-mono border border-slate-700 whitespace-nowrap">○ offline</span>
+                  </td>
+                  <td class="px-6 py-4 font-mono font-semibold text-white whitespace-nowrap" :title="attrTip('Calling-Station-Id', d.mac)" x-text="d.mac"></td>
+                  <td class="px-6 py-4"><span class="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 text-[10px] border border-indigo-500/20 whitespace-nowrap" x-text="d.vendor"></span></td>
+                  <td class="px-6 py-4 font-semibold text-slate-200" x-text="d.username || '—'"></td>
+                  <td class="px-6 py-4 font-mono text-emerald-400" x-text="d.last_ip || '—'"></td>
+                  <td class="px-6 py-4 font-mono text-slate-400" :title="attrTip('Called-Station-Id', d.last_ap || 'N/A')" x-text="d.last_ap || '—'"></td>
+                  <td class="px-6 py-4 text-slate-400 whitespace-nowrap" :title="d.last_seen" x-text="relTime(d.last_seen)"></td>
+                  <td class="px-6 py-4 font-mono text-slate-300" :title="'First seen: ' + (d.first_seen || '—')" x-text="d.sessions"></td>
+                  <td class="px-6 py-4 font-mono text-slate-300 whitespace-nowrap" :title="'Downloaded ' + d.down + ' / Uploaded ' + d.up" x-text="d.total"></td>
+                </tr>
+              </template>
+              <tr x-show="!filteredDevices().length">
+                <td colspan="9" class="px-6 py-8 text-center text-slate-500 italic" x-text="devices.length ? 'No devices match this search.' : 'No devices seen yet. Devices appear here after their first Wi-Fi session.'"></td>
               </tr>
             </tbody>
           </table>
@@ -1236,6 +1301,9 @@
       "tunnel-medium-type": "Simple: code that says 'over ethernet/Wi-Fi'. 6 = normal network.",
       "framed-ip-address": "Simple: Wi-Fi address given to the phone/laptop. Example: Framed-IP-Address = 10.10.0.12.",
       "framed-pool": "Simple: name of the address box the router picks IPs from, e.g. staff_pool.",
+      "acct-start-time": "Simple: when this Wi-Fi connection started.",
+      "acct-session-time": "Simple: total time connected. Example: 3600 = 1 hour. Live sessions keep counting.",
+      "called-station-id": "Simple: which Wi-Fi box (AP + name) the user joined.",
       "calling-station-id": "Simple: the phone/laptop's own Wi-Fi ID (MAC). Tells which device connected.",
       "called-station-id": "Simple: which Wi-Fi box (AP + name) the user joined.",
       "nas-ip-address": "Simple: the Wi-Fi router's address that asked 'can this user join?'.",
@@ -1306,6 +1374,8 @@
         presets: [],
         nasList: [],
         sessions: [],
+        devices: [],
+        deviceSearch: '',
         logs: [],
         logSearch: '',
         logResult: '',
@@ -1600,6 +1670,51 @@
             const res = await this.fetchWithAuth('/radius/api/accounting?active_only=true');
             if (res.ok) this.sessions = await res.json();
           } catch(e) {}
+        },
+
+        async fetchDevices() {
+          try {
+            const res = await this.fetchWithAuth('/radius/api/devices?limit=500');
+            if (res.ok) this.devices = await res.json();
+          } catch(e) {}
+          try {
+            const s = await this.fetchWithAuth('/radius/api/stats');
+            if (s.ok) this.stats = await s.json();
+          } catch(e) {}
+        },
+
+        filteredDevices() {
+          const q = (this.deviceSearch || '').toLowerCase();
+          if (!q) return this.devices || [];
+          return (this.devices || []).filter(d =>
+            (d.mac || '').toLowerCase().includes(q) ||
+            (d.vendor || '').toLowerCase().includes(q) ||
+            (d.username || '').toLowerCase().includes(q));
+        },
+
+        fmtBytes(n) {
+          n = Number(n || 0);
+          if (!n) return '0 B';
+          const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+          let i = 0;
+          while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+          return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + ' ' + units[i];
+        },
+
+        fmtDur(totalSecs) {
+          totalSecs = Math.max(0, Math.floor(Number(totalSecs) || 0));
+          const h = Math.floor(totalSecs / 3600), m = Math.floor((totalSecs % 3600) / 60), s = totalSecs % 60;
+          if (h) return `${h}h ${m}m`;
+          if (m) return `${m}m ${s}s`;
+          return `${s}s`;
+        },
+
+        sessionSecs(s) {
+          if (s.acctsessiontime) return this.fmtDur(s.acctsessiontime);
+          if (!s.acctstarttime) return '—';
+          const t = new Date(s.acctstarttime).getTime();
+          if (isNaN(t)) return '—';
+          return this.fmtDur((Date.now() - t) / 1000) + ' (live)';
         },
 
         async fetchLogs() {
