@@ -162,5 +162,20 @@ config wifi-iface 'default_radio0'
 
 ---
 
+## 🔒 Security, Firewall & Cloud Port Guide
+
+For detailed cloud ingress rules (**Oracle Cloud OCI**, **AWS EC2**, **GCP**, **Azure**, **DigitalOcean**), Linux host firewall (**`ufw`** / **`iptables`**), and Coolify security hardening, see the complete guide:
+
+👉 **[Complete Port & Cloud Security Guide](docs/PORT_SECURITY_GUIDE.md)**
+
+### Key Ports Summary
+- **UDP `1812`**: RADIUS Authentication (Inbound from NAS/Routers or `0.0.0.0/0`)
+- **UDP `1813`**: RADIUS Accounting (Inbound from NAS/Routers or `0.0.0.0/0`)
+- **UDP `3799`**: RADIUS CoA / Disconnect (Inbound from NAS/Routers or `0.0.0.0/0`)
+- **TCP `443` / `80`**: HTTPS / HTTP for Traefik Reverse Proxy & Web UI
+- **TCP `22`**: SSH Management (Restricted to Admin IPs)
+
+---
+
 ## 📄 License
 This project is open-source under the [MIT License](LICENSE).
