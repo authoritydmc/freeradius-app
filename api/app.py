@@ -228,12 +228,23 @@ class PasswordChangeRequest(BaseModel):
 
 class GroupCreateRequest(BaseModel):
     groupname: str = Field(..., min_length=1, max_length=64)
-    simultaneous_use: Optional[int] = 3
-    session_timeout: Optional[int] = None # in seconds
-    idle_timeout: Optional[int] = 1800 # in seconds
-    bandwidth_down_kbps: Optional[int] = None # WISPr-Bandwidth-Max-Down
-    bandwidth_up_kbps: Optional[int] = None # WISPr-Bandwidth-Max-Up
-    extra_attributes: Optional[Dict[str, str]] = None
+    description: Optional[str] = None
+    simultaneous_use: Optional[int] = 3 # Simultaneous-Use (Max concurrent logins)
+    session_timeout: Optional[int] = None # in seconds (e.g. 7200 = 2 hours)
+    idle_timeout: Optional[int] = 1800 # in seconds (e.g. 1800 = 30 min)
+    acct_interim_interval: Optional[int] = 300 # in seconds (e.g. 300 = 5 min)
+    bandwidth_down_kbps: Optional[int] = None # WISPr-Bandwidth-Max-Down (in Kbps, e.g. 50000 = 50 Mbps)
+    bandwidth_up_kbps: Optional[int] = None # WISPr-Bandwidth-Max-Up (in Kbps, e.g. 25000 = 25 Mbps)
+    mikrotik_rate_limit: Optional[str] = None # e.g. "25M/50M"
+    vlan_id: Optional[int] = None # 802.1Q VLAN Tag (e.g. 10, 20, 30)
+    framed_pool: Optional[str] = None # NAS DHCP Pool Name
+    is_admin: Optional[bool] = False # Administrative-User role
+    extra_reply_attributes: Optional[Dict[str, str]] = None
+    extra_check_attributes: Optional[Dict[str, str]] = None
+
+class ApplyPresetRequest(BaseModel):
+    preset_id: str
+    groupname: Optional[str] = None
 
 class NasCreateRequest(BaseModel):
     nasname: str = Field(..., description="IP Address or CIDR subnet (e.g. 192.168.1.1 or 0.0.0.0/0)")
@@ -555,31 +566,270 @@ def update_user_password(username: str, payload: PasswordChangeRequest, _: str =
     finally:
         conn.close()
 
-# Group Management
+# ============================================================================
+# Group Policy Management & Presets
+# ============================================================================
+GROUP_PRESETS = [
+    {
+        "id": "staff-enterprise",
+        "name": "🚀 Enterprise Staff",
+        "groupname": "staff",
+        "description": "High-throughput policy for corporate employees and development teams.",
+        "simultaneous_use": 5,
+        "bandwidth_down_kbps": 100000, # 100 Mbps
+        "bandwidth_up_kbps": 50000,   # 50 Mbps
+        "session_timeout": 86400,     # 24 Hours
+        "idle_timeout": 7200,         # 2 Hours
+        "acct_interim_interval": 300,
+        "vlan_id": 10,
+        "framed_pool": "corp_pool",
+        "mikrotik_rate_limit": "50M/100M",
+        "is_admin": False,
+        "badge": "100M/50M • 5 Dev • VLAN 10"
+    },
+    {
+        "id": "guest-hotspot",
+        "name": "☕ Guest Hotspot",
+        "groupname": "guests",
+        "description": "Fair-share rate-limited policy with time-based session caps for cafe and visitor Wi-Fi.",
+        "simultaneous_use": 1,
+        "bandwidth_down_kbps": 10000, # 10 Mbps
+        "bandwidth_up_kbps": 2000,   # 2 Mbps
+        "session_timeout": 7200,     # 2 Hours
+        "idle_timeout": 900,         # 15 Minutes
+        "acct_interim_interval": 120,
+        "vlan_id": 30,
+        "framed_pool": "guest_pool",
+        "mikrotik_rate_limit": "2M/10M",
+        "is_admin": False,
+        "badge": "10M/2M • 1 Dev • 2hr Cap • VLAN 30"
+    },
+    {
+        "id": "vip-uncapped",
+        "name": "👑 VIP / Executive",
+        "groupname": "vip",
+        "description": "Unthrottled maximum priority tier with high concurrency for executives and core servers.",
+        "simultaneous_use": 10,
+        "bandwidth_down_kbps": None,
+        "bandwidth_up_kbps": None,
+        "session_timeout": None,
+        "idle_timeout": 86400,
+        "acct_interim_interval": 300,
+        "vlan_id": 1,
+        "framed_pool": "vip_pool",
+        "mikrotik_rate_limit": None,
+        "is_admin": False,
+        "badge": "Uncapped • 10 Dev • 24hr Idle"
+    },
+    {
+        "id": "iot-isolated",
+        "name": "🤖 Smart Office / IoT",
+        "groupname": "iot",
+        "description": "Isolated low-bandwidth network policy for smart appliances, sensors, printers, and cameras.",
+        "simultaneous_use": 1,
+        "bandwidth_down_kbps": 5000,  # 5 Mbps
+        "bandwidth_up_kbps": 1000,   # 1 Mbps
+        "session_timeout": None,
+        "idle_timeout": 86400,
+        "acct_interim_interval": 600,
+        "vlan_id": 50,
+        "framed_pool": "iot_pool",
+        "mikrotik_rate_limit": "1M/5M",
+        "is_admin": False,
+        "badge": "5M/1M • 1 Dev • VLAN 50"
+    },
+    {
+        "id": "security-admins",
+        "name": "🛡️ Network Administrators",
+        "groupname": "admins",
+        "description": "Administrative authority with administrative console access and elevated management rights.",
+        "simultaneous_use": 5,
+        "bandwidth_down_kbps": None,
+        "bandwidth_up_kbps": None,
+        "session_timeout": None,
+        "idle_timeout": 3600,
+        "acct_interim_interval": 300,
+        "vlan_id": 99,
+        "framed_pool": "mgmt_pool",
+        "mikrotik_rate_limit": None,
+        "is_admin": True,
+        "badge": "Admin Console Access • VLAN 99"
+    }
+]
+
+def explain_attribute(attr: str, val: str) -> str:
+    attr_lower = attr.lower()
+    if "simultaneous-use" in attr_lower:
+        return f"Limits user to {val} concurrent active device login(s)."
+    elif "bandwidth-max-down" in attr_lower:
+        mbps = f"{int(val)/1_000_000:.0f}" if val.isdigit() else val
+        return f"Caps download speed at {mbps} Mbps (WISPr)."
+    elif "bandwidth-max-up" in attr_lower:
+        mbps = f"{int(val)/1_000_000:.0f}" if val.isdigit() else val
+        return f"Caps upload speed at {mbps} Mbps (WISPr)."
+    elif "mikrotik-rate-limit" in attr_lower:
+        return f"MikroTik RouterOS rate-limit queue: {val}."
+    elif "session-timeout" in attr_lower:
+        mins = int(val) // 60 if val.isdigit() else val
+        return f"Max session duration: {mins} min ({val}s)."
+    elif "idle-timeout" in attr_lower:
+        mins = int(val) // 60 if val.isdigit() else val
+        return f"Inactivity disconnect: {mins} min ({val}s)."
+    elif "acct-interim-interval" in attr_lower:
+        return f"Telemetry update frequency: every {val}s."
+    elif "tunnel-private-group-id" in attr_lower:
+        return f"Dynamically isolates device on VLAN #{val}."
+    elif "tunnel-type" in attr_lower:
+        return "802.1X VLAN Protocol (13 = VLAN)."
+    elif "tunnel-medium-type" in attr_lower:
+        return "802.1X Medium (6 = 802.1Q Ethernet)."
+    elif "framed-pool" in attr_lower:
+        return f"Allocates IP from DHCP pool '{val}'."
+    elif "service-type" in attr_lower:
+        return f"Service role: {val}."
+    return f"{attr} = {val}"
+
+def generate_policy_summary(sim_use, down_k, up_k, s_timeout, i_timeout, vlan, is_admin, mikrotik) -> str:
+    parts = []
+    if is_admin:
+        parts.append("👑 Admin Console Access")
+    if sim_use:
+        parts.append(f"📱 Max {sim_use} device{'s' if sim_use > 1 else ''}")
+    if down_k and up_k:
+        parts.append(f"⚡ ↓{down_k//1000}M / ↑{up_k//1000}M")
+    elif down_k:
+        parts.append(f"⚡ ↓{down_k//1000}M")
+    elif mikrotik:
+        parts.append(f"⚡ MikroTik {mikrotik}")
+    else:
+        parts.append("🚀 Uncapped Speed")
+        
+    if s_timeout:
+        parts.append(f"⏱️ {s_timeout//3600 if s_timeout >= 3600 else s_timeout//60}{'h' if s_timeout >= 3600 else 'm'} session")
+    if i_timeout:
+        parts.append(f"💤 {i_timeout//60}m idle timeout")
+    if vlan:
+        parts.append(f"🏷️ VLAN #{vlan}")
+    return " • ".join(parts) if parts else "Open Policy (No limits)"
+
+@app.get("/radius/api/groups/presets", tags=["Groups"])
+@app.get("/api/groups/presets", tags=["Groups"])
+def get_group_presets(_: str = Depends(authenticate_admin)):
+    return GROUP_PRESETS
+
 @app.get("/radius/api/groups", tags=["Groups"])
 @app.get("/api/groups", tags=["Groups"])
 def list_groups(_: str = Depends(authenticate_admin)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT 
-                    groupname, attribute, op, value
-                FROM radgroupreply
-                ORDER BY groupname ASC, attribute ASC
-            """)
-            rows = cur.fetchall()
-            
+            # 1. Fetch reply attributes
+            cur.execute("SELECT id, groupname, attribute, op, value FROM radgroupreply ORDER BY groupname ASC, attribute ASC")
+            reply_rows = cur.fetchall()
+
+            # 2. Fetch check attributes
+            cur.execute("SELECT id, groupname, attribute, op, value FROM radgroupcheck ORDER BY groupname ASC, attribute ASC")
+            check_rows = cur.fetchall()
+
+            # 3. Fetch users per group
+            cur.execute("SELECT groupname, username FROM radusergroup ORDER BY groupname ASC, username ASC")
+            user_rows = cur.fetchall()
+
+            users_by_group = {}
+            for u in user_rows:
+                g = u["groupname"]
+                if g not in users_by_group:
+                    users_by_group[g] = []
+                users_by_group[g].append(u["username"])
+
             groups_map = {}
-            for r in rows:
+
+            # Gather all known group names
+            all_groups = set([r["groupname"] for r in reply_rows] + [c["groupname"] for c in check_rows] + list(users_by_group.keys()))
+            for g in sorted(all_groups):
+                groups_map[g] = {
+                    "groupname": g,
+                    "user_count": len(users_by_group.get(g, [])),
+                    "users": users_by_group.get(g, []),
+                    "simultaneous_use": None,
+                    "session_timeout": None,
+                    "idle_timeout": None,
+                    "acct_interim_interval": None,
+                    "bandwidth_down_kbps": None,
+                    "bandwidth_up_kbps": None,
+                    "mikrotik_rate_limit": None,
+                    "vlan_id": None,
+                    "framed_pool": None,
+                    "is_admin": (g == "admins"),
+                    "reply_attributes": [],
+                    "check_attributes": [],
+                    "summary": ""
+                }
+
+            # Populate reply attributes & extracted values
+            for r in reply_rows:
                 g = r["groupname"]
-                if g not in groups_map:
-                    groups_map[g] = {"groupname": g, "attributes": []}
-                groups_map[g]["attributes"].append({
-                    "attribute": r["attribute"],
+                attr = r["attribute"]
+                val = r["value"]
+                explanation = explain_attribute(attr, val)
+                groups_map[g]["reply_attributes"].append({
+                    "id": r["id"],
+                    "attribute": attr,
                     "op": r["op"],
-                    "value": r["value"]
+                    "value": val,
+                    "explanation": explanation
                 })
+
+                if attr == "Simultaneous-Use" and val.isdigit():
+                    groups_map[g]["simultaneous_use"] = int(val)
+                elif attr == "Session-Timeout" and val.isdigit():
+                    groups_map[g]["session_timeout"] = int(val)
+                elif attr == "Idle-Timeout" and val.isdigit():
+                    groups_map[g]["idle_timeout"] = int(val)
+                elif attr == "Acct-Interim-Interval" and val.isdigit():
+                    groups_map[g]["acct_interim_interval"] = int(val)
+                elif attr == "WISPr-Bandwidth-Max-Down" and val.isdigit():
+                    groups_map[g]["bandwidth_down_kbps"] = int(val) // 1000
+                elif attr == "WISPr-Bandwidth-Max-Up" and val.isdigit():
+                    groups_map[g]["bandwidth_up_kbps"] = int(val) // 1000
+                elif attr == "Mikrotik-Rate-Limit":
+                    groups_map[g]["mikrotik_rate_limit"] = val
+                elif attr == "Tunnel-Private-Group-ID" and val.isdigit():
+                    groups_map[g]["vlan_id"] = int(val)
+                elif attr == "Framed-Pool":
+                    groups_map[g]["framed_pool"] = val
+                elif attr == "Service-Type" and val == "Administrative-User":
+                    groups_map[g]["is_admin"] = True
+
+            # Populate check attributes
+            for c in check_rows:
+                g = c["groupname"]
+                attr = c["attribute"]
+                val = c["value"]
+                explanation = explain_attribute(attr, val)
+                groups_map[g]["check_attributes"].append({
+                    "id": c["id"],
+                    "attribute": attr,
+                    "op": c["op"],
+                    "value": val,
+                    "explanation": explanation
+                })
+                if attr == "Simultaneous-Use" and val.isdigit():
+                    groups_map[g]["simultaneous_use"] = int(val)
+
+            # Generate summaries
+            for g, data in groups_map.items():
+                data["summary"] = generate_policy_summary(
+                    data["simultaneous_use"],
+                    data["bandwidth_down_kbps"],
+                    data["bandwidth_up_kbps"],
+                    data["session_timeout"],
+                    data["idle_timeout"],
+                    data["vlan_id"],
+                    data["is_admin"],
+                    data["mikrotik_rate_limit"]
+                )
+
             return list(groups_map.values())
     finally:
         conn.close()
@@ -590,42 +840,104 @@ def create_or_update_group(payload: GroupCreateRequest, _: str = Depends(authent
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            # Clean existing group attributes
             cur.execute("DELETE FROM radgroupreply WHERE groupname = %s", (payload.groupname,))
-            
-            if payload.simultaneous_use is not None:
-                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', ':=', %s)", (payload.groupname, str(payload.simultaneous_use)))
-            
-            if payload.session_timeout is not None:
+            cur.execute("DELETE FROM radgroupcheck WHERE groupname = %s", (payload.groupname,))
+
+            # 1. Simultaneous-Use (Check & Reply)
+            if payload.simultaneous_use is not None and payload.simultaneous_use > 0:
+                cur.execute("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', ':=', %s)", (payload.groupname, str(payload.simultaneous_use)))
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', '=', %s)", (payload.groupname, str(payload.simultaneous_use)))
+
+            # 2. Administrative Role
+            if payload.is_admin or payload.groupname == "admins":
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Service-Type', '=', 'Administrative-User')", (payload.groupname,))
+
+            # 3. Session & Idle Timeouts
+            if payload.session_timeout is not None and payload.session_timeout > 0:
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Session-Timeout', '=', %s)", (payload.groupname, str(payload.session_timeout)))
 
-            if payload.idle_timeout is not None:
+            if payload.idle_timeout is not None and payload.idle_timeout > 0:
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Idle-Timeout', '=', %s)", (payload.groupname, str(payload.idle_timeout)))
 
-            if payload.bandwidth_down_kbps is not None:
+            # 4. Accounting Interim Interval
+            if payload.acct_interim_interval is not None and payload.acct_interim_interval > 0:
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Acct-Interim-Interval', '=', %s)", (payload.groupname, str(payload.acct_interim_interval)))
+
+            # 5. Bandwidth Limits (WISPr standard)
+            if payload.bandwidth_down_kbps is not None and payload.bandwidth_down_kbps > 0:
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'WISPr-Bandwidth-Max-Down', '=', %s)", (payload.groupname, str(payload.bandwidth_down_kbps * 1000)))
 
-            if payload.bandwidth_up_kbps is not None:
+            if payload.bandwidth_up_kbps is not None and payload.bandwidth_up_kbps > 0:
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'WISPr-Bandwidth-Max-Up', '=', %s)", (payload.groupname, str(payload.bandwidth_up_kbps * 1000)))
 
-            if payload.extra_attributes:
-                for k, v in payload.extra_attributes.items():
-                    cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, %s, '=', %s)", (payload.groupname, k, v))
+            # 6. MikroTik Rate Limit
+            if payload.mikrotik_rate_limit and payload.mikrotik_rate_limit.strip():
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Mikrotik-Rate-Limit', '=', %s)", (payload.groupname, payload.mikrotik_rate_limit.strip()))
+
+            # 7. 802.1Q VLAN Dynamic Tagging
+            if payload.vlan_id is not None and payload.vlan_id > 0:
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Tunnel-Type', '=', '13')", (payload.groupname,))
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Tunnel-Medium-Type', '=', '6')", (payload.groupname,))
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Tunnel-Private-Group-ID', '=', %s)", (payload.groupname, str(payload.vlan_id)))
+
+            # 8. DHCP Framed Pool
+            if payload.framed_pool and payload.framed_pool.strip():
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Framed-Pool', '=', %s)", (payload.groupname, payload.framed_pool.strip()))
+
+            # 9. Extra Custom Reply & Check Attributes
+            if payload.extra_reply_attributes:
+                for k, v in payload.extra_reply_attributes.items():
+                    if k.strip() and v.strip():
+                        cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, %s, '=', %s)", (payload.groupname, k.strip(), v.strip()))
+
+            if payload.extra_check_attributes:
+                for k, v in payload.extra_check_attributes.items():
+                    if k.strip() and v.strip():
+                        cur.execute("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (%s, %s, ':=', %s)", (payload.groupname, k.strip(), v.strip()))
 
             conn.commit()
-            return {"status": "success", "message": f"Group '{payload.groupname}' saved successfully"}
+            return {"status": "success", "message": f"Policy Group '{payload.groupname}' saved successfully!"}
     finally:
         conn.close()
+
+@app.post("/radius/api/groups/apply-preset", tags=["Groups"])
+@app.post("/api/groups/apply-preset", tags=["Groups"])
+def apply_group_preset(payload: ApplyPresetRequest, _: str = Depends(authenticate_admin)):
+    preset = next((p for p in GROUP_PRESETS if p["id"] == payload.preset_id), None)
+    if not preset:
+        raise HTTPException(status_code=404, detail=f"Preset '{payload.preset_id}' not found.")
+    
+    groupname = payload.groupname or preset["groupname"]
+    req = GroupCreateRequest(
+        groupname=groupname,
+        description=preset.get("description"),
+        simultaneous_use=preset.get("simultaneous_use"),
+        bandwidth_down_kbps=preset.get("bandwidth_down_kbps"),
+        bandwidth_up_kbps=preset.get("bandwidth_up_kbps"),
+        session_timeout=preset.get("session_timeout"),
+        idle_timeout=preset.get("idle_timeout"),
+        acct_interim_interval=preset.get("acct_interim_interval"),
+        vlan_id=preset.get("vlan_id"),
+        framed_pool=preset.get("framed_pool"),
+        mikrotik_rate_limit=preset.get("mikrotik_rate_limit"),
+        is_admin=preset.get("is_admin", False)
+    )
+    return create_or_update_group(req, _)
 
 @app.delete("/radius/api/groups/{groupname}", tags=["Groups"])
 @app.delete("/api/groups/{groupname}", tags=["Groups"])
 def delete_group(groupname: str, _: str = Depends(authenticate_admin)):
+    if groupname == "admins":
+        raise HTTPException(status_code=400, detail="Cannot delete default 'admins' system group.")
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM radgroupreply WHERE groupname = %s", (groupname,))
             cur.execute("DELETE FROM radgroupcheck WHERE groupname = %s", (groupname,))
+            cur.execute("DELETE FROM radusergroup WHERE groupname = %s", (groupname,))
             conn.commit()
-            return {"status": "success", "message": f"Group '{groupname}' deleted successfully"}
+            return {"status": "success", "message": f"Policy Group '{groupname}' and associated user assignments removed successfully."}
     finally:
         conn.close()
 

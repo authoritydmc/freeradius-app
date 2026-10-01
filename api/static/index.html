@@ -475,28 +475,162 @@
 
       <!-- TAB: GROUPS -->
       <section x-show="activeTab === 'groups'" class="space-y-6">
-        <div class="flex justify-between items-center">
-          <h2 class="text-lg font-bold text-white">Group Policies & Rate Limiting</h2>
-          <button @click="openAddGroupModal()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2">
-            <i class="fa-solid fa-plus"></i> New Policy Group
-          </button>
+        <!-- Header & Add Button -->
+        <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center gap-2">
+              <i class="fa-solid fa-layer-group text-indigo-400"></i> Group Policies, Bandwidth & VLANs
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">Control concurrent logins, speed limits (QoS), session timeouts, and dynamic 802.1Q VLAN assignment.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button @click="fetchGroups(); fetchPresets()" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all">
+              <i class="fa-solid fa-rotate"></i> Refresh
+            </button>
+            <button @click="openAddGroupModal()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-lg shadow-indigo-600/20 transition-all">
+              <i class="fa-solid fa-plus"></i> Create Policy Group
+            </button>
+          </div>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <template x-for="group in groups" :key="group.groupname">
-            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3">
-              <div class="flex justify-between items-center">
-                <h3 class="font-bold text-base text-white font-mono" x-text="group.groupname"></h3>
-                <span class="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 text-[10px] border border-indigo-500/20">Policy</span>
-              </div>
-              <div class="space-y-1.5 text-xs text-slate-300 font-mono">
-                <template x-for="attr in group.reply_attributes" :key="attr.id">
-                  <div class="flex justify-between bg-slate-950/60 p-2 rounded border border-slate-800/80">
-                    <span class="text-slate-400" x-text="attr.attribute"></span>
-                    <span class="text-indigo-300 font-bold" x-text="attr.value"></span>
+        <!-- 1-Click Quick Presets Showcase Banner -->
+        <div class="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-500/20 rounded-2xl p-4.5 space-y-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="p-1.5 bg-indigo-500/10 text-indigo-400 rounded-lg border border-indigo-500/20 text-xs">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+              </span>
+              <h3 class="text-xs font-bold text-white uppercase tracking-wider">Quick Apply Policy Presets</h3>
+            </div>
+            <span class="text-[11px] text-slate-400">Click any preset to create or update with 1 click</span>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
+            <template x-for="p in presets" :key="p.id">
+              <div @click="quickApplyPreset(p)" class="group cursor-pointer bg-slate-950/70 hover:bg-indigo-900/30 border border-slate-800 hover:border-indigo-500/50 p-3 rounded-xl transition-all space-y-1.5 flex flex-col justify-between">
+                <div>
+                  <div class="flex items-center justify-between">
+                    <span class="font-bold text-xs text-white group-hover:text-indigo-300 transition-colors" x-text="p.name"></span>
+                    <i class="fa-solid fa-arrow-right text-[10px] text-slate-500 group-hover:text-indigo-400 transform group-hover:translate-x-0.5 transition-all"></i>
                   </div>
-                </template>
+                  <p class="text-[10px] text-slate-400 line-clamp-2 mt-1" x-text="p.description"></p>
+                </div>
+                <span class="text-[9px] font-mono px-2 py-0.5 rounded bg-slate-900 text-indigo-300 border border-slate-800" x-text="p.badge"></span>
               </div>
+            </template>
+          </div>
+        </div>
+
+        <!-- Active Group Policy Cards Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <template x-for="group in groups" :key="group.groupname">
+            <div class="bg-slate-900/90 border border-slate-800 hover:border-slate-700/80 rounded-2xl p-5 space-y-4 flex flex-col justify-between transition-all shadow-xl">
+              <div class="space-y-3">
+                <!-- Card Header -->
+                <div class="flex items-start justify-between">
+                  <div>
+                    <div class="flex items-center gap-2">
+                      <span class="font-mono font-bold text-base text-white" x-text="group.groupname"></span>
+                      <template x-show="group.is_admin">
+                        <span class="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 text-[10px] font-semibold border border-amber-500/20 flex items-center gap-1">
+                          <i class="fa-solid fa-shield-halved text-[9px]"></i> Admin
+                        </span>
+                      </template>
+                    </div>
+                    <span class="text-[11px] text-indigo-400 font-medium flex items-center gap-1.5 mt-0.5">
+                      <i class="fa-solid fa-users text-[10px]"></i> <span x-text="group.user_count || 0"></span> assigned user<span x-show="group.user_count !== 1">s</span>
+                    </span>
+                  </div>
+                  <!-- Actions (Edit / Delete) -->
+                  <div class="flex items-center gap-1">
+                    <button @click="openEditGroupModal(group)" title="Edit Group Policy" class="p-2 rounded-lg bg-slate-800/80 hover:bg-indigo-600/30 text-slate-300 hover:text-indigo-300 transition-all text-xs">
+                      <i class="fa-solid fa-pen-to-square"></i>
+                    </button>
+                    <button x-show="group.groupname !== 'admins'" @click="deleteGroup(group.groupname)" title="Delete Group" class="p-2 rounded-lg bg-slate-800/80 hover:bg-rose-600/30 text-slate-400 hover:text-rose-300 transition-all text-xs">
+                      <i class="fa-solid fa-trash"></i>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Plain English Human Summary Banner -->
+                <div class="bg-slate-950/80 border border-slate-800/90 rounded-xl p-3 text-xs space-y-1.5">
+                  <div class="flex items-center gap-1.5 text-slate-400 font-semibold text-[11px]">
+                    <i class="fa-solid fa-circle-info text-indigo-400"></i> Policy Behavior
+                  </div>
+                  <p class="text-slate-200 text-xs leading-relaxed" x-text="group.summary || 'Standard open access policy.'"></p>
+                </div>
+
+                <!-- Policy Feature Badges -->
+                <div class="grid grid-cols-2 gap-2 text-[11px] font-mono">
+                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                    <i class="fa-solid fa-mobile-screen text-indigo-400 text-xs"></i>
+                    <div>
+                      <div class="text-[10px] text-slate-400">Max Devices</div>
+                      <div class="text-white font-bold" x-text="group.simultaneous_use ? group.simultaneous_use + ' Device(s)' : 'Unlimited'"></div>
+                    </div>
+                  </div>
+                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                    <i class="fa-solid fa-gauge-high text-emerald-400 text-xs"></i>
+                    <div>
+                      <div class="text-[10px] text-slate-400">Bandwidth</div>
+                      <div class="text-white font-bold" x-text="group.bandwidth_down_kbps ? (group.bandwidth_down_kbps/1000) + 'M / ' + (group.bandwidth_up_kbps/1000 || 0) + 'M' : (group.mikrotik_rate_limit || 'Uncapped')"></div>
+                    </div>
+                  </div>
+                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                    <i class="fa-solid fa-network-wired text-cyan-400 text-xs"></i>
+                    <div>
+                      <div class="text-[10px] text-slate-400">VLAN Tag</div>
+                      <div class="text-white font-bold" x-text="group.vlan_id ? 'VLAN ' + group.vlan_id : 'Default (Untagged)'"></div>
+                    </div>
+                  </div>
+                  <div class="bg-slate-950/50 p-2 rounded-lg border border-slate-800 flex items-center gap-2">
+                    <i class="fa-solid fa-hourglass-half text-amber-400 text-xs"></i>
+                    <div>
+                      <div class="text-[10px] text-slate-400">Timeouts</div>
+                      <div class="text-white font-bold" x-text="group.idle_timeout ? (group.idle_timeout/60) + 'm idle' : 'No timeout'"></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Assigned Users Badges -->
+                <div x-show="group.users && group.users.length" class="pt-1">
+                  <div class="text-[10px] text-slate-400 uppercase tracking-wider font-semibold mb-1.5">Members:</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    <template x-for="u in group.users" :key="u">
+                      <span class="px-2 py-0.5 rounded-md bg-slate-950 border border-slate-800 text-slate-300 text-[10px] font-mono" x-text="u"></span>
+                    </template>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Raw RADIUS Attributes Collapsible -->
+              <details class="group/details text-xs border-t border-slate-800/80 pt-3">
+                <summary class="cursor-pointer text-slate-400 hover:text-slate-200 font-semibold flex items-center justify-between text-[11px] select-none">
+                  <span>View RADIUS Attributes (<span x-text="(group.reply_attributes.length + group.check_attributes.length)"></span>)</span>
+                  <i class="fa-solid fa-chevron-down text-[10px] transition-transform group-open/details:rotate-180"></i>
+                </summary>
+                <div class="mt-2.5 space-y-1.5 text-[10px] font-mono">
+                  <!-- Reply Attributes -->
+                  <template x-for="attr in group.reply_attributes" :key="attr.id">
+                    <div class="bg-slate-950 p-2 rounded-lg border border-slate-800 space-y-0.5">
+                      <div class="flex justify-between items-center">
+                        <span class="text-indigo-400 font-bold" x-text="attr.attribute"></span>
+                        <span class="text-emerald-400 font-bold" x-text="attr.value"></span>
+                      </div>
+                      <div class="text-[9px] text-slate-400 font-sans" x-text="attr.explanation"></div>
+                    </div>
+                  </template>
+                  <!-- Check Attributes -->
+                  <template x-for="attr in group.check_attributes" :key="attr.id">
+                    <div class="bg-slate-950 p-2 rounded-lg border border-slate-800 space-y-0.5">
+                      <div class="flex justify-between items-center">
+                        <span class="text-amber-400 font-bold" x-text="attr.attribute"></span>
+                        <span class="text-purple-300 font-bold" x-text="attr.value"></span>
+                      </div>
+                      <div class="text-[9px] text-slate-400 font-sans" x-text="attr.explanation"></div>
+                    </div>
+                  </template>
+                </div>
+              </details>
             </div>
           </template>
         </div>
@@ -670,24 +804,142 @@
       <h3 class="text-base font-bold text-white">Add New RADIUS User</h3>
       <form @submit.prevent="saveUser()" class="space-y-3.5 text-xs">
         <div>
-          <label class="block text-slate-300 mb-1">Username</label>
-          <input type="text" x-model="userModal.form.username" required placeholder="e.g. raj or user1" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none">
+          <label class="block text-slate-300 mb-1 font-medium">Username</label>
+          <input type="text" x-model="userModal.form.username" required placeholder="e.g. raj or user1" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
         </div>
         <div>
-          <label class="block text-slate-300 mb-1">Password</label>
-          <input type="password" x-model="userModal.form.password" required placeholder="••••••••••••" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none">
+          <label class="block text-slate-300 mb-1 font-medium">Password</label>
+          <input type="password" x-model="userModal.form.password" required placeholder="••••••••••••" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
         </div>
         <div>
-          <label class="block text-slate-300 mb-1">Policy Group</label>
+          <label class="block text-slate-300 mb-1 font-medium">Policy Group</label>
           <select x-model="userModal.form.group" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none">
-            <option value="admins">admins (Unlimited / Priority)</option>
-            <option value="staff">staff (Fast 100Mbps)</option>
-            <option value="guests">guests (Guest 20Mbps)</option>
+            <template x-for="g in groups" :key="g.groupname">
+              <option :value="g.groupname" x-text="g.groupname + (g.is_admin ? ' ★ (Admin Privileges)' : '')"></option>
+            </template>
           </select>
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <button type="button" @click="userModal.show = false" class="px-4 py-2 text-slate-400 hover:text-white">Cancel</button>
-          <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold">Save User</button>
+          <button type="button" @click="userModal.show = false" class="px-4 py-2 text-slate-400 hover:text-white transition-colors">Cancel</button>
+          <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20">Save User</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Group Policy Modal (Add/Edit) -->
+  <div x-show="groupModal.show" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl max-w-xl w-full p-6 space-y-4 shadow-2xl my-8">
+      <!-- Modal Header -->
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div>
+          <h3 class="text-base font-bold text-white flex items-center gap-2">
+            <i class="fa-solid fa-sliders text-indigo-400"></i>
+            <span x-text="groupModal.isEditing ? 'Edit Policy Group: ' + groupModal.form.groupname : 'Create New Policy Group'"></span>
+          </h3>
+          <p class="text-[11px] text-slate-400 mt-0.5">Configure bandwidth QoS, device limits, session timeouts, and network isolation.</p>
+        </div>
+        <button type="button" @click="groupModal.show = false" class="text-slate-400 hover:text-white p-1">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <!-- Presets Quick Selector in Modal -->
+      <div class="space-y-1.5">
+        <label class="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">Quick Fill from Preset</label>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+          <template x-for="p in presets" :key="p.id">
+            <button type="button" @click="applyPresetToForm(p)" :class="groupModal.activePresetId === p.id ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-700'" class="p-2 rounded-xl text-left border text-[11px] font-medium transition-all flex flex-col justify-between">
+              <span class="font-bold truncate" x-text="p.name"></span>
+              <span class="text-[9px] opacity-75 font-mono truncate" x-text="p.badge"></span>
+            </button>
+          </template>
+        </div>
+      </div>
+
+      <!-- Main Form -->
+      <form @submit.prevent="saveGroup()" class="space-y-4 text-xs">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-300 mb-1 font-medium">Group / Role Name</label>
+            <input type="text" x-model="groupModal.form.groupname" :disabled="groupModal.isEditing" required placeholder="e.g. staff, guests, vip" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono disabled:opacity-60">
+          </div>
+          <div>
+            <label class="block text-slate-300 mb-1 font-medium">Max Simultaneous Devices</label>
+            <input type="number" x-model.number="groupModal.form.simultaneous_use" min="1" max="50" placeholder="e.g. 3 (Default: 3)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+          </div>
+        </div>
+
+        <!-- Bandwidth Controls (Download / Upload in Mbps) -->
+        <div class="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-3.5 space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-white text-xs flex items-center gap-1.5">
+              <i class="fa-solid fa-gauge-high text-emerald-400"></i> Bandwidth & Speed Limits (QoS)
+            </span>
+            <span class="text-[10px] text-slate-400">Leave blank for uncapped speed</span>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-slate-400 text-[11px] mb-1">Download Speed (Mbps)</label>
+              <div class="relative">
+                <input type="number" x-model.number="groupModal.form.bandwidth_down_mbps" min="1" max="10000" placeholder="e.g. 50" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-white focus:border-indigo-500 outline-none font-mono pr-12">
+                <span class="absolute right-3 top-2 text-[10px] text-slate-500 font-mono">Mbps</span>
+              </div>
+            </div>
+            <div>
+              <label class="block text-slate-400 text-[11px] mb-1">Upload Speed (Mbps)</label>
+              <div class="relative">
+                <input type="number" x-model.number="groupModal.form.bandwidth_up_mbps" min="1" max="10000" placeholder="e.g. 25" class="w-full bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2 text-white focus:border-indigo-500 outline-none font-mono pr-12">
+                <span class="absolute right-3 top-2 text-[10px] text-slate-500 font-mono">Mbps</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Session & Idle Timeouts -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-300 mb-1 font-medium">Max Session Duration (Hours)</label>
+            <input type="number" x-model.number="groupModal.form.session_timeout_hours" min="1" max="720" placeholder="e.g. 24 (Leave blank = Unlimited)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+          </div>
+          <div>
+            <label class="block text-slate-300 mb-1 font-medium">Inactivity Idle Disconnect (Minutes)</label>
+            <input type="number" x-model.number="groupModal.form.idle_timeout_mins" min="1" max="1440" placeholder="e.g. 30 (Default: 30)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+          </div>
+        </div>
+
+        <!-- Network Segmentation (VLAN & IP Pool) -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-300 mb-1 font-medium">802.1Q Dynamic VLAN ID</label>
+            <input type="number" x-model.number="groupModal.form.vlan_id" min="1" max="4094" placeholder="e.g. 10 (Optional)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+          </div>
+          <div>
+            <label class="block text-slate-300 mb-1 font-medium">DHCP Framed-Pool Name</label>
+            <input type="text" x-model="groupModal.form.framed_pool" placeholder="e.g. staff_pool (Optional)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+          </div>
+        </div>
+
+        <!-- Admin Permission Checkbox -->
+        <div class="flex items-center gap-2.5 p-3 rounded-xl bg-slate-950 border border-slate-800">
+          <input type="checkbox" id="modal_is_admin" x-model="groupModal.form.is_admin" class="w-4 h-4 rounded text-indigo-600 bg-slate-900 border-slate-700 focus:ring-0">
+          <label for="modal_is_admin" class="text-slate-300 font-medium cursor-pointer select-none">
+            Grant Administrative Console Access (Full RADIUS & PKI Management)
+          </label>
+        </div>
+
+        <!-- Live Human Explanation Box -->
+        <div class="bg-indigo-950/40 border border-indigo-500/30 rounded-2xl p-3.5 space-y-1">
+          <div class="flex items-center gap-1.5 text-indigo-400 font-bold text-[11px]">
+            <i class="fa-solid fa-wand-magic-sparkles"></i> Live Policy Preview
+          </div>
+          <p class="text-slate-200 text-xs leading-relaxed" x-text="getGroupLiveSummary()"></p>
+        </div>
+
+        <!-- Modal Footer -->
+        <div class="flex justify-end gap-2 pt-2 border-t border-slate-800">
+          <button type="button" @click="groupModal.show = false" class="px-4 py-2 text-slate-400 hover:text-white transition-colors">Cancel</button>
+          <button type="submit" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20 transition-all">Save Policy Group</button>
         </div>
       </form>
     </div>
@@ -724,6 +976,7 @@
         users: [],
         certificates: [],
         groups: [],
+        presets: [],
         nasList: [],
         sessions: [],
         logs: [],
@@ -733,6 +986,24 @@
         userModal: {
           show: false,
           form: { username: '', password: '', group: 'staff' }
+        },
+
+        groupModal: {
+          show: false,
+          isEditing: false,
+          activePresetId: '',
+          form: {
+            groupname: '',
+            simultaneous_use: 3,
+            bandwidth_down_mbps: null,
+            bandwidth_up_mbps: null,
+            session_timeout_hours: null,
+            idle_timeout_mins: 30,
+            vlan_id: null,
+            framed_pool: '',
+            mikrotik_rate_limit: '',
+            is_admin: false
+          }
         },
 
         toast: { show: false, type: 'success', message: '' },
@@ -868,6 +1139,8 @@
           this.fetchStats();
           this.fetchUsers();
           this.fetchCerts();
+          this.fetchGroups();
+          this.fetchPresets();
         },
 
         async fetchStats() {
@@ -898,6 +1171,13 @@
           } catch(e) {}
         },
 
+        async fetchPresets() {
+          try {
+            const res = await this.fetchWithAuth('/radius/api/groups/presets');
+            if (res.ok) this.presets = await res.json();
+          } catch(e) {}
+        },
+
         async fetchNas() {
           try {
             const res = await this.fetchWithAuth('/radius/api/nas');
@@ -920,7 +1200,7 @@
         },
 
         openAddUserModal() {
-          this.userModal.form = { username: '', password: '', group: 'staff' };
+          this.userModal.form = { username: '', password: '', group: this.groups.length ? this.groups[0].groupname : 'staff' };
           this.userModal.show = true;
         },
 
@@ -936,6 +1216,7 @@
               this.userModal.show = false;
               this.fetchUsers();
               this.fetchStats();
+              this.fetchGroups();
             } else {
               const d = await res.json();
               this.showToast(d.detail || 'Failed to save user', 'error');
@@ -953,9 +1234,163 @@
               this.showToast(`User ${username} deleted.`);
               this.fetchUsers();
               this.fetchStats();
+              this.fetchGroups();
             }
           } catch(e) {
             this.showToast('Failed to delete user', 'error');
+          }
+        },
+
+        // --- Group Policy Management Methods ---
+        openAddGroupModal() {
+          this.groupModal = {
+            show: true,
+            isEditing: false,
+            activePresetId: '',
+            form: {
+              groupname: '',
+              simultaneous_use: 3,
+              bandwidth_down_mbps: 50,
+              bandwidth_up_mbps: 25,
+              session_timeout_hours: 24,
+              idle_timeout_mins: 30,
+              vlan_id: null,
+              framed_pool: '',
+              mikrotik_rate_limit: '',
+              is_admin: false
+            }
+          };
+        },
+
+        openEditGroupModal(g) {
+          this.groupModal = {
+            show: true,
+            isEditing: true,
+            activePresetId: '',
+            form: {
+              groupname: g.groupname,
+              simultaneous_use: g.simultaneous_use || 3,
+              bandwidth_down_mbps: g.bandwidth_down_kbps ? g.bandwidth_down_kbps / 1000 : null,
+              bandwidth_up_mbps: g.bandwidth_up_kbps ? g.bandwidth_up_kbps / 1000 : null,
+              session_timeout_hours: g.session_timeout ? Math.floor(g.session_timeout / 3600) : null,
+              idle_timeout_mins: g.idle_timeout ? Math.floor(g.idle_timeout / 60) : 30,
+              vlan_id: g.vlan_id || null,
+              framed_pool: g.framed_pool || '',
+              mikrotik_rate_limit: g.mikrotik_rate_limit || '',
+              is_admin: !!g.is_admin
+            }
+          };
+        },
+
+        applyPresetToForm(p) {
+          this.groupModal.activePresetId = p.id;
+          if (!this.groupModal.isEditing) {
+            this.groupModal.form.groupname = p.groupname;
+          }
+          this.groupModal.form.simultaneous_use = p.simultaneous_use;
+          this.groupModal.form.bandwidth_down_mbps = p.bandwidth_down_kbps ? p.bandwidth_down_kbps / 1000 : null;
+          this.groupModal.form.bandwidth_up_mbps = p.bandwidth_up_kbps ? p.bandwidth_up_kbps / 1000 : null;
+          this.groupModal.form.session_timeout_hours = p.session_timeout ? Math.floor(p.session_timeout / 3600) : null;
+          this.groupModal.form.idle_timeout_mins = p.idle_timeout ? Math.floor(p.idle_timeout / 60) : 30;
+          this.groupModal.form.vlan_id = p.vlan_id || null;
+          this.groupModal.form.framed_pool = p.framed_pool || '';
+          this.groupModal.form.mikrotik_rate_limit = p.mikrotik_rate_limit || '';
+          this.groupModal.form.is_admin = !!p.is_admin;
+        },
+
+        async quickApplyPreset(p) {
+          if (!confirm(`Apply preset '${p.name}' for policy group '${p.groupname}'?`)) return;
+          try {
+            const res = await this.fetchWithAuth('/radius/api/groups/apply-preset', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ preset_id: p.id })
+            });
+            if (res.ok) {
+              this.showToast(`Applied preset '${p.name}' successfully!`);
+              this.fetchGroups();
+            } else {
+              const d = await res.json();
+              this.showToast(d.detail || 'Failed to apply preset', 'error');
+            }
+          } catch(e) {
+            this.showToast('Error applying preset', 'error');
+          }
+        },
+
+        getGroupLiveSummary() {
+          const f = this.groupModal.form;
+          const parts = [];
+          if (f.is_admin) parts.push("Grants full Administrator Console rights");
+          if (f.simultaneous_use) parts.push(`Allows max ${f.simultaneous_use} concurrent device${f.simultaneous_use > 1 ? 's' : ''}`);
+          if (f.bandwidth_down_mbps && f.bandwidth_up_mbps) {
+            parts.push(`Caps speed at ↓${f.bandwidth_down_mbps} Mbps / ↑${f.bandwidth_up_mbps} Mbps`);
+          } else if (f.bandwidth_down_mbps) {
+            parts.push(`Caps download speed at ↓${f.bandwidth_down_mbps} Mbps`);
+          } else {
+            parts.push("Uncapped high-speed bandwidth");
+          }
+          if (f.session_timeout_hours) parts.push(`Forces re-login after ${f.session_timeout_hours} hour${f.session_timeout_hours > 1 ? 's' : ''}`);
+          if (f.idle_timeout_mins) parts.push(`Disconnects after ${f.idle_timeout_mins} mins of inactivity`);
+          if (f.vlan_id) parts.push(`Isolates traffic to 802.1Q VLAN #${f.vlan_id}`);
+          if (f.framed_pool) parts.push(`Assigns IP from DHCP pool '${f.framed_pool}'`);
+          return parts.length ? parts.join(". ") + "." : "Standard open policy with no bandwidth or session restrictions.";
+        },
+
+        async saveGroup() {
+          const f = this.groupModal.form;
+          if (!f.groupname || !f.groupname.trim()) {
+            this.showToast('Please enter a policy group name', 'error');
+            return;
+          }
+
+          const payload = {
+            groupname: f.groupname.trim().toLowerCase(),
+            simultaneous_use: f.simultaneous_use ? parseInt(f.simultaneous_use) : null,
+            bandwidth_down_kbps: f.bandwidth_down_mbps ? parseInt(f.bandwidth_down_mbps) * 1000 : null,
+            bandwidth_up_kbps: f.bandwidth_up_mbps ? parseInt(f.bandwidth_up_mbps) * 1000 : null,
+            session_timeout: f.session_timeout_hours ? parseInt(f.session_timeout_hours) * 3600 : null,
+            idle_timeout: f.idle_timeout_mins ? parseInt(f.idle_timeout_mins) * 60 : null,
+            acct_interim_interval: 300,
+            vlan_id: f.vlan_id ? parseInt(f.vlan_id) : null,
+            framed_pool: f.framed_pool ? f.framed_pool.trim() : null,
+            mikrotik_rate_limit: f.mikrotik_rate_limit ? f.mikrotik_rate_limit.trim() : null,
+            is_admin: !!f.is_admin
+          };
+
+          try {
+            const res = await this.fetchWithAuth('/radius/api/groups', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+              this.showToast(`Policy group '${payload.groupname}' saved successfully!`);
+              this.groupModal.show = false;
+              this.fetchGroups();
+            } else {
+              const d = await res.json();
+              this.showToast(d.detail || 'Failed to save group policy', 'error');
+            }
+          } catch(e) {
+            this.showToast('Error saving group policy', 'error');
+          }
+        },
+
+        async deleteGroup(groupname) {
+          if (!confirm(`Are you sure you want to delete policy group '${groupname}'? Any assigned users will lose their group limits.`)) return;
+          try {
+            const res = await this.fetchWithAuth(`/radius/api/groups/${groupname}`, { method: 'DELETE' });
+            if (res.ok) {
+              this.showToast(`Policy group '${groupname}' deleted.`);
+              this.fetchGroups();
+              this.fetchUsers();
+            } else {
+              const d = await res.json();
+              this.showToast(d.detail || 'Failed to delete group', 'error');
+            }
+          } catch(e) {
+            this.showToast('Failed to delete group', 'error');
           }
         },
 
