@@ -239,6 +239,7 @@ For detailed cloud ingress rules (**Oracle Cloud OCI**, **AWS EC2**, **GCP**, **
 - **Request log**: every API call logs `METHOD path status latency client` — health checks at `DEBUG`, `4xx/5xx` as warnings. Request **bodies are never logged** (they may contain passwords).
 - **Event logs**: admin login success/fail (failures warn with username + client IP, never the password), password generate/reset, cert issue, CoA disconnect, test-auth results.
 - **Audit trail**: persistent `admin_audit_log` table (auto-created at startup), queryable at `GET /radius/api/audit` and rendered in Admin Console → Logs.
+- **Status page**: Admin Console → **Status** tab consolidates everything — core services (API / PostgreSQL / FreeRADIUS daemon), PKI signer state, RADIUS endpoints, usage snapshot, and latest admin activity — with Refresh-all and 15s auto-refresh.
 
 ---
 

@@ -245,8 +245,8 @@
       <!-- Navigation Tabs -->
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 border-t border-slate-800/60">
         <nav class="flex space-x-6 overflow-x-auto">
-          <button @click="activeTab = 'overview'" :class="activeTab === 'overview' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
-            <i class="fa-solid fa-chart-pie"></i> Overview
+          <button @click="activeTab = 'status'; refreshAll()" :class="activeTab === 'status' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+            <i class="fa-solid fa-heart-pulse"></i> Status
           </button>
           <button @click="activeTab = 'users'; fetchUsers()" :class="activeTab === 'users' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
             <i class="fa-solid fa-users"></i> Users (<span x-text="stats.total_users || 0"></span>)
@@ -276,52 +276,80 @@
     <!-- Main Content Area -->
     <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
 
-      <!-- TAB: OVERVIEW -->
-      <section x-show="activeTab === 'overview'" class="space-y-6">
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
-            <div class="flex items-center justify-between">
-              <span class="text-sm font-medium text-slate-400">Total Users</span>
-              <div class="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-400 flex items-center justify-center"><i class="fa-solid fa-user-group"></i></div>
-            </div>
-            <div class="text-3xl font-extrabold text-white mt-2" x-text="stats.total_users || 0"></div>
-            <div class="text-xs text-slate-500 mt-1">PostgreSQL radcheck records</div>
+      <!-- TAB: STATUS -->
+      <section x-show="activeTab === 'status'" class="space-y-6">
+        <!-- Status header: overall pill + refresh controls -->
+        <div class="flex flex-wrap items-center gap-3 justify-between">
+          <div class="flex items-center gap-3">
+            <span class="px-3.5 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2"
+                  :class="overallStatus().tone">
+              <span class="w-2 h-2 rounded-full" :class="overallStatus().dot"></span>
+              <span x-text="overallStatus().label"></span>
+            </span>
+            <span class="text-[11px] text-slate-500 font-mono" x-text="statusCheckedAt ? 'checked ' + statusCheckedAt : 'checking...'"></span>
           </div>
-
-          <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
-            <div class="flex items-center justify-between">
-              <span class="text-sm font-medium text-slate-400">Active Live Sessions</span>
-              <div class="w-8 h-8 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center"><i class="fa-solid fa-signal"></i></div>
-            </div>
-            <div class="text-3xl font-extrabold text-emerald-400 mt-2" x-text="stats.active_sessions || 0"></div>
-            <div class="text-xs text-slate-500 mt-1">Connected WiFi & PPP clients</div>
-          </div>
-
-          <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
-            <div class="flex items-center justify-between">
-              <span class="text-sm font-medium text-slate-400">Client Certificates (EAP-TLS)</span>
-              <div class="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center"><i class="fa-solid fa-id-card-clip"></i></div>
-            </div>
-            <div class="text-3xl font-extrabold text-purple-400 mt-2" x-text="stats.client_certificates || 0"></div>
-            <div class="text-xs text-slate-500 mt-1">PKI Issued .p12 / MobileConfig</div>
-          </div>
-
-          <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
-            <div class="flex items-center justify-between">
-              <span class="text-sm font-medium text-slate-400">NAS Gateways</span>
-              <div class="w-8 h-8 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center justify-center"><i class="fa-solid fa-server"></i></div>
-            </div>
-            <div class="text-3xl font-extrabold text-white mt-2" x-text="stats.nas_clients || 0"></div>
-            <div class="text-xs text-slate-500 mt-1">Authorized Routers / APs</div>
+          <div class="flex items-center gap-2">
+            <label class="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer select-none">
+              <input type="checkbox" x-model="statusAutoRefresh" @change="toggleStatusAutoRefresh()" class="w-3.5 h-3.5 rounded text-indigo-600 bg-slate-900 border-slate-700">
+              Auto-refresh (15s)
+            </label>
+            <button @click="refreshAll()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-2">
+              <i class="fa-solid fa-rotate"></i> Refresh all
+            </button>
           </div>
         </div>
 
-        <!-- Connection Parameters Card -->
-        <div class="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-slate-800 p-6 rounded-2xl">
-          <h3 class="text-base font-semibold text-white mb-4 flex items-center gap-2">
-            <i class="fa-solid fa-plug text-indigo-400"></i> Router & Client RADIUS Endpoints
-          </h3>
-          <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs font-mono">
+        <!-- Section: Core services -->
+        <div>
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center gap-2"><i class="fa-solid fa-server"></i> Core Services</h3>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium text-slate-300">Management API</span>
+                <span class="w-2.5 h-2.5 rounded-full" :class="health.api_ok ? 'bg-emerald-400' : 'bg-rose-400'"></span>
+              </div>
+              <div class="text-lg font-extrabold mt-2" :class="health.api_ok ? 'text-emerald-400' : 'text-rose-400'" x-text="health.api_ok ? 'Operational' : 'Unreachable'"></div>
+              <div class="text-[11px] text-slate-500 mt-1 font-mono" x-text="health.api_detail || 'FastAPI :8090 /radius/api'"></div>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium text-slate-300">PostgreSQL 16</span>
+                <span class="w-2.5 h-2.5 rounded-full" :class="health.db_ok ? 'bg-emerald-400' : 'bg-rose-400'"></span>
+              </div>
+              <div class="text-lg font-extrabold mt-2" :class="health.db_ok ? 'text-emerald-400' : 'text-rose-400'" x-text="health.db_ok ? 'Connected' : 'Down'"></div>
+              <div class="text-[11px] text-slate-500 mt-1 font-mono" x-text="health.db_detail || 'radcheck · radacct · radpostauth'"></div>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <div class="flex items-center justify-between">
+                <span class="text-sm font-medium text-slate-300">FreeRADIUS Daemon</span>
+                <span class="w-2.5 h-2.5 rounded-full" :class="health.radius_ok ? 'bg-emerald-400' : 'bg-rose-400'"></span>
+              </div>
+              <div class="text-lg font-extrabold mt-2" :class="health.radius_ok ? 'text-emerald-400' : 'text-rose-400'" x-text="health.radius_ok ? 'Running' : 'Stopped'"></div>
+              <div class="text-[11px] text-slate-500 mt-1 font-mono">udp 1812 · 1813 · 3799</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section: PKI & Cert Signer -->
+        <div>
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center gap-2"><i class="fa-solid fa-certificate"></i> PKI & Certificate Signer</h3>
+          <div class="rounded-2xl border p-4 flex flex-wrap items-center gap-3"
+               :class="signerStatus.configured && signerStatus.reachable ? 'bg-emerald-950/40 border-emerald-500/30' : (signerStatus.configured ? 'bg-rose-950/40 border-rose-500/30' : 'bg-slate-900 border-slate-800')">
+            <span class="w-2.5 h-2.5 rounded-full shrink-0"
+                  :class="signerStatus.configured && signerStatus.reachable ? 'bg-emerald-400 animate-pulse' : (signerStatus.configured ? 'bg-rose-400' : 'bg-slate-500')"></span>
+            <div class="flex-1 min-w-[200px]">
+              <div class="text-xs font-bold text-white" x-text="signerHeadline()"></div>
+              <div class="text-[11px] text-slate-400 mt-0.5" x-text="signerStatus.detail || 'Checking signer status...'"></div>
+            </div>
+            <div x-show="signerStatus.latency_ms" class="text-[11px] font-mono text-slate-400" x-text="signerStatus.latency_ms + ' ms'"></div>
+            <button @click="activeTab = 'certs'; fetchCerts(); fetchSignerStatus(true)" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-[11px] font-semibold">Open EAP-TLS →</button>
+          </div>
+        </div>
+
+        <!-- Section: RADIUS endpoints -->
+        <div>
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center gap-2"><i class="fa-solid fa-plug"></i> Router & Client RADIUS Endpoints</h3>
+          <div class="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-slate-800 p-5 rounded-2xl grid grid-cols-1 md:grid-cols-4 gap-4 text-xs font-mono">
             <div class="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800">
               <div class="text-slate-400 mb-1">RADIUS Server (env RADIUS_PUBLIC_HOST):</div>
               <div class="text-indigo-300 font-bold text-sm" x-text="publicConfig.radius_host || window.location.hostname"></div>
@@ -338,6 +366,54 @@
               <div class="text-slate-400 mb-1">CoA / Disconnect (UDP):</div>
               <div class="text-indigo-300 font-bold text-sm">3799 / udp</div>
             </div>
+          </div>
+        </div>
+
+        <!-- Section: Usage snapshot -->
+        <div>
+          <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center gap-2"><i class="fa-solid fa-gauge-high"></i> Usage Snapshot</h3>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex items-center gap-3">
+              <div class="w-9 h-9 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center shrink-0"><i class="fa-solid fa-user-group"></i></div>
+              <div><div class="text-xl font-extrabold text-white" x-text="stats.total_users || 0"></div><div class="text-[11px] text-slate-500">Users</div></div>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex items-center gap-3">
+              <div class="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0"><i class="fa-solid fa-signal"></i></div>
+              <div><div class="text-xl font-extrabold text-emerald-400" x-text="stats.active_sessions || 0"></div><div class="text-[11px] text-slate-500">Live sessions</div></div>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex items-center gap-3">
+              <div class="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center shrink-0"><i class="fa-solid fa-id-card-clip"></i></div>
+              <div><div class="text-xl font-extrabold text-purple-400" x-text="stats.client_certificates || 0"></div><div class="text-[11px] text-slate-500">Certificates</div></div>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex items-center gap-3">
+              <div class="w-9 h-9 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center shrink-0"><i class="fa-solid fa-server"></i></div>
+              <div><div class="text-xl font-extrabold text-white" x-text="stats.nas_clients || 0"></div><div class="text-[11px] text-slate-500">NAS gateways</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section: Latest admin activity -->
+        <div>
+          <div class="flex items-center justify-between mb-2.5">
+            <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2"><i class="fa-solid fa-clock-rotate-left"></i> Latest Admin Activity</h3>
+            <button @click="activeTab = 'logs'; fetchLogs(); fetchAudit()" class="text-[11px] text-indigo-400 hover:text-indigo-300 underline">Full history →</button>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+            <table class="w-full text-left text-xs">
+              <tbody class="divide-y divide-slate-800">
+                <template x-for="a in auditLogs.slice(0, 5)" :key="a.id">
+                  <tr class="hover:bg-slate-800/40">
+                    <td class="px-5 py-2.5 font-mono text-slate-500 whitespace-nowrap" x-text="a.ts"></td>
+                    <td class="px-5 py-2.5 font-semibold text-white" x-text="a.admin_user"></td>
+                    <td class="px-5 py-2.5"><span class="px-2 py-0.5 rounded text-[10px] font-mono border bg-slate-800 text-slate-300 border-slate-700" x-text="a.action"></span></td>
+                    <td class="px-5 py-2.5 font-mono text-slate-400" x-text="a.target_user || '—'"></td>
+                  </tr>
+                </template>
+                <tr x-show="!auditLogs.length">
+                  <td class="px-5 py-6 text-center text-slate-500 italic">No admin actions recorded yet.</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </section>
@@ -1127,9 +1203,13 @@
           valid_days: 365
         },
 
-        activeTab: 'overview',
+        activeTab: 'status',
         health: { status: 'healthy' },
         stats: { total_users: 0, active_sessions: 0, client_certificates: 0, nas_clients: 0 },
+        health: { api_ok: true, api_detail: '', db_ok: true, db_detail: '', radius_ok: true },
+        statusCheckedAt: '',
+        statusAutoRefresh: false,
+        statusTimer: null,
         users: [],
         userSearch: '',
         userGroupFilter: '',
@@ -1296,12 +1376,15 @@
           try {
             await fetch('/radius/api/auth/logout', { method: 'POST' });
           } catch(e) {}
+          if (this.statusTimer) { clearInterval(this.statusTimer); this.statusTimer = null; }
+          this.statusAutoRefresh = false;
           localStorage.removeItem('admin_token');
           this.isAuthenticated = false;
           this.showToast('You have been signed out.');
         },
 
         async loadDashboardData() {
+          this.fetchHealth();
           this.fetchStats();
           this.fetchUsers();
           this.fetchCerts();
@@ -1309,6 +1392,7 @@
           this.fetchPresets();
           this.fetchPublicConfig();
           this.fetchSignerStatus();
+          this.fetchAudit();
         },
 
         async fetchPublicConfig() {
@@ -1340,6 +1424,51 @@
             const res = await this.fetchWithAuth('/radius/api/stats');
             if (res.ok) this.stats = await res.json();
           } catch(e) {}
+        },
+
+        async fetchHealth() {
+          const started = performance.now();
+          try {
+            const res = await fetch('/radius/api/health');
+            const ms = Math.round(performance.now() - started);
+            if (res.ok) {
+              const h = await res.json();
+              this.health = {
+                api_ok: true, api_detail: `FastAPI · ${ms} ms · ${h.status || 'up'}`,
+                db_ok: !!(h.database && h.database.connected),
+                db_detail: (h.database && (h.database.host + ' / ' + h.database.database)) + (h.database && h.database.error ? ' · ' + h.database.error : ''),
+                radius_ok: !!(h.freeradius_process && h.freeradius_process.running)
+              };
+            } else {
+              this.health = { api_ok: false, api_detail: `HTTP ${res.status} · ${ms} ms`, db_ok: false, db_detail: 'unknown (API error)', radius_ok: false };
+            }
+          } catch(e) {
+            this.health = { api_ok: false, api_detail: 'API unreachable from browser', db_ok: false, db_detail: 'unknown', radius_ok: false };
+          }
+          const d = new Date();
+          this.statusCheckedAt = d.toLocaleTimeString();
+        },
+
+        overallStatus() {
+          const signerBad = this.signerStatus.configured && !this.signerStatus.reachable;
+          if (this.health.api_ok && this.health.db_ok && this.health.radius_ok && !signerBad) {
+            return { label: 'All systems operational', tone: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30', dot: 'bg-emerald-400 animate-pulse' };
+          }
+          if (this.health.api_ok && this.health.db_ok) {
+            return { label: 'Degraded — check details', tone: 'bg-amber-500/10 text-amber-300 border-amber-500/30', dot: 'bg-amber-400' };
+          }
+          return { label: 'Service disruption', tone: 'bg-rose-500/10 text-rose-300 border-rose-500/30', dot: 'bg-rose-400' };
+        },
+
+        async refreshAll() {
+          await Promise.all([this.fetchHealth(), this.fetchStats(), this.fetchPublicConfig(), this.fetchSignerStatus(), this.fetchAudit()]);
+        },
+
+        toggleStatusAutoRefresh() {
+          if (this.statusTimer) { clearInterval(this.statusTimer); this.statusTimer = null; }
+          if (this.statusAutoRefresh) {
+            this.statusTimer = setInterval(() => { if (this.isAuthenticated) this.refreshAll(); }, 15000);
+          }
         },
 
         async fetchUsers() {
