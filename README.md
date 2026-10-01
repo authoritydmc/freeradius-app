@@ -267,6 +267,18 @@ POSTGRES_PASSWORD=... ./scripts/restore.sh ./backups/radius-db-<ts>.sql.gz ./bac
 
 Schedule `backup.sh` daily (cron) and copy both files encrypted offsite — losing the certs archive means re-issuing every certificate. Table retention: `AUDIT_RETENTION_DAYS` / `ACCOUNTING_RETENTION_DAYS` (default 365, `0` = keep forever), purged at startup.
 
+### 🌐 Static client IPs must live on the NAS-side LAN
+
+A pinned `Framed-IP-Address` must belong to the **local network behind your
+routers** (e.g. `192.168.1.50`), never the RADIUS server's own subnet — the
+server only *tells* the NAS which address to hand out; a `10.x` pin on a
+`192.168/172.16` site connects to Wi-Fi with no route anywhere. The dashboard
+checks every static IP against your registered NAS subnets live (user modal
+hint + save-time warning) and `GET /radius/api/networks/coverage?ip=…`
+answers the same question for scripts. Blank (DHCP) or per-group
+`Framed-Pool` is the safe default for roaming users; reserve static pins for
+single-subnet devices.
+
 ### 🔒 Verified devices (MAC lockdown, off by default)
 
 Per user: **Users → 🛡️ → Only verified devices can connect**. When on, FreeRADIUS

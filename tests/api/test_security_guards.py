@@ -265,6 +265,58 @@ def test_radius_enforcement_config():
     assert "reason TEXT" in schema
 
 
+# --- NAS-subnet coverage guard ------------------------------------------------------
+
+LOCAL_NETS = (["192.168.1.0/24", "172.16.5.0/24"], False)
+
+
+def test_cloud_ip_flagged_outside_local_nas_subnets(monkeypatch):
+    """The Oracle-cloud 10.x pin against local 192/172 NASes must warn."""
+    monkeypatch.setattr(app, "read_nas_networks", lambda: LOCAL_NETS)
+    cov = app.check_ip_coverage("10.10.0.12")
+    assert cov["valid"] is True and cov["covered"] is False
+    warns = app.framed_ip_warnings({"Framed-IP-Address": "10.10.0.12"}, "User 'aman'")
+    assert len(warns) == 1 and "10.10.0.12" in warns[0]
+
+
+def test_local_ip_covered(monkeypatch):
+    monkeypatch.setattr(app, "read_nas_networks", lambda: LOCAL_NETS)
+    cov = app.check_ip_coverage("192.168.1.50")
+    assert cov["valid"] is True and cov["covered"] is True
+
+
+def test_catch_all_covers_everything(monkeypatch):
+    monkeypatch.setattr(app, "read_nas_networks", lambda: (["0.0.0.0/0"], True))
+    assert app.check_ip_coverage("10.10.0.12")["covered"] is True
+    assert app.framed_ip_warnings({"Framed-IP-Address": "10.10.0.12"}, "User 'x'") == []
+
+
+def test_no_nas_data_is_unknown_not_warning(monkeypatch):
+    monkeypatch.setattr(app, "read_nas_networks", lambda: ([], False))
+    cov = app.check_ip_coverage("10.10.0.12")
+    assert cov["covered"] is None
+    assert app.framed_ip_warnings({"Framed-IP-Address": "10.10.0.12"}, "User 'x'") == []
+
+
+def test_invalid_ip_warns_and_other_attrs_ignored(monkeypatch):
+    monkeypatch.setattr(app, "read_nas_networks", lambda: LOCAL_NETS)
+    warns = app.framed_ip_warnings({"Framed-IP-Address": "not-an-ip"}, "User 'x'")
+    assert len(warns) == 1 and "not a valid" in warns[0]
+    assert app.framed_ip_warnings({"Session-Timeout": "7200"}, "User 'x'") == []
+    assert app.framed_ip_warnings(None, "User 'x'") == []
+
+
+def test_group_static_ip_gets_shared_clash_warning(monkeypatch):
+    monkeypatch.setattr(app, "read_nas_networks", lambda: LOCAL_NETS)
+    warns = app.framed_ip_warnings({"Framed-IP-Address": "192.168.1.50"}, "Group 'staff'")
+    assert any("clash" in w or "shared" in w for w in warns)
+
+
+def test_coverage_route_registered():
+    paths = {getattr(r, "path", "") for r in app.app.routes}
+    assert "/radius/api/networks/coverage" in paths
+
+
 # --- route registration smoke test ----------------------------------------------
 
 def test_critical_routes_registered():

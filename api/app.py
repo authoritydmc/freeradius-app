@@ -898,6 +898,8 @@ class UserCreateRequest(BaseModel):
     password_type: str = Field(default="Cleartext-Password") # Cleartext-Password, SHA2-Password, etc.
     group: Optional[str] = None
     attributes: Optional[Dict[str, str]] = None
+    # Static client IP: None = leave existing pinning untouched, "" = remove it (DHCP), value = pin it.
+    framed_ip: Optional[str] = None
 
 class PasswordChangeRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=128)
@@ -1307,6 +1309,94 @@ def get_password_policy(_: str = Depends(authenticate_admin)):
         "default_generate_length": 16,
     }
 
+# ----------------------------------------------------------------------------
+# NAS-subnet coverage guard: a static Framed-IP-Address must belong to the
+# NAS-side LAN (e.g. local 192.168/172.16), never the server's own cloud
+# subnet. Checks warn (never block — routed setups are legitimate).
+# ----------------------------------------------------------------------------
+def read_nas_networks() -> tuple[List[str], bool]:
+    """Parse nas.nasname into networks. Returns (cidr_list, has_catch_all)."""
+    nets: List[str] = []
+    catch_all = False
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT nasname FROM nas")
+                for r in cur.fetchall():
+                    raw = (r.get("nasname") or "").strip()
+                    if not raw:
+                        continue
+                    try:
+                        net = ipaddress.ip_network(raw, strict=False)
+                    except ValueError:
+                        continue  # hostname — cannot map to a subnet
+                    if net.prefixlen == 0:
+                        catch_all = True
+                    nets.append(str(net))
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("NAS subnet read failed: %s", e)
+        return [], False
+    return sorted(set(nets)), catch_all
+
+
+def check_ip_coverage(ip_str: Optional[str]) -> Dict[str, Any]:
+    """Is this client IP inside a registered NAS subnet?"""
+    try:
+        ip = ipaddress.ip_address((ip_str or "").strip())
+    except ValueError:
+        return {"ip": ip_str, "valid": False, "covered": False, "known": True,
+                "nas_networks": [],
+                "message": f"'{ip_str}' is not a valid IPv4/IPv6 address — the NAS will fail or ignore it."}
+    nets, catch_all = read_nas_networks()
+    if catch_all:
+        return {"ip": str(ip), "valid": True, "covered": True, "known": True,
+                "nas_networks": nets,
+                "message": f"{ip} is accepted (a catch-all 0.0.0.0/0 NAS entry covers every subnet)."}
+    if not nets:
+        return {"ip": str(ip), "valid": True, "covered": None, "known": False,
+                "nas_networks": [],
+                "message": "No NAS subnets registered yet — cannot verify. Add your routers under NAS Clients first."}
+    hits = [n for n in nets if ip in ipaddress.ip_network(n)]
+    if hits:
+        return {"ip": str(ip), "valid": True, "covered": True, "known": True,
+                "nas_networks": nets,
+                "message": f"{ip} belongs to NAS subnet {hits[0]} — safe to pin."}
+    return {"ip": str(ip), "valid": True, "covered": False, "known": True,
+            "nas_networks": nets,
+            "message": f"{ip} is outside all registered NAS subnets ({', '.join(nets)}) — "
+                       "devices there get an unroutable address (Wi-Fi connects, no internet). "
+                       "Use DHCP or a Framed-Pool instead."}
+
+
+def framed_ip_warnings(attributes: Optional[Dict[str, str]], scope: str) -> List[str]:
+    """Warnings for static Framed-IP-Address use (never blocks the save)."""
+    warnings: List[str] = []
+    if not attributes:
+        return warnings
+    found = False
+    for attr, val in attributes.items():
+        if (attr or "").strip().lower() != "framed-ip-address":
+            continue
+        found = True
+        cov = check_ip_coverage(val)
+        if not cov["valid"] or cov["covered"] is False:
+            warnings.append(f"{scope}: {cov['message']}")
+    if found and scope.startswith("Group"):
+        warnings.append(f"{scope}: one static IP shared by every member will clash "
+                        "as soon as two devices are online — prefer Framed-Pool or per-user IPs.")
+    return warnings
+
+
+@app.get("/radius/api/networks/coverage", tags=["NAS"])
+@app.get("/api/networks/coverage", tags=["NAS"])
+def get_ip_coverage(ip: str = Query(...), _: str = Depends(authenticate_admin)):
+    """Live check for the UI: is this client IP inside a registered NAS subnet?"""
+    return check_ip_coverage(ip)
+
+
 @app.post("/radius/api/users", tags=["Users"])
 @app.post("/api/users", tags=["Users"])
 def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(authenticate_admin)):
@@ -1338,9 +1428,30 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
                         VALUES (%s, %s, '=', %s)
                     """, (payload.username, attr, val))
 
+            # Static IP pinning: explicit None leaves it, "" removes it (DHCP).
+            ip_attrs: Dict[str, str] = {}
+            if payload.framed_ip is not None:
+                if payload.framed_ip.strip():
+                    try:
+                        ipaddress.ip_address(payload.framed_ip.strip())
+                    except ValueError:
+                        raise HTTPException(status_code=422, detail=f"'{payload.framed_ip}' is not a valid IP address.")
+                    cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Framed-IP-Address'", (payload.username,))
+                    cur.execute("INSERT INTO radreply (username, attribute, op, value) VALUES (%s, 'Framed-IP-Address', '=', %s)",
+                                (payload.username, payload.framed_ip.strip()))
+                    ip_attrs = {"Framed-IP-Address": payload.framed_ip.strip()}
+                else:
+                    cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Framed-IP-Address'", (payload.username,))
+
             conn.commit()
-            log_audit(admin_user, "user_create" if not existed else "user_update", payload.username, f"group={payload.group}")
-            return {"status": "success", "created": not existed, "message": f"User '{payload.username}' {'created' if not existed else 'updated'} successfully"}
+            merged = dict(payload.attributes or {})
+            merged.update(ip_attrs)
+            warnings = framed_ip_warnings(merged, f"User '{payload.username}'")
+            log_audit(admin_user, "user_create" if not existed else "user_update", payload.username,
+                      f"group={payload.group}" + (f" warnings={len(warnings)}" if warnings else ""))
+            return {"status": "success", "created": not existed,
+                    "message": f"User '{payload.username}' {'created' if not existed else 'updated'} successfully",
+                    "warnings": warnings}
     finally:
         conn.close()
 
@@ -2048,7 +2159,9 @@ def create_or_update_group(payload: GroupCreateRequest, _: str = Depends(authent
                         cur.execute("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (%s, %s, ':=', %s)", (payload.groupname, k.strip(), v.strip()))
 
             conn.commit()
-            return {"status": "success", "message": f"Policy Group '{payload.groupname}' saved successfully!"}
+            warnings = framed_ip_warnings(payload.extra_reply_attributes, f"Group '{payload.groupname}'")
+            return {"status": "success", "message": f"Policy Group '{payload.groupname}' saved successfully!",
+                    "warnings": warnings}
     finally:
         conn.close()
 

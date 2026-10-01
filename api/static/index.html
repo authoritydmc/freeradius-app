@@ -1109,6 +1109,13 @@
             </template>
           </select>
         </div>
+        <div>
+          <label class="block text-slate-300 mb-1 font-medium">Static IP <span class="text-slate-500 font-normal">(optional — blank = NAS DHCP. Must be a NAS-side LAN address.)</span></label>
+          <input type="text" x-model="userModal.form.static_ip" @input.debounce.500ms="checkStaticIp()" placeholder="e.g. 192.168.1.50 (blank = DHCP)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+          <p x-show="userModal.ipHint" class="mt-1.5 text-[11px] leading-relaxed rounded-xl px-3 py-2 border"
+             :class="userModal.ipCovered === true ? 'bg-emerald-950/50 border-emerald-800 text-emerald-300' : (userModal.ipCovered === false ? 'bg-amber-950/50 border-amber-800 text-amber-300' : 'bg-slate-950 border-slate-800 text-slate-400')"
+             x-text="userModal.ipHint"></p>
+        </div>
         <div class="flex justify-end gap-2 pt-2">
           <button type="button" @click="closeUserModal()" class="px-4 py-2 text-slate-400 hover:text-white transition-colors">Cancel</button>
           <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20">Save User</button>
@@ -1456,7 +1463,9 @@
         userModal: {
           show: false,
           isEditing: false,
-          form: { username: '', password: '', group: 'staff' }
+          ipHint: '',
+          ipCovered: null,
+          form: { username: '', password: '', group: 'staff', static_ip: '' }
         },
 
         groupModal: {
@@ -2035,14 +2044,30 @@
         },
 
         openAddUserModal() {
-          this.userModal = { show: true, isEditing: false, form: { username: '', password: '', group: this.groups.length ? this.groups[0].groupname : 'staff' } };
+          this.userModal = { show: true, isEditing: false, ipHint: '', ipCovered: null, form: { username: '', password: '', group: this.groups.length ? this.groups[0].groupname : 'staff', static_ip: '' } };
           this.showUserPass = false;
           this.fillGeneratedPassword('userModal');
         },
 
         openEditUserModal(user) {
-          this.userModal = { show: true, isEditing: true, form: { username: user.username, password: '', group: user.group || (this.groups.length ? this.groups[0].groupname : 'staff') } };
+          const pinned = (user.reply_attributes || []).find(a => (a.attribute || '').toLowerCase() === 'framed-ip-address');
+          this.userModal = { show: true, isEditing: true, ipHint: '', ipCovered: null, form: { username: user.username, password: '', group: user.group || (this.groups.length ? this.groups[0].groupname : 'staff'), static_ip: pinned ? pinned.value : '' } };
           this.showUserPass = false;
+          if (pinned) this.checkStaticIp();
+        },
+
+        async checkStaticIp() {
+          const ip = (this.userModal.form.static_ip || '').trim();
+          this.userModal.ipHint = '';
+          this.userModal.ipCovered = null;
+          if (!ip) return;
+          try {
+            const res = await this.fetchWithAuth('/radius/api/networks/coverage?ip=' + encodeURIComponent(ip));
+            if (!res.ok) return;
+            const d = await res.json();
+            this.userModal.ipHint = d.message;
+            this.userModal.ipCovered = d.covered;
+          } catch(e) {}
         },
 
         async saveUser() {
@@ -2051,11 +2076,18 @@
             this.showToast('Password must be at least 12 characters (upper + lower + digit + symbol).', 'error');
             return;
           }
+          const staticIp = (this.userModal.form.static_ip || '').trim();
+          const payload = {
+            username: this.userModal.form.username,
+            password: this.userModal.form.password,
+            group: this.userModal.form.group,
+            framed_ip: this.userModal.isEditing ? staticIp : (staticIp || null)
+          };
           try {
             const res = await this.fetchWithAuth('/radius/api/users', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(this.userModal.form)
+              body: JSON.stringify(payload)
             });
             const d = await res.json().catch(() => ({}));
             if (res.ok) {
@@ -2065,6 +2097,7 @@
               this.fetchStats();
               this.fetchGroups();
               this.showCredResult(d.created === false || this.userModal.isEditing ? `User '${uname}' updated` : `User '${uname}' created`, uname, pw);
+              (d.warnings || []).forEach(w => this.showToast(w, 'error'));
             } else {
               this.showToast(d.detail || 'Failed to save user', 'error');
             }
@@ -2248,7 +2281,9 @@
               body: JSON.stringify(payload)
             });
             if (res.ok) {
+              const d = await res.json().catch(() => ({}));
               this.showToast(`Policy group '${payload.groupname}' saved successfully!`);
+              (d.warnings || []).forEach(w => this.showToast(w, 'error'));
               this.groupModal.show = false;
               this.fetchGroups();
             } else {
