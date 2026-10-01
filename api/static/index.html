@@ -266,7 +266,7 @@
           <button @click="activeTab = 'test-auth'" :class="activeTab === 'test-auth' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
             <i class="fa-solid fa-vial-circle-check"></i> RADIUS Tester
           </button>
-          <button @click="activeTab = 'logs'; fetchLogs()" :class="activeTab === 'logs' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'logs'; fetchLogs(); fetchAudit()" :class="activeTab === 'logs' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
             <i class="fa-solid fa-list-check"></i> Auth History
           </button>
         </nav>
@@ -344,11 +344,24 @@
 
       <!-- TAB: USERS -->
       <section x-show="activeTab === 'users'" class="space-y-6">
-        <div class="flex justify-between items-center">
-          <h2 class="text-lg font-bold text-white">Configured RADIUS Users</h2>
-          <button @click="openAddUserModal()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2 transition-all shadow-lg shadow-indigo-600/20">
-            <i class="fa-solid fa-plus"></i> Add User
-          </button>
+        <div class="flex flex-wrap gap-3 justify-between items-center">
+          <h2 class="text-lg font-bold text-white">Configured RADIUS Users <span class="text-xs font-normal text-slate-400" x-text="'(' + filteredUsers().length + ' / ' + users.length + ')'"></span></h2>
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="relative">
+              <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-500 text-[11px]"></i>
+              <input type="text" x-model="userSearch" placeholder="Search username..." class="bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-2 text-xs text-white focus:border-indigo-500 outline-none w-44">
+            </div>
+            <select x-model="userGroupFilter" class="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-indigo-500 outline-none">
+              <option value="">All groups</option>
+              <template x-for="g in groups" :key="g.groupname">
+                <option :value="g.groupname" x-text="g.groupname"></option>
+              </template>
+              <option value="__none">No group</option>
+            </select>
+            <button @click="openAddUserModal()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-2 transition-all shadow-lg shadow-indigo-600/20">
+              <i class="fa-solid fa-plus"></i> Add User
+            </button>
+          </div>
         </div>
 
         <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
@@ -363,11 +376,17 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800">
-              <template x-for="user in users" :key="user.username">
+              <template x-for="user in filteredUsers()" :key="user.username">
                 <tr class="hover:bg-slate-800/40 transition-colors">
-                  <td class="px-6 py-4 font-semibold text-white flex items-center gap-2">
-                    <span class="w-7 h-7 rounded-full bg-slate-800 flex items-center justify-center text-[10px] text-slate-300 font-mono" x-text="user.username.charAt(0).toUpperCase()"></span>
-                    <span x-text="user.username"></span>
+                  <td class="px-6 py-4 font-semibold text-white">
+                    <div class="flex items-center gap-2">
+                      <span class="w-7 h-7 rounded-full bg-slate-800 flex items-center justify-center text-[10px] text-slate-300 font-mono" x-text="user.username.charAt(0).toUpperCase()"></span>
+                      <span x-text="user.username"></span>
+                    </div>
+                    <div class="flex items-center gap-2 mt-1 ml-9">
+                      <span x-show="user.active_sessions > 0" class="px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 text-[9px] font-mono border border-emerald-500/20" x-text="'● ' + user.active_sessions + ' online'"></span>
+                      <span x-show="user.last_auth" class="text-[9px] text-slate-500 font-mono" x-text="'last auth: ' + user.last_auth"></span>
+                    </div>
                   </td>
                   <td class="px-6 py-4">
                     <span x-show="user.group" class="px-2.5 py-0.5 rounded-full text-[10px] font-mono border"
@@ -399,7 +418,9 @@
                       <span x-show="!user.reply_attributes.length" class="text-slate-600 italic">Default</span>
                     </div>
                   </td>
-                  <td class="px-6 py-4 text-right space-x-2">
+                  <td class="px-6 py-4 text-right space-x-1 whitespace-nowrap">
+                    <button @click="openResetModal(user.username)" title="Reset password (1-click regenerate)" class="text-amber-400 hover:text-amber-300 p-1.5"><i class="fa-solid fa-key"></i></button>
+                    <button @click="openEditUserModal(user)" title="Edit user (group)" class="text-slate-300 hover:text-white p-1.5"><i class="fa-solid fa-pen"></i></button>
                     <button @click="testUserAuth(user.username)" title="Test RADIUS Auth" class="text-indigo-400 hover:text-indigo-300 p-1.5"><i class="fa-solid fa-play"></i></button>
                     <button @click="deleteUser(user.username)" title="Delete User" class="text-rose-400 hover:text-rose-300 p-1.5"><i class="fa-solid fa-trash"></i></button>
                   </td>
@@ -793,6 +814,45 @@
             </tbody>
           </table>
         </div>
+
+        <div class="flex justify-between items-center pt-2">
+          <h3 class="text-sm font-bold text-white flex items-center gap-2"><i class="fa-solid fa-clipboard-list text-amber-400"></i> Admin Audit Trail <span class="text-[10px] font-normal text-slate-500">(who changed what, when)</span></h3>
+          <button @click="fetchAudit()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-[11px] font-semibold flex items-center gap-1.5">
+            <i class="fa-solid fa-rotate"></i> Refresh audit
+          </button>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-950/60 text-slate-400 uppercase text-[10px]">
+              <tr>
+                <th class="px-6 py-3.5">Timestamp</th>
+                <th class="px-6 py-3.5">Admin</th>
+                <th class="px-6 py-3.5">Action</th>
+                <th class="px-6 py-3.5">Target user</th>
+                <th class="px-6 py-3.5">Detail</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+              <template x-for="a in auditLogs" :key="a.id">
+                <tr class="hover:bg-slate-800/40">
+                  <td class="px-6 py-3 font-mono text-slate-500 whitespace-nowrap" x-text="a.ts"></td>
+                  <td class="px-6 py-3 font-semibold text-white" x-text="a.admin_user"></td>
+                  <td class="px-6 py-3">
+                    <span class="px-2 py-0.5 rounded text-[10px] font-mono border"
+                          :class="a.action === 'password_reset' ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' : (a.action === 'user_delete' ? 'bg-rose-500/10 text-rose-300 border-rose-500/20' : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20')"
+                          x-text="a.action"></span>
+                  </td>
+                  <td class="px-6 py-3 font-mono text-slate-300" x-text="a.target_user || '—'"></td>
+                  <td class="px-6 py-3 font-mono text-slate-500" x-text="a.detail || '—'"></td>
+                </tr>
+              </template>
+              <tr x-show="!auditLogs.length">
+                <td colspan="5" class="px-6 py-8 text-center text-slate-500 italic">No admin actions recorded yet. Password resets, creates and deletes will appear here.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
     </main>
@@ -801,15 +861,28 @@
   <!-- User Modal (Add/Edit) -->
   <div x-show="userModal.show" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
     <div class="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
-      <h3 class="text-base font-bold text-white">Add New RADIUS User</h3>
+      <h3 class="text-base font-bold text-white" x-text="userModal.isEditing ? 'Edit RADIUS User: ' + userModal.form.username : 'Add New RADIUS User'"></h3>
       <form @submit.prevent="saveUser()" class="space-y-3.5 text-xs">
         <div>
           <label class="block text-slate-300 mb-1 font-medium">Username</label>
-          <input type="text" x-model="userModal.form.username" required placeholder="e.g. raj or user1" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+          <input type="text" x-model="userModal.form.username" :disabled="userModal.isEditing" required placeholder="e.g. raj or user1" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono disabled:opacity-60">
         </div>
         <div>
-          <label class="block text-slate-300 mb-1 font-medium">Password</label>
-          <input type="password" x-model="userModal.form.password" required placeholder="••••••••••••" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+          <label class="block text-slate-300 mb-1 font-medium">Password <span class="text-slate-500 font-normal">(min 12 chars: Aa 0 $)</span></label>
+          <div class="flex gap-1.5">
+            <div class="relative flex-1">
+              <input :type="showUserPass ? 'text' : 'password'" x-model="userModal.form.password" required placeholder="••••••••••••" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+              <button type="button" @click="showUserPass = !showUserPass" class="absolute right-2.5 top-2.5 text-slate-500 hover:text-white"><i :class="showUserPass ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye'"></i></button>
+            </div>
+            <button type="button" @click="fillGeneratedPassword('userModal')" title="1-click generate secure password" class="px-3 py-2 bg-amber-600/20 border border-amber-500/30 text-amber-300 rounded-xl hover:bg-amber-600/30 font-bold whitespace-nowrap"><i class="fa-solid fa-dice"></i> Generate</button>
+            <button type="button" @click="copyText(userModal.form.password, 'Password copied')" title="Copy password" class="px-3 py-2 bg-slate-800 text-slate-300 rounded-xl hover:bg-slate-700"><i class="fa-solid fa-copy"></i></button>
+          </div>
+          <div class="mt-1.5 flex items-center gap-2">
+            <div class="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+              <div class="h-full rounded-full transition-all" :style="'width: ' + passwordStrengthJS(userModal.form.password).pct + '%; background: ' + passwordStrengthJS(userModal.form.password).color"></div>
+            </div>
+            <span class="text-[10px] font-mono" :style="'color: ' + passwordStrengthJS(userModal.form.password).color" x-text="passwordStrengthJS(userModal.form.password).label + ' (' + passwordStrengthJS(userModal.form.password).bits + ' bits)'"></span>
+          </div>
         </div>
         <div>
           <label class="block text-slate-300 mb-1 font-medium">Policy Group</label>
@@ -820,10 +893,79 @@
           </select>
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <button type="button" @click="userModal.show = false" class="px-4 py-2 text-slate-400 hover:text-white transition-colors">Cancel</button>
+          <button type="button" @click="closeUserModal()" class="px-4 py-2 text-slate-400 hover:text-white transition-colors">Cancel</button>
           <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold shadow-lg shadow-indigo-600/20">Save User</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Reset Password Modal (1-click secure regenerate) -->
+  <div x-show="resetModal.show" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+      <h3 class="text-base font-bold text-white flex items-center gap-2"><i class="fa-solid fa-key text-amber-400"></i> Reset password: <span class="font-mono" x-text="resetModal.username"></span></h3>
+      <div x-show="resetModal.username === currentUser" class="bg-rose-950/50 border border-rose-500/30 text-rose-200 text-[11px] rounded-xl p-3">
+        ⚠️ You are resetting your <strong>own admin login</strong>. You will need to sign in again with the new password.
+      </div>
+      <div class="text-xs">
+        <label class="block text-slate-300 mb-1 font-medium">New password <span class="text-slate-500 font-normal">(min 12 chars: Aa 0 $)</span></label>
+        <div class="flex gap-1.5">
+          <div class="relative flex-1">
+            <input :type="resetModal.showPass ? 'text' : 'password'" x-model="resetModal.password" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-amber-500 outline-none font-mono">
+            <button type="button" @click="resetModal.showPass = !resetModal.showPass" class="absolute right-2.5 top-2.5 text-slate-500 hover:text-white"><i :class="resetModal.showPass ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye'"></i></button>
+          </div>
+          <button type="button" @click="fillGeneratedPassword('resetModal')" title="Regenerate secure password" class="px-3 py-2 bg-amber-600/20 border border-amber-500/30 text-amber-300 rounded-xl hover:bg-amber-600/30 font-bold whitespace-nowrap"><i class="fa-solid fa-dice"></i> Regenerate</button>
+          <button type="button" @click="copyText(resetModal.password, 'Password copied')" class="px-3 py-2 bg-slate-800 text-slate-300 rounded-xl hover:bg-slate-700"><i class="fa-solid fa-copy"></i></button>
+        </div>
+        <div class="mt-1.5 flex items-center gap-2">
+          <div class="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+            <div class="h-full rounded-full transition-all" :style="'width: ' + passwordStrengthJS(resetModal.password).pct + '%; background: ' + passwordStrengthJS(resetModal.password).color"></div>
+          </div>
+          <span class="text-[10px] font-mono" :style="'color: ' + passwordStrengthJS(resetModal.password).color" x-text="passwordStrengthJS(resetModal.password).label + ' (' + passwordStrengthJS(resetModal.password).bits + ' bits)'"></span>
+        </div>
+      </div>
+      <label class="flex items-center gap-2.5 text-xs text-slate-300 bg-slate-950 border border-slate-800 rounded-xl p-3 cursor-pointer">
+        <input type="checkbox" x-model="resetModal.disconnect" class="w-4 h-4 rounded text-amber-600 bg-slate-900 border-slate-700">
+        Disconnect active sessions now (CoA / Port 3799)
+      </label>
+      <div class="flex justify-end gap-2 pt-1">
+        <button type="button" @click="resetModal.show = false" class="px-4 py-2 text-slate-400 hover:text-white transition-colors">Cancel</button>
+        <button type="button" @click="saveNewPassword()" :disabled="resetModal.saving" class="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold disabled:opacity-50" x-text="resetModal.saving ? 'Saving...' : 'Save new password'"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Credential Result Card (shown once after create / reset) -->
+  <div x-show="credResult.show" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+    <div class="bg-slate-900 border border-emerald-500/30 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+      <h3 class="text-base font-bold text-emerald-300 flex items-center gap-2"><i class="fa-solid fa-circle-check"></i> <span x-text="credResult.title"></span></h3>
+      <div class="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-2.5 text-xs">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-slate-400">Username</span>
+          <span class="flex items-center gap-2"><code class="text-white font-mono font-bold" x-text="credResult.username"></code>
+          <button @click="copyText(credResult.username, 'Username copied')" class="text-slate-400 hover:text-white"><i class="fa-solid fa-copy"></i></button></span>
+        </div>
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-slate-400">Password</span>
+          <span class="flex items-center gap-2"><code class="text-amber-300 font-mono font-bold" x-text="credResult.showPass ? credResult.password : '••••••••••••'"></code>
+          <button @click="credResult.showPass = !credResult.showPass" class="text-slate-400 hover:text-white"><i :class="credResult.showPass ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye'"></i></button>
+          <button @click="copyText(credResult.password, 'Password copied to clipboard')" class="text-slate-400 hover:text-white"><i class="fa-solid fa-copy"></i></button></span>
+        </div>
+      </div>
+      <div x-show="credResult.qr" class="flex justify-center bg-white rounded-2xl p-3">
+        <img :src="credResult.qr" alt="Credential QR" class="w-40 h-40">
+      </div>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <button @click="copyText(credShareText(), 'Share text copied')" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl"><i class="fa-solid fa-copy"></i> Copy share text</button>
+        <button @click="downloadCredTxt()" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl"><i class="fa-solid fa-download"></i> Download .txt</button>
+        <a :href="whatsAppShareUrl()" target="_blank" rel="noopener" class="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl text-center"><i class="fa-brands fa-whatsapp"></i> WhatsApp</a>
+        <a :href="emailShareUrl()" class="px-3 py-2 bg-sky-700 hover:bg-sky-600 text-white rounded-xl text-center"><i class="fa-solid fa-envelope"></i> Email</a>
+      </div>
+      <button @click="toggleCredQR()" class="w-full text-[11px] text-slate-400 hover:text-white underline" x-text="credResult.qr ? 'Hide QR code' : 'Show QR code'"></button>
+      <p class="text-[11px] text-slate-500">⚠️ Store securely — this is the only time the password is shown in full. It is never returned by the users API.</p>
+      <div class="flex justify-end">
+        <button @click="closeCredResult()" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold">Done</button>
+      </div>
     </div>
   </div>
 
@@ -974,17 +1116,24 @@
         health: { status: 'healthy' },
         stats: { total_users: 0, active_sessions: 0, client_certificates: 0, nas_clients: 0 },
         users: [],
+        userSearch: '',
+        userGroupFilter: '',
+        showUserPass: false,
+        resetModal: { show: false, username: '', password: '', showPass: true, disconnect: false, saving: false },
+        credResult: { show: false, title: '', username: '', password: '', showPass: true, qr: '' },
         certificates: [],
         groups: [],
         presets: [],
         nasList: [],
         sessions: [],
         logs: [],
+        auditLogs: [],
         testForm: { username: 'raj', password: '' },
         testResult: null,
 
         userModal: {
           show: false,
+          isEditing: false,
           form: { username: '', password: '', group: 'staff' }
         },
 
@@ -1197,32 +1346,205 @@
             const res = await this.fetchWithAuth('/radius/api/auth-logs?limit=40');
             if (res.ok) this.logs = await res.json();
           } catch(e) {}
+          this.fetchAudit();
+        },
+
+        async fetchAudit() {
+          try {
+            const res = await this.fetchWithAuth('/radius/api/audit?limit=50');
+            if (res.ok) this.auditLogs = await res.json();
+          } catch(e) {}
+        },
+
+        filteredUsers() {
+          const q = (this.userSearch || '').toLowerCase();
+          return (this.users || []).filter(u => {
+            if (this.userGroupFilter === '__none' && u.group) return false;
+            if (this.userGroupFilter && this.userGroupFilter !== '__none' && u.group !== this.userGroupFilter) return false;
+            if (q && !(u.username || '').toLowerCase().includes(q)) return false;
+            return true;
+          });
+        },
+
+        passwordStrengthJS(pw) {
+          pw = pw || '';
+          let classes = 0;
+          if (/[a-z]/.test(pw)) classes += 26;
+          if (/[A-Z]/.test(pw)) classes += 26;
+          if (/[0-9]/.test(pw)) classes += 10;
+          if (/[^A-Za-z0-9]/.test(pw)) classes += 13;
+          const bits = classes > 1 ? Math.round(pw.length * Math.log2(classes) * 10) / 10 : 0;
+          let label = 'weak', color = '#f87171', pct = 15;
+          if (pw.length >= 12 && bits >= 90) { label = 'strong'; color = '#34d399'; pct = 100; }
+          else if (pw.length >= 12 && bits >= 70) { label = 'good'; color = '#a3e635'; pct = 75; }
+          else if (pw.length >= 12 && bits >= 45) { label = 'fair'; color = '#fbbf24'; pct = 50; }
+          else if (pw.length > 0) { label = 'weak'; color = '#f87171'; pct = Math.min(35, pw.length * 3); }
+          else { label = '—'; color = '#475569'; pct = 0; }
+          return { label, color, pct, bits };
+        },
+
+        genPasswordClient(length = 16) {
+          const lower = 'abcdefghjkmnpqrstuvwxyz', upper = 'ABCDEFGHJKMNPQRSTUVWXYZ', digits = '23456789', symbols = '!@#$%*-_=+';
+          const pools = [lower, upper, digits, symbols], all = pools.join('');
+          const buf = new Uint32Array(length);
+          crypto.getRandomValues(buf);
+          const chars = pools.map((p, i) => p[buf[i] % p.length]);
+          for (let i = chars.length; i < length; i++) chars.push(all[buf[i] % all.length]);
+          for (let i = chars.length - 1; i > 0; i--) { const j = buf[i] % (i + 1); [chars[i], chars[j]] = [chars[j], chars[i]]; }
+          return chars.join('');
+        },
+
+        async fillGeneratedPassword(target) {
+          try {
+            const res = await this.fetchWithAuth('/radius/api/users/password/generate', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ length: 16, symbols: true, exclude_ambiguous: true })
+            });
+            if (res.ok) {
+              const d = await res.json();
+              if (target === 'resetModal') this.resetModal.password = d.password;
+              else this.userModal.form.password = d.password;
+              return;
+            }
+          } catch(e) {}
+          const fallback = this.genPasswordClient(16);
+          if (target === 'resetModal') this.resetModal.password = fallback;
+          else this.userModal.form.password = fallback;
+          this.showToast('Server generator unreachable — used local secure fallback.', 'error');
+        },
+
+        copyText(text, msg) {
+          if (!text) { this.showToast('Nothing to copy', 'error'); return; }
+          const done = () => this.showToast(msg || 'Copied to clipboard');
+          if (navigator.clipboard && window.isSecureContext !== false) {
+            navigator.clipboard.writeText(text).then(done).catch(() => this.copyTextFallback(text, done));
+          } else {
+            this.copyTextFallback(text, done);
+          }
+        },
+
+        copyTextFallback(text, done) {
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select();
+            document.execCommand('copy'); document.body.removeChild(ta); done();
+          } catch(e) { this.showToast('Copy failed — select the text manually', 'error'); }
+        },
+
+        credShareText() {
+          return `RajLabs Wi-Fi access\nSSID: RajLabs-Enterprise\nUsername: ${this.credResult.username}\nPassword: ${this.credResult.password}\nPortal: https://backend.rajlabs.in/radius/portal\n(Keep this password private)`;
+        },
+
+        whatsAppShareUrl() {
+          return 'https://wa.me/?text=' + encodeURIComponent(this.credShareText());
+        },
+
+        emailShareUrl() {
+          return 'mailto:?subject=' + encodeURIComponent(`RajLabs Wi-Fi credentials for ${this.credResult.username}`) + '&body=' + encodeURIComponent(this.credShareText());
+        },
+
+        toggleCredQR() {
+          if (this.credResult.qr) { this.credResult.qr = ''; return; }
+          this.credResult.qr = 'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(this.credShareText());
+        },
+
+        downloadCredTxt() {
+          const content = `${this.credShareText()}\nIssued by ${this.currentUser} at ${new Date().toISOString()}\n`;
+          const blob = new Blob([content], { type: 'text/plain' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `RajLabs_${this.credResult.username}_credentials.txt`;
+          document.body.appendChild(a); a.click();
+          setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+        },
+
+        showCredResult(title, username, password) {
+          this.credResult = { show: true, title, username, password, showPass: true, qr: '' };
+        },
+
+        closeCredResult() {
+          this.credResult.password = '';
+          this.credResult.show = false;
+        },
+
+        closeUserModal() {
+          this.userModal.show = false;
+          this.showUserPass = false;
         },
 
         openAddUserModal() {
-          this.userModal.form = { username: '', password: '', group: this.groups.length ? this.groups[0].groupname : 'staff' };
-          this.userModal.show = true;
+          this.userModal = { show: true, isEditing: false, form: { username: '', password: '', group: this.groups.length ? this.groups[0].groupname : 'staff' } };
+          this.showUserPass = false;
+          this.fillGeneratedPassword('userModal');
+        },
+
+        openEditUserModal(user) {
+          this.userModal = { show: true, isEditing: true, form: { username: user.username, password: '', group: user.group || (this.groups.length ? this.groups[0].groupname : 'staff') } };
+          this.showUserPass = false;
         },
 
         async saveUser() {
+          const hint = this.passwordStrengthJS(this.userModal.form.password);
+          if (this.userModal.form.password.length < 12) {
+            this.showToast('Password must be at least 12 characters (upper + lower + digit + symbol).', 'error');
+            return;
+          }
           try {
             const res = await this.fetchWithAuth('/radius/api/users', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(this.userModal.form)
             });
+            const d = await res.json().catch(() => ({}));
             if (res.ok) {
-              this.showToast(`User ${this.userModal.form.username} saved successfully.`);
-              this.userModal.show = false;
+              const uname = this.userModal.form.username, pw = this.userModal.form.password;
+              this.closeUserModal();
               this.fetchUsers();
               this.fetchStats();
               this.fetchGroups();
+              this.showCredResult(d.created === false || this.userModal.isEditing ? `User '${uname}' updated` : `User '${uname}' created`, uname, pw);
             } else {
-              const d = await res.json();
               this.showToast(d.detail || 'Failed to save user', 'error');
             }
           } catch(e) {
             this.showToast('Error saving user', 'error');
+          }
+        },
+
+        async openResetModal(username) {
+          this.resetModal = { show: true, username, password: '', showPass: true, disconnect: false, saving: false };
+          await this.fillGeneratedPassword('resetModal');
+        },
+
+        async saveNewPassword() {
+          if (!this.resetModal.password || this.resetModal.password.length < 12) {
+            this.showToast('Password must be at least 12 characters (upper + lower + digit + symbol).', 'error');
+            return;
+          }
+          if (this.resetModal.username === this.currentUser && !confirm('You are resetting your OWN admin password. You will be signed out. Continue?')) return;
+          this.resetModal.saving = true;
+          try {
+            const res = await this.fetchWithAuth(`/radius/api/users/${encodeURIComponent(this.resetModal.username)}/password`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password: this.resetModal.password, password_type: 'Cleartext-Password', disconnect_active: !!this.resetModal.disconnect })
+            });
+            const d = await res.json().catch(() => ({}));
+            if (res.ok) {
+              const uname = this.resetModal.username, pw = this.resetModal.password;
+              this.resetModal.show = false;
+              this.resetModal.password = '';
+              this.fetchUsers();
+              this.showToast(d.message || `Password updated for ${uname}`);
+              this.showCredResult(`Password reset for '${uname}'`, uname, pw);
+            } else {
+              this.showToast(d.detail || 'Failed to update password', 'error');
+            }
+          } catch(e) {
+            this.showToast('Error updating password', 'error');
+          } finally {
+            this.resetModal.saving = false;
           }
         },
 

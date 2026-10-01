@@ -22,6 +22,29 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+# ----------------------------------------------------------------------------
+# Structured logging (single logger, secret-redacting, env-tunable level)
+# ----------------------------------------------------------------------------
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("freeradius")
+
+_SENSITIVE_KEYS = ("password", "passwd", "secret", "token", "p12", "private", "authorization")
+
+def redact(obj):
+    """Recursively mask secret values so plaintext credentials never hit logs."""
+    if isinstance(obj, dict):
+        return {
+            k: ("***REDACTED***" if any(s in str(k).lower() for s in _SENSITIVE_KEYS) else redact(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, (list, tuple)):
+        return [redact(v) for v in obj]
+    return obj
+
 # Database configuration from environment
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
@@ -37,6 +60,101 @@ CERT_SIGNER_API_KEY = os.getenv("CERT_SIGNER_API_KEY", "")
 ADMIN_FALLBACK_USER = os.getenv("RADIUS_ADMIN_USER", "admin")
 ADMIN_FALLBACK_PASS = os.getenv("RADIUS_ADMIN_PASSWORD", "admin123")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change_this_session_secret_in_production_32_chars!")
+
+# ----------------------------------------------------------------------------
+# Password policy & secure generation (single source of truth, mirrored in UI)
+# ----------------------------------------------------------------------------
+PASSWORD_MIN_LENGTH = 12
+PASSWORD_MAX_LENGTH = 128
+PASSWORD_SYMBOLS = "!@#$%^*-_=+"
+_PASSWORD_AMBIGUOUS = set("l1IoO0|`'\"")
+
+def password_strength(password: str) -> Dict[str, Any]:
+    """Returns entropy estimate + human label. No secrets logged."""
+    import math
+    classes = 0
+    if any(c.islower() for c in password):
+        classes += 26
+    if any(c.isupper() for c in password):
+        classes += 26
+    if any(c.isdigit() for c in password):
+        classes += 10
+    if any(not c.isalnum() for c in password):
+        classes += len(PASSWORD_SYMBOLS)
+    entropy = round(len(password) * math.log2(classes), 1) if classes > 1 else 0.0
+    if len(password) < PASSWORD_MIN_LENGTH or entropy < 45:
+        label = "weak"
+    elif entropy < 70:
+        label = "fair"
+    elif entropy < 90:
+        label = "good"
+    else:
+        label = "strong"
+    return {"entropy_bits": entropy, "strength": label}
+
+def validate_password_policy(password: str, username: Optional[str] = None):
+    """Raises HTTPException 422 on policy violation."""
+    if not password or not (PASSWORD_MIN_LENGTH <= len(password) <= PASSWORD_MAX_LENGTH):
+        raise HTTPException(status_code=422, detail=f"Password must be {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters long.")
+    if username and password.strip().lower() == username.strip().lower():
+        raise HTTPException(status_code=422, detail="Password must not be the same as the username.")
+    has_lower = any(c.islower() for c in password)
+    has_upper = any(c.isupper() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    has_symbol = any(not c.isalnum() for c in password)
+    if not (has_lower and has_upper and has_digit and has_symbol):
+        raise HTTPException(status_code=422, detail="Password must include upper-case, lower-case, digit and symbol characters.")
+
+def generate_secure_password(length: int = 16, use_symbols: bool = True, exclude_ambiguous: bool = True) -> str:
+    length = max(PASSWORD_MIN_LENGTH, min(int(length or 16), 64))
+    lower = "abcdefghjkmnpqrstuvwxyz" if exclude_ambiguous else "abcdefghijklmnopqrstuvwxyz"
+    upper = "ABCDEFGHJKMNPQRSTUVWXYZ" if exclude_ambiguous else "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    digits = "23456789" if exclude_ambiguous else "0123456789"
+    symbols = "".join(c for c in PASSWORD_SYMBOLS if c not in _PASSWORD_AMBIGUOUS) if exclude_ambiguous else PASSWORD_SYMBOLS
+    pools = [lower, upper, digits] + ([symbols] if use_symbols else [])
+    alphabet = "".join(pools)
+    # Guarantee at least one char from each required class
+    chars = [secrets.choice(p) for p in pools]
+    while len(chars) < length:
+        chars.append(secrets.choice(alphabet))
+    # Fisher-Yates shuffle with secrets
+    for i in range(len(chars) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        chars[i], chars[j] = chars[j], chars[i]
+    return "".join(chars)
+
+def ensure_audit_table():
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS admin_audit_log (
+                    id SERIAL PRIMARY KEY,
+                    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    admin_user TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    target_user TEXT,
+                    detail TEXT
+                )
+            """)
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("Could not ensure admin_audit_log table: %s", e)
+
+def log_audit(admin_user: str, action: str, target_user: Optional[str] = None, detail: Optional[str] = None):
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO admin_audit_log (admin_user, action, target_user, detail) VALUES (%s, %s, %s, %s)",
+                (admin_user, action, target_user, detail),
+            )
+            conn.commit()
+        conn.close()
+        logger.info("AUDIT admin=%s action=%s target=%s detail=%s", admin_user, action, target_user, detail)
+    except Exception as e:
+        logger.warning("Audit log write failed (%s %s): %s", action, target_user, e)
 
 CERTS_DIR = "/etc/freeradius/3.0/certs"
 CLIENT_CERTS_DIR = "/etc/freeradius/3.0/certs/clients"
@@ -97,7 +215,7 @@ def verify_admin_user(user: str, passwd: str) -> bool:
                     return True
         conn.close()
     except Exception as e:
-        print("Auth DB check error:", e)
+        logger.warning("Auth DB check error: %s", e)
 
     if secrets.compare_digest(user, ADMIN_FALLBACK_USER) and secrets.compare_digest(passwd, ADMIN_FALLBACK_PASS):
         return True
@@ -199,9 +317,13 @@ async def lifespan(app: FastAPI):
     try:
         conn = get_db_connection()
         conn.close()
-        print("Connected successfully to PostgreSQL database:", POSTGRES_DB)
+        logger.info("Connected successfully to PostgreSQL database: %s", POSTGRES_DB)
     except Exception as e:
-        print("Warning: Database connection failed during startup:", e)
+        logger.warning("Database connection failed during startup: %s", e)
+    try:
+        ensure_audit_table()
+    except Exception as e:
+        logger.warning("Audit table init failed: %s", e)
     yield
 
 app = FastAPI(
@@ -222,6 +344,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Access log: method, path, status, latency. Bodies never logged (may hold passwords)."""
+    start = time.time()
+    status_code: Optional[int] = None
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception:
+        status_code = 500
+        logger.exception("%s %s -> 500 (unhandled)", request.method, request.url.path)
+        raise
+    finally:
+        elapsed_ms = round((time.time() - start) * 1000, 1)
+        client = request.client.host if request.client else "?"
+        # Health checks are noisy; keep them at DEBUG
+        if request.url.path.endswith("/api/health"):
+            logger.debug("%s %s %s %sms client=%s", request.method, request.url.path, status_code, elapsed_ms, client)
+        elif status_code and status_code >= 400:
+            logger.warning("%s %s %s %sms client=%s", request.method, request.url.path, status_code, elapsed_ms, client)
+        else:
+            logger.info("%s %s %s %sms client=%s", request.method, request.url.path, status_code, elapsed_ms, client)
+
 # Request Models
 class UserCreateRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
@@ -231,8 +377,14 @@ class UserCreateRequest(BaseModel):
     attributes: Optional[Dict[str, str]] = None
 
 class PasswordChangeRequest(BaseModel):
-    password: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1, max_length=128)
     password_type: str = Field(default="Cleartext-Password")
+    disconnect_active: Optional[bool] = False
+
+class PasswordGenerateRequest(BaseModel):
+    length: Optional[int] = 16
+    symbols: Optional[bool] = True
+    exclude_ambiguous: Optional[bool] = True
 
 class GroupCreateRequest(BaseModel):
     groupname: str = Field(..., min_length=1, max_length=64)
@@ -293,12 +445,15 @@ class CertLoginRequest(BaseModel):
 # Authentication Endpoints
 @app.post("/radius/api/auth/login", tags=["Authentication"])
 @app.post("/api/auth/login", tags=["Authentication"])
-def admin_login(payload: AdminLoginRequest, response: Response):
+def admin_login(payload: AdminLoginRequest, response: Response, request: Request):
     if not verify_admin_user(payload.username, payload.password):
+        client = request.client.host if request.client else "?"
+        logger.warning("Admin login FAILED username=%s client=%s", payload.username, client)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid administrator credentials. Access denied."
         )
+    logger.info("Admin login success username=%s", payload.username)
     
     token = generate_session_token(payload.username)
     max_age = 7 * 86400 if payload.remember else None
@@ -465,7 +620,7 @@ def list_users(_: str = Depends(authenticate_admin)):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT 
+                SELECT
                     rc.id, rc.username, rc.attribute, rc.op, rc.value,
                     rug.groupname
                 FROM radcheck rc
@@ -477,6 +632,25 @@ def list_users(_: str = Depends(authenticate_admin)):
             cur.execute("SELECT id, username, attribute, op, value FROM radreply ORDER BY username ASC")
             replies = cur.fetchall()
 
+            # Active session counts per user (no secrets involved)
+            active_counts: Dict[str, int] = {}
+            try:
+                cur.execute("SELECT username, COUNT(*) AS c FROM radacct WHERE acctstoptime IS NULL GROUP BY username")
+                for r in cur.fetchall():
+                    active_counts[r["username"]] = int(r["c"])
+            except Exception:
+                pass
+
+            # Last successful/attempted auth per user
+            last_auth: Dict[str, Any] = {}
+            try:
+                cur.execute("SELECT username, MAX(authdate) AS last_auth FROM radpostauth GROUP BY username")
+                for r in cur.fetchall():
+                    v = r["last_auth"]
+                    last_auth[r["username"]] = v.isoformat() if hasattr(v, "isoformat") else str(v)
+            except Exception:
+                pass
+
             users_map = {}
             for row in checks:
                 u = row["username"]
@@ -487,9 +661,14 @@ def list_users(_: str = Depends(authenticate_admin)):
                         "username": u,
                         "group": row["groupname"],
                         "has_certificate": os.path.exists(cert_path),
+                        "password_type": None,
+                        "active_sessions": 0,
+                        "last_auth": None,
                         "check_attributes": [],
                         "reply_attributes": []
                     }
+                if "Password" in row["attribute"] and not users_map[u]["password_type"]:
+                    users_map[u]["password_type"] = row["attribute"]
                 users_map[u]["check_attributes"].append({
                     "id": row["id"],
                     "attribute": row["attribute"],
@@ -507,16 +686,98 @@ def list_users(_: str = Depends(authenticate_admin)):
                         "value": row["value"]
                     })
 
+            for u, data in users_map.items():
+                data["active_sessions"] = active_counts.get(u, 0)
+                data["last_auth"] = last_auth.get(u)
+
             return list(users_map.values())
     finally:
         conn.close()
 
-@app.post("/radius/api/users", tags=["Users"])
-@app.post("/api/users", tags=["Users"])
-def create_or_update_user(payload: UserCreateRequest, _: str = Depends(authenticate_admin)):
+@app.get("/radius/api/users/{username}", tags=["Users"])
+@app.get("/api/users/{username}", tags=["Users"])
+def get_user_detail(username: str, _: str = Depends(authenticate_admin)):
+    """Single-user detail (passwords always masked) for edit drawers."""
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute("""
+                SELECT rc.id, rc.username, rc.attribute, rc.op, rug.groupname
+                FROM radcheck rc
+                LEFT JOIN radusergroup rug ON rc.username = rug.username
+                WHERE rc.username = %s
+            """, (username,))
+            checks = cur.fetchall()
+            if not checks:
+                raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
+            cur.execute("SELECT id, username, attribute, op, value FROM radreply WHERE username = %s", (username,))
+            replies = cur.fetchall()
+            active_sessions = 0
+            try:
+                cur.execute("SELECT COUNT(*) AS c FROM radacct WHERE username = %s AND acctstoptime IS NULL", (username,))
+                active_sessions = int(cur.fetchone()["c"])
+            except Exception:
+                pass
+            last_auth = None
+            try:
+                cur.execute("SELECT MAX(authdate) AS last_auth FROM radpostauth WHERE username = %s", (username,))
+                v = cur.fetchone()["last_auth"]
+                last_auth = v.isoformat() if hasattr(v, "isoformat") else (str(v) if v else None)
+            except Exception:
+                pass
+            cert_path = os.path.join(CLIENT_CERTS_DIR, f"{username}.p12")
+            password_type = next((r["attribute"] for r in checks if "Password" in r["attribute"]), None)
+            return {
+                "username": username,
+                "group": checks[0]["groupname"],
+                "has_certificate": os.path.exists(cert_path),
+                "password_type": password_type,
+                "active_sessions": active_sessions,
+                "last_auth": last_auth,
+                "check_attributes": [
+                    {"id": r["id"], "attribute": r["attribute"], "op": r["op"],
+                     "value": "********" if "Password" in r["attribute"] else None}
+                    for r in checks
+                ],
+                "reply_attributes": [
+                    {"id": r["id"], "attribute": r["attribute"], "op": r["op"], "value": r["value"]}
+                    for r in replies
+                ],
+            }
+    finally:
+        conn.close()
+
+@app.post("/radius/api/users/password/generate", tags=["Users"])
+@app.post("/api/users/password/generate", tags=["Users"])
+def generate_password_endpoint(payload: PasswordGenerateRequest, admin_user: str = Depends(authenticate_admin)):
+    length = max(PASSWORD_MIN_LENGTH, min(int(payload.length or 16), 64))
+    password = generate_secure_password(length, payload.symbols is not False, payload.exclude_ambiguous is not False)
+    info = password_strength(password)
+    logger.info("Password generated by admin=%s length=%s strength=%s", admin_user, len(password), info["strength"])
+    return {"password": password, "length": len(password), "entropy_bits": info["entropy_bits"], "strength": info["strength"]}
+
+@app.get("/radius/api/users/password/policy", tags=["Users"])
+@app.get("/api/users/password/policy", tags=["Users"])
+def get_password_policy(_: str = Depends(authenticate_admin)):
+    return {
+        "min_length": PASSWORD_MIN_LENGTH,
+        "max_length": PASSWORD_MAX_LENGTH,
+        "require_upper": True,
+        "require_lower": True,
+        "require_digit": True,
+        "require_symbol": True,
+        "default_generate_length": 16,
+    }
+
+@app.post("/radius/api/users", tags=["Users"])
+@app.post("/api/users", tags=["Users"])
+def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(authenticate_admin)):
+    validate_password_policy(payload.password, payload.username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (payload.username,))
+            existed = cur.fetchone() is not None
             cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (payload.username,))
             
             cur.execute("""
@@ -540,13 +801,14 @@ def create_or_update_user(payload: UserCreateRequest, _: str = Depends(authentic
                     """, (payload.username, attr, val))
 
             conn.commit()
-            return {"status": "success", "message": f"User '{payload.username}' created/updated successfully"}
+            log_audit(admin_user, "user_create" if not existed else "user_update", payload.username, f"group={payload.group}")
+            return {"status": "success", "created": not existed, "message": f"User '{payload.username}' {'created' if not existed else 'updated'} successfully"}
     finally:
         conn.close()
 
 @app.delete("/radius/api/users/{username}", tags=["Users"])
 @app.delete("/api/users/{username}", tags=["Users"])
-def delete_user(username: str, _: str = Depends(authenticate_admin)):
+def delete_user(username: str, admin_user: str = Depends(authenticate_admin)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -554,23 +816,75 @@ def delete_user(username: str, _: str = Depends(authenticate_admin)):
             cur.execute("DELETE FROM radreply WHERE username = %s", (username,))
             cur.execute("DELETE FROM radusergroup WHERE username = %s", (username,))
             conn.commit()
+            log_audit(admin_user, "user_delete", username, None)
             return {"status": "success", "message": f"User '{username}' deleted successfully"}
     finally:
         conn.close()
 
 @app.put("/radius/api/users/{username}/password", tags=["Users"])
 @app.put("/api/users/{username}/password", tags=["Users"])
-def update_user_password(username: str, payload: PasswordChangeRequest, _: str = Depends(authenticate_admin)):
+def update_user_password(username: str, payload: PasswordChangeRequest, admin_user: str = Depends(authenticate_admin)):
+    validate_password_policy(payload.password, username)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (username,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
             cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (username,))
             cur.execute("""
                 INSERT INTO radcheck (username, attribute, op, value)
                 VALUES (%s, %s, ':=', %s)
             """, (username, payload.password_type, payload.password))
             conn.commit()
-            return {"status": "success", "message": f"Password updated for user '{username}'"}
+    finally:
+        conn.close()
+    # Audit (never logs the plaintext password)
+    info = password_strength(payload.password)
+    log_audit(admin_user, "password_reset", username, f"type={payload.password_type} strength={info['strength']}")
+    disconnected = 0
+    if payload.disconnect_active:
+        try:
+            conn2 = get_db_connection()
+            with conn2.cursor() as cur:
+                cur.execute("SELECT DISTINCT nasipaddress::text AS nas_ip FROM radacct WHERE username = %s AND acctstoptime IS NULL AND nasipaddress IS NOT NULL", (username,))
+                nas_ips = [r["nas_ip"] for r in cur.fetchall() if r["nas_ip"]]
+            conn2.close()
+            for nas_ip in nas_ips:
+                try:
+                    cmd = ["radclient", "-r", "1", f"{nas_ip}:3799", "disconnect", RADIUS_SECRET]
+                    inp = f'User-Name = "{username}"'
+                    res = subprocess.run(cmd, input=inp, capture_output=True, text=True, timeout=5)
+                    if "Disconnect-ACK" in (res.stdout + res.stderr) or "CoA-ACK" in (res.stdout + res.stderr):
+                        disconnected += 1
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning("CoA disconnect after password reset failed for %s: %s", username, e)
+    from datetime import datetime, timezone
+    logger.info("Password reset username=%s by=%s disconnect=%s sessions_dropped=%s", username, admin_user, payload.disconnect_active, disconnected)
+    return {
+        "status": "success",
+        "message": f"Password updated for user '{username}'" + (f" ({disconnected} session(s) disconnected)" if payload.disconnect_active else ""),
+        "username": username,
+        "updated_by": admin_user,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "disconnected_sessions": disconnected,
+    }
+
+@app.get("/radius/api/audit", tags=["Users"])
+@app.get("/api/audit", tags=["Users"])
+def list_audit_log(limit: int = 50, _: str = Depends(authenticate_admin)):
+    ensure_audit_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, ts, admin_user, action, target_user, detail FROM admin_audit_log ORDER BY id DESC LIMIT %s", (min(limit, 200),))
+            rows = cur.fetchall()
+            for r in rows:
+                if hasattr(r.get("ts"), "isoformat"):
+                    r["ts"] = r["ts"].isoformat()
+            return rows
     finally:
         conn.close()
 
@@ -1048,6 +1362,7 @@ def disconnect_session(payload: DisconnectSessionRequest, _: str = Depends(authe
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
         output = res.stdout + res.stderr
         success = "Disconnect-ACK" in output or "CoA-ACK" in output
+        logger.info("CoA disconnect username=%s nas=%s success=%s by=%s", payload.username, payload.nas_ip, success, _)
         return {
             "success": success,
             "status": "Session Disconnected (ACK)" if success else "Sent / Response: " + output.strip(),
@@ -1119,10 +1434,10 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
                 if resp.status == 200:
                     res_json = json.loads(resp.read().decode("utf-8"))
                     if res_json.get("success"):
-                        logging.info(f"Certificate signed successfully via Rajlabs-CA Cert Signer for {username}")
+                        logger.info("Certificate signed successfully via Rajlabs-CA Cert Signer for %s", username)
                         return res_json["certificate"], res_json.get("fullChain") or res_json["certificate"]
         except Exception as e:
-            logging.warning(f"Cert-Signer microservice request to {CERT_SIGNER_API_URL} failed ({e}), falling back to local CA.")
+            logger.warning("Cert-Signer microservice request to %s failed (%s), falling back to local CA.", CERT_SIGNER_API_URL, e)
 
     # Local FreeRADIUS CA Fallback
     ca_key = os.path.join(CERTS_DIR, "ca.key")
@@ -1189,6 +1504,7 @@ def issue_client_certificate(payload: IssueCertRequest, _: str = Depends(authent
         # Set permissions
         subprocess.run(["chmod", "644", user_p12, user_crt], check=False)
 
+        logger.info("Client certificate issued username=%s by=%s via=%s", uname, _, 'Rajlabs-CA API' if CERT_SIGNER_API_URL else 'Local CA')
         return {
             "status": "success",
             "message": f"EAP-TLS Client certificate issued for user '{uname}' (Signed via {'Rajlabs-CA API' if CERT_SIGNER_API_URL else 'Local CA'})",
@@ -1344,6 +1660,7 @@ def test_radius_authentication(payload: AuthTestRequest, _: str = Depends(authen
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
         output = result.stdout + result.stderr
         success = "Access-Accept" in output
+        logger.info("Test-auth username=%s nas=%s success=%s by=%s", payload.username, payload.nas_ip, success, _)
         return {
             "success": success,
             "status": "Accepted" if success else "Rejected / Failed",
