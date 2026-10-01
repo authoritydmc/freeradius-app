@@ -3,21 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RajLabs Enterprise Wi-Fi Portal & Device Enrollment</title>
+  <title>RajLabs Enterprise Wi-Fi User Portal & Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Plus Jakarta Sans', sans-serif; }
     .font-mono { font-family: 'JetBrains Mono', monospace; }
+    [x-cloak] { display: none !important; }
     .glass-card {
-      background: rgba(15, 23, 42, 0.75);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
       border: 1px solid rgba(255, 255, 255, 0.08);
     }
     .glow-indigo {
-      box-shadow: 0 0 50px -10px rgba(99, 102, 241, 0.35);
+      box-shadow: 0 0 60px -10px rgba(99, 102, 241, 0.35);
     }
     .tab-btn.active {
       background: linear-gradient(135deg, rgba(99, 102, 241, 0.25), rgba(168, 85, 247, 0.25));
@@ -27,422 +30,532 @@
     }
   </style>
 </head>
-<body class="min-h-full flex items-center justify-center p-4 sm:p-6 antialiased bg-radial from-slate-900 via-slate-950 to-black relative selection:bg-indigo-500 selection:text-white">
+<body class="min-h-full flex items-center justify-center p-4 sm:p-6 antialiased bg-radial from-slate-900 via-slate-950 to-black relative selection:bg-indigo-500 selection:text-white"
+      x-data="userPortalApp()" x-init="initApp()" x-cloak>
 
   <!-- Background decorative light spots -->
   <div class="fixed top-0 left-1/4 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl pointer-events-none"></div>
   <div class="fixed bottom-0 right-1/4 w-96 h-96 bg-purple-600/15 rounded-full blur-3xl pointer-events-none"></div>
 
-  <div class="max-w-xl w-full glass-card rounded-3xl p-6 sm:p-8 shadow-2xl glow-indigo relative overflow-hidden border border-slate-800">
+  <!-- Toast Notification Alert -->
+  <div x-show="toast.show" x-transition class="fixed bottom-6 right-6 z-50 p-4 rounded-2xl shadow-2xl border text-xs flex items-center gap-3 backdrop-blur-xl"
+       :class="toast.type === 'error' ? 'bg-rose-950/90 border-rose-800 text-rose-200' : 'bg-emerald-950/90 border-emerald-800 text-emerald-200'">
+    <i :class="toast.type === 'error' ? 'fa-solid fa-circle-exclamation text-rose-400' : 'fa-solid fa-circle-check text-emerald-400'"></i>
+    <span x-text="toast.message"></span>
+  </div>
 
+  <!-- ============================================================== -->
+  <!-- 1. LOGIN & ONBOARDING VIEW (!isLoggedIn)                       -->
+  <!-- ============================================================== -->
+  <div x-show="!isLoggedIn" class="max-w-md w-full glass-card rounded-3xl p-6 sm:p-8 shadow-2xl glow-indigo relative overflow-hidden border border-slate-800">
     <!-- Header -->
     <div class="flex items-center justify-between border-b border-slate-800/80 pb-5 mb-6">
       <div class="flex items-center gap-3.5">
         <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-indigo-500/25">
-          <i class="fa-solid fa-shield-halved text-xl"></i>
+          <i class="fa-solid fa-wifi text-xl"></i>
         </div>
         <div>
-          <h1 class="text-xl font-extrabold tracking-tight text-white flex items-center gap-2">
-            RajLabs Enterprise
-            <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">802.1X AAA</span>
+          <h1 class="text-xl font-black tracking-tight text-white flex items-center gap-2">
+            RajLabs Wi-Fi
+            <span class="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Portal</span>
           </h1>
-          <p class="text-xs text-slate-400 mt-0.5">Secure Network Gateway & Device Onboarding</p>
+          <p class="text-xs text-slate-400 mt-0.5">Subscriber Dashboard & Recharge</p>
         </div>
       </div>
       <div class="text-right hidden sm:block">
         <div class="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
           <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-          <span>RADIUS Online</span>
+          <span>Online</span>
         </div>
-        <span class="text-[10px] text-slate-500 font-mono">EAP-TLS / WPA3-Ent</span>
       </div>
     </div>
 
-    <!-- Alert Notification Box -->
-    <div id="alertBox" class="hidden mb-6 p-4 rounded-2xl text-xs flex items-start gap-3 border transition-all duration-300">
-      <i id="alertIcon" class="fa-solid fa-circle-info mt-0.5 text-base"></i>
-      <div class="flex-1" id="alertMsg"></div>
+    <!-- Alert Box -->
+    <div x-show="authAlert.show" x-transition class="mb-5 p-3.5 rounded-2xl text-xs flex items-start gap-2.5 border"
+         :class="authAlert.type === 'error' ? 'bg-rose-950/80 border-rose-800 text-rose-200' : 'bg-emerald-950/80 border-emerald-800 text-emerald-200'">
+      <i :class="authAlert.type === 'error' ? 'fa-solid fa-circle-xmark text-rose-400 mt-0.5' : 'fa-solid fa-circle-check text-emerald-400 mt-0.5'"></i>
+      <div class="flex-1" x-text="authAlert.message"></div>
     </div>
 
-    <!-- Mode Switcher Tabs -->
-    <div class="grid grid-cols-3 gap-1.5 bg-slate-950/80 p-1 rounded-2xl border border-slate-800/80 mb-6 text-xs">
-      <button id="tabBtn-pass" onclick="switchTab('pass')" class="tab-btn active py-2.5 px-3 rounded-xl text-slate-400 hover:text-white transition-all flex items-center justify-center gap-1.5 border border-transparent">
-        <i class="fa-solid fa-key text-[11px]"></i>
-        <span>Web Login</span>
-      </button>
-      <button id="tabBtn-cert" onclick="switchTab('cert')" class="tab-btn py-2.5 px-3 rounded-xl text-slate-400 hover:text-white transition-all flex items-center justify-center gap-1.5 border border-transparent">
-        <i class="fa-solid fa-certificate text-[11px]"></i>
-        <span>Device Cert</span>
-      </button>
-      <button id="tabBtn-diag" onclick="switchTab('diag')" class="tab-btn py-2.5 px-3 rounded-xl text-slate-400 hover:text-white transition-all flex items-center justify-center gap-1.5 border border-transparent">
-        <i class="fa-solid fa-network-wired text-[11px]"></i>
-        <span>Diagnostics</span>
-      </button>
-    </div>
-
-    <!-- TAB 1: WEB USER/PASSWORD LOGIN -->
-    <div id="tab-pass" class="tab-content space-y-4">
-      <div class="bg-indigo-950/30 border border-indigo-900/40 rounded-2xl p-4 text-xs text-indigo-200/80 flex items-start gap-3">
-        <i class="fa-solid fa-circle-info text-indigo-400 text-sm mt-0.5"></i>
-        <span>Sign in with your assigned RajLabs enterprise account (e.g. <code>raj</code>, <code>shipra</code>, <code>aman</code>, <code>meena</code>, <code>prakash</code>).</span>
+    <!-- User Sign In Form -->
+    <form @submit.prevent="submitLogin()" class="space-y-4 text-xs">
+      <div>
+        <label class="block text-slate-300 font-medium mb-1.5">Username / Member ID</label>
+        <div class="relative">
+          <i class="fa-solid fa-user absolute left-3.5 top-3.5 text-slate-500"></i>
+          <input type="text" x-model="loginForm.username" required placeholder="e.g. raj or aman"
+                 class="w-full bg-slate-950/90 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-white focus:border-indigo-500 outline-none transition-all">
+        </div>
       </div>
 
-      <form id="loginForm" method="post" action="$(link-login-only)" class="space-y-4 text-xs">
+      <div>
+        <label class="block text-slate-300 font-medium mb-1.5">Password</label>
+        <div class="relative">
+          <i class="fa-solid fa-lock absolute left-3.5 top-3.5 text-slate-500"></i>
+          <input :type="showPass ? 'text' : 'password'" x-model="loginForm.password" required placeholder="••••••••"
+                 class="w-full bg-slate-950/90 border border-slate-800 rounded-xl pl-10 pr-10 py-3 text-white focus:border-indigo-500 outline-none transition-all">
+          <button type="button" @click="showPass = !showPass" class="absolute right-3.5 top-3.5 text-slate-500 hover:text-slate-300">
+            <i :class="showPass ? 'fa-regular fa-eye-slash' : 'fa-regular fa-eye'"></i>
+          </button>
+        </div>
+      </div>
+
+      <button type="submit" :disabled="authLoading"
+              class="w-full py-3.5 bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl font-bold tracking-wide shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 mt-2 disabled:opacity-50">
+        <span x-show="!authLoading" class="flex items-center gap-2"><span>Sign In to Dashboard</span> <i class="fa-solid fa-arrow-right"></i></span>
+        <span x-show="authLoading" class="flex items-center gap-2"><i class="fa-solid fa-spinner animate-spin"></i> Authenticating...</span>
+      </button>
+    </form>
+
+    <div class="mt-6 pt-5 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
+      <span>RajLabs High-Speed Wi-Fi</span>
+      <a href="/radius/" class="text-indigo-400 hover:text-indigo-300">Admin Area</a>
+    </div>
+  </div>
+
+  <!-- ============================================================== -->
+  <!-- 2. AUTHENTICATED USER DASHBOARD (isLoggedIn)                  -->
+  <!-- ============================================================== -->
+  <div x-show="isLoggedIn" class="max-w-2xl w-full glass-card rounded-3xl p-6 sm:p-8 shadow-2xl glow-indigo relative overflow-hidden border border-slate-800 space-y-6">
+
+    <!-- User Header Bar -->
+    <div class="flex items-center justify-between border-b border-slate-800/80 pb-5">
+      <div class="flex items-center gap-3.5">
+        <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-600 flex items-center justify-center text-white text-lg font-bold shadow-lg shadow-indigo-500/20">
+          <span x-text="profile.username ? profile.username.charAt(0).toUpperCase() : 'U'"></span>
+        </div>
         <div>
-          <label class="block text-slate-300 font-medium mb-1.5">Username / Member ID</label>
-          <div class="relative">
-            <i class="fa-solid fa-user absolute left-3.5 top-3.5 text-slate-500"></i>
-            <input type="text" id="username" name="username" required placeholder="e.g. raj or aman"
-                   class="w-full bg-slate-950/90 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all placeholder:text-slate-600">
+          <div class="flex items-center gap-2">
+            <h2 class="text-base font-extrabold text-white" x-text="profile.username"></h2>
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold uppercase border"
+                  :class="profile.group === 'admins' ? 'bg-purple-500/20 text-purple-300 border-purple-500/30' : (profile.group === 'FREE' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30')"
+                  x-text="profile.group || 'PAID'"></span>
           </div>
+          <p class="text-xs text-slate-400 mt-0.5" x-text="profile.email || 'Subscriber Member'"></p>
         </div>
+      </div>
 
+      <div class="flex items-center gap-2">
+        <button @click="fetchUserProfile()" title="Refresh Status" class="p-2 text-slate-400 hover:text-white rounded-xl bg-slate-900 border border-slate-800">
+          <i class="fa-solid fa-rotate" :class="refreshing ? 'animate-spin' : ''"></i>
+        </button>
+        <button @click="logout()" class="px-3 py-2 text-xs font-bold rounded-xl bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 flex items-center gap-1.5 transition-all">
+          <i class="fa-solid fa-right-from-bracket"></i>
+          <span>Logout</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Active Subscription & Real-time Expiry Card -->
+    <div class="p-5 rounded-2xl border space-y-4"
+         :class="profile.decision === 'ALLOW' ? 'bg-slate-900/90 border-emerald-500/30' : 'bg-slate-900/90 border-amber-500/30'">
+      
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full"
+                :class="profile.decision === 'ALLOW' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'"></span>
+          <span class="text-xs font-bold uppercase tracking-wider"
+                :class="profile.decision === 'ALLOW' ? 'text-emerald-400' : 'text-amber-400'"
+                x-text="profile.decision === 'ALLOW' ? 'Active Internet Entitlement' : 'Recharge Required / Expired'"></span>
+        </div>
+        <span class="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-950 border border-slate-800 text-slate-300"
+              x-text="profile.subscription ? profile.subscription.plan_name : 'No Active Plan'"></span>
+      </div>
+
+      <!-- Countdown Timer Box -->
+      <div class="grid grid-cols-4 gap-2 text-center">
+        <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+          <div class="text-xl font-black text-white" x-text="countdown.days">0</div>
+          <div class="text-[9px] uppercase text-slate-500 font-bold">Days</div>
+        </div>
+        <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+          <div class="text-xl font-black text-white" x-text="countdown.hours">0</div>
+          <div class="text-[9px] uppercase text-slate-500 font-bold">Hours</div>
+        </div>
+        <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+          <div class="text-xl font-black text-white" x-text="countdown.minutes">0</div>
+          <div class="text-[9px] uppercase text-slate-500 font-bold">Mins</div>
+        </div>
+        <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+          <div class="text-xl font-black text-indigo-400" x-text="countdown.seconds">0</div>
+          <div class="text-[9px] uppercase text-slate-500 font-bold">Secs</div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between text-[11px] text-slate-400 pt-1 border-t border-slate-800/80">
         <div>
-          <label class="block text-slate-300 font-medium mb-1.5">Password</label>
-          <div class="relative">
-            <i class="fa-solid fa-lock absolute left-3.5 top-3.5 text-slate-500"></i>
-            <input type="password" id="password" name="password" required placeholder="Enter strong password"
-                   class="w-full bg-slate-950/90 border border-slate-800 rounded-xl pl-10 pr-10 py-3 text-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all placeholder:text-slate-600">
-            <button type="button" onclick="togglePassVisibility('password')" class="absolute right-3.5 top-3.5 text-slate-500 hover:text-slate-300">
-              <i class="fa-regular fa-eye"></i>
+          <span>Expires: </span>
+          <strong class="text-slate-200 font-mono" x-text="profile.subscription ? new Date(profile.subscription.expires_at).toLocaleString() : 'Expired'"></strong>
+        </div>
+        <div class="text-right">
+          <i class="fa-solid fa-stopwatch text-indigo-400 mr-1"></i>
+          <span>Session Cap: </span>
+          <strong class="text-emerald-400 font-mono" x-text="Math.round((profile.session_timeout_seconds || 86400) / 3600) + 'h max'"></strong>
+        </div>
+      </div>
+    </div>
+
+    <!-- Data Usage Stats -->
+    <div class="grid grid-cols-3 gap-3 text-xs">
+      <div class="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center space-y-1">
+        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center justify-center gap-1">
+          <i class="fa-solid fa-arrow-down text-emerald-400"></i> Downloaded
+        </span>
+        <div class="text-base font-extrabold text-white"><span x-text="profile.usage_stats ? profile.usage_stats.total_download_mb : 0"></span> MB</div>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center space-y-1">
+        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center justify-center gap-1">
+          <i class="fa-solid fa-arrow-up text-indigo-400"></i> Uploaded
+        </span>
+        <div class="text-base font-extrabold text-white"><span x-text="profile.usage_stats ? profile.usage_stats.total_upload_mb : 0"></span> MB</div>
+      </div>
+      <div class="bg-slate-900 border border-slate-800 p-3.5 rounded-2xl text-center space-y-1">
+        <span class="text-[10px] text-slate-500 uppercase font-bold flex items-center justify-center gap-1">
+          <i class="fa-solid fa-database text-amber-400"></i> Total Traffic
+        </span>
+        <div class="text-base font-extrabold text-amber-400"><span x-text="profile.usage_stats ? profile.usage_stats.total_data_gb : 0"></span> GB</div>
+      </div>
+    </div>
+
+    <!-- Tab Bar Inside Dashboard -->
+    <div class="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-2xl border border-slate-800 text-xs">
+      <button @click="dashboardTab = 'recharge'" class="tab-btn py-2.5 rounded-xl text-slate-400 flex items-center justify-center gap-1.5"
+              :class="dashboardTab === 'recharge' ? 'active' : ''">
+        <i class="fa-solid fa-bolt text-amber-400"></i> Recharge
+      </button>
+      <button @click="dashboardTab = 'voucher'" class="tab-btn py-2.5 rounded-xl text-slate-400 flex items-center justify-center gap-1.5"
+              :class="dashboardTab === 'voucher' ? 'active' : ''">
+        <i class="fa-solid fa-ticket text-emerald-400"></i> Redeem Voucher
+      </button>
+      <button @click="dashboardTab = 'devices'" class="tab-btn py-2.5 rounded-xl text-slate-400 flex items-center justify-center gap-1.5"
+              :class="dashboardTab === 'devices' ? 'active' : ''">
+        <i class="fa-solid fa-shield-halved text-cyan-400"></i> Devices & Certs
+      </button>
+    </div>
+
+    <!-- TAB: RECHARGE PLANS & DYNAMIC UPI QR -->
+    <div x-show="dashboardTab === 'recharge'" class="space-y-4 text-xs">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <template x-for="p in profile.available_plans" :key="p.id">
+          <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800 hover:border-amber-500/60 transition-all flex flex-col justify-between text-center space-y-2">
+            <div>
+              <span class="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-500/10 text-amber-400" x-text="p.plan_type"></span>
+              <h4 class="font-bold text-white text-sm mt-1" x-text="p.name"></h4>
+              <div class="text-xl font-black text-amber-400 my-1">₹<span x-text="p.price"></span></div>
+              <p class="text-[11px] text-slate-400"><span x-text="p.validity_days"></span> Days Validity</p>
+            </div>
+            <button @click="selectRechargePlan(p)" class="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl text-xs transition-all shadow-lg shadow-amber-600/20">
+              Pay via UPI
             </button>
           </div>
+        </template>
+      </div>
+
+      <!-- Dynamic UPI Modal Card -->
+      <div x-show="orderModal.show" x-transition class="p-5 rounded-2xl bg-slate-900 border border-indigo-500/40 space-y-4 text-center">
+        <div class="space-y-1">
+          <h4 class="font-bold text-white text-sm">Scan with GPay / PhonePe / Paytm</h4>
+          <p class="text-slate-400 text-xs">Pay <strong class="text-white">₹<span x-text="orderModal.amount"></span></strong> to <span class="font-mono text-indigo-400" x-text="orderModal.upi_vpa"></span></p>
         </div>
 
-        <!-- MikroTik / OpenWrt / UniFi Captive Portal variables -->
-        <input type="hidden" name="dst" value="$(link-orig)">
-        <input type="hidden" name="popup" value="true">
+        <div class="flex flex-col items-center justify-center p-3 bg-white rounded-2xl max-w-[190px] mx-auto shadow-xl">
+          <canvas id="userUpiQrCanvas" class="w-40 h-40"></canvas>
+        </div>
 
-        <button type="submit" id="submitBtn"
-                class="w-full py-3.5 bg-gradient-to-r from-indigo-600 via-indigo-500 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white rounded-xl font-bold tracking-wide shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 mt-2">
-          <span>Authorize & Connect</span>
-          <i class="fa-solid fa-arrow-right"></i>
+        <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 font-mono text-center">
+          <div class="text-[10px] text-slate-500 uppercase">Required Payment Reference Note:</div>
+          <div class="text-amber-400 font-bold text-xs mt-0.5 select-all" x-text="orderModal.upi_reference"></div>
+        </div>
+
+        <!-- UTR verification input -->
+        <form @submit.prevent="verifyUpiOrder()" class="space-y-2.5 pt-2 border-t border-slate-800 text-left">
+          <label class="block text-slate-300 font-medium">Enter 12-digit Bank UTR / Transaction ID</label>
+          <div class="flex gap-2">
+            <input type="text" x-model="orderModal.utr" required placeholder="e.g. 427819283921"
+                   class="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono text-xs focus:border-indigo-500 outline-none">
+            <button type="submit" :disabled="orderModal.verifying" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition-all shadow-lg whitespace-nowrap disabled:opacity-50">
+              <span x-show="!orderModal.verifying">Verify & Activate</span>
+              <span x-show="orderModal.verifying"><i class="fa-solid fa-spinner animate-spin"></i></span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- TAB: VOUCHER REDEMPTION -->
+    <div x-show="dashboardTab === 'voucher'" class="space-y-4 text-xs">
+      <div class="bg-emerald-950/30 border border-emerald-900/40 rounded-2xl p-4 text-xs text-emerald-200/80 flex items-start gap-3">
+        <i class="fa-solid fa-ticket text-emerald-400 text-base mt-0.5"></i>
+        <div>
+          <strong class="text-emerald-200 block mb-0.5">Redeem Access Voucher</strong>
+          <span>Have a prepaid access card, promo code, or complimentary event voucher? Enter it below to top-up instantly.</span>
+        </div>
+      </div>
+
+      <form @submit.prevent="redeemVoucherCode()" class="space-y-3">
+        <div>
+          <label class="block text-slate-300 font-medium mb-1">Voucher Code</label>
+          <input type="text" x-model="voucherInput" required placeholder="e.g. WELCOME24H or WIFI-7D-8F92"
+                 class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-3 text-white font-mono text-sm uppercase tracking-wider focus:border-emerald-500 outline-none">
+        </div>
+        <button type="submit" :disabled="voucherLoading" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 disabled:opacity-50">
+          <span x-show="!voucherLoading"><i class="fa-solid fa-bolt"></i> Redeem Voucher & Activate Access</span>
+          <span x-show="voucherLoading"><i class="fa-solid fa-spinner animate-spin"></i> Redeeming...</span>
         </button>
       </form>
     </div>
 
-    <!-- TAB 2: CERTIFICATE AUTO-LOGIN ENROLLMENT -->
-    <div id="tab-cert" class="tab-content hidden space-y-5">
-      <div class="bg-purple-950/30 border border-purple-900/40 rounded-2xl p-4 text-xs text-purple-200/80 flex items-start gap-3">
-        <i class="fa-solid fa-wand-magic-sparkles text-purple-400 text-sm mt-0.5"></i>
-        <div>
-          <strong class="text-purple-200 block mb-0.5">Passwordless EAP-TLS Auto-Login</strong>
-          <span>Enroll your device once. It installs an X.509 certificate so your phone or laptop connects automatically to <strong>RajLabs-Enterprise</strong> without ever typing passwords again!</span>
-        </div>
+    <!-- TAB: DEVICES, CERTIFICATES & SECURITY -->
+    <div x-show="dashboardTab === 'devices'" class="space-y-4 text-xs">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <a :href="'/radius/api/certs/' + profile.username + '/mobileconfig'" class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-indigo-500 transition-all flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center text-white text-lg"><i class="fa-brands fa-apple"></i></div>
+          <div><div class="font-bold text-white">Apple 1-Click Profile</div><div class="text-[10px] text-slate-400">Install Wi-Fi .mobileconfig</div></div>
+        </a>
+        <a :href="'/radius/api/certs/' + profile.username + '/download'" class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 hover:border-purple-500 transition-all flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center text-lg"><i class="fa-solid fa-file-shield"></i></div>
+          <div><div class="font-bold text-white">Android / Windows Cert</div><div class="text-[10px] text-slate-400">Download .p12 Bundle</div></div>
+        </a>
       </div>
 
-      <!-- Step 1: Request Certificate Form -->
-      <form id="certEnrollForm" onsubmit="handleCertEnroll(event)" class="space-y-4 text-xs">
-        <div>
-          <label class="block text-slate-300 font-medium mb-1.5">Your Account Username</label>
-          <div class="relative">
-            <i class="fa-solid fa-user-check absolute left-3.5 top-3.5 text-slate-500"></i>
-            <input type="text" id="certUser" required placeholder="e.g. raj or aman"
-                   class="w-full bg-slate-950/90 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-none transition-all placeholder:text-slate-600">
-          </div>
+      <!-- Password Change -->
+      <form @submit.prevent="updatePassword()" class="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+        <h4 class="font-bold text-white text-xs flex items-center gap-1.5"><i class="fa-solid fa-key text-indigo-400"></i> Change Wi-Fi Password</h4>
+        <div class="flex gap-2">
+          <input type="password" x-model="newPassword" required placeholder="New strong password"
+                 class="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white outline-none focus:border-indigo-500">
+          <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl whitespace-nowrap">
+            Update Password
+          </button>
         </div>
-
-        <div>
-          <label class="block text-slate-300 font-medium mb-1.5">Account Password (to verify identity)</label>
-          <div class="relative">
-            <i class="fa-solid fa-key absolute left-3.5 top-3.5 text-slate-500"></i>
-            <input type="password" id="certPass" required placeholder="Account password"
-                   class="w-full bg-slate-950/90 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-none transition-all placeholder:text-slate-600">
-          </div>
-        </div>
-
-        <div>
-          <label class="block text-slate-300 font-medium mb-1.5">Device Friendly Name</label>
-          <div class="relative">
-            <i class="fa-solid fa-mobile-screen-button absolute left-3.5 top-3.5 text-slate-500"></i>
-            <input type="text" id="certDevice" placeholder="e.g. Raj's iPhone 15 Pro, Aman MacBook"
-                   class="w-full bg-slate-950/90 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-white focus:border-purple-500 focus:ring-1 focus:ring-purple-500 outline-none transition-all placeholder:text-slate-600">
-          </div>
-        </div>
-
-        <button type="submit" id="certSubmitBtn"
-                class="w-full py-3.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-cyan-400 text-white rounded-xl font-bold tracking-wide shadow-lg shadow-purple-600/30 transition-all flex items-center justify-center gap-2">
-          <i class="fa-solid fa-id-card-clip"></i>
-          <span>Generate Secure Device Certificate</span>
-        </button>
       </form>
-
-      <!-- Step 2: Download Profiles Section (Initially Hidden) -->
-      <div id="certDownloadSection" class="hidden space-y-4 pt-4 border-t border-slate-800 animate-fade-in text-xs">
-        <div class="text-center pb-2">
-          <div class="w-12 h-12 mx-auto rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xl mb-2">
-            <i class="fa-solid fa-shield-check"></i>
-          </div>
-          <h3 class="font-bold text-base text-white">Certificate Ready for Installation</h3>
-          <p class="text-slate-400 text-xs mt-1">Choose your device platform below for instant 1-click configuration:</p>
-        </div>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <!-- Apple iOS / macOS 1-Click Profile -->
-          <a id="btnAppleProfile" href="#" class="p-3.5 rounded-2xl bg-slate-900 border border-slate-700 hover:border-indigo-500 hover:bg-slate-800/80 transition-all flex items-center gap-3 group">
-            <div class="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center text-white text-lg group-hover:scale-110 transition-transform">
-              <i class="fa-brands fa-apple"></i>
-            </div>
-            <div class="text-left">
-              <div class="font-bold text-white group-hover:text-indigo-400 transition-colors">Apple iOS / macOS</div>
-              <div class="text-[10px] text-slate-400">1-Click .mobileconfig Profile</div>
-            </div>
-          </a>
-
-          <!-- Android / Windows / Linux PKCS#12 Bundle -->
-          <a id="btnCertBundle" href="#" class="p-3.5 rounded-2xl bg-slate-900 border border-slate-700 hover:border-purple-500 hover:bg-slate-800/80 transition-all flex items-center gap-3 group">
-            <div class="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center text-lg group-hover:scale-110 transition-transform">
-              <i class="fa-solid fa-file-shield"></i>
-            </div>
-            <div class="text-left">
-              <div class="font-bold text-white group-hover:text-purple-400 transition-colors">Android & Windows</div>
-              <div class="text-[10px] text-slate-400">Download .p12 / .crt Bundle</div>
-            </div>
-          </a>
-        </div>
-
-        <!-- Step-by-step instructions -->
-        <div class="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-slate-400 space-y-2">
-          <div class="font-semibold text-slate-200 flex items-center gap-1.5">
-            <i class="fa-solid fa-circle-question text-indigo-400"></i> Quick Setup Instructions:
-          </div>
-          <p><strong>iOS / macOS:</strong> Tap Apple Profile &gt; Allow Download &gt; Open <em>Settings &gt; Profile Downloaded</em> &gt; Tap <em>Install</em>.</p>
-          <p><strong>Android:</strong> Download .p12 &gt; Open <em>Settings &gt; Security &gt; Install from storage &gt; Wi-Fi Certificate</em> &gt; Select 'RajLabs'.</p>
-          <p><strong>Windows:</strong> Double click .p12 file &gt; Choose <em>Current User</em> &gt; Place in <em>Personal store</em>.</p>
-        </div>
-      </div>
-    </div>
-
-    <!-- TAB 3: NETWORK DIAGNOSTICS & TELEMETRY -->
-    <div id="tab-diag" class="tab-content hidden space-y-4 text-xs">
-      <div class="grid grid-cols-2 gap-3">
-        <div class="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-1">
-          <span class="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">RADIUS Host</span>
-          <p class="font-mono text-xs text-white font-medium">80.225.195.202:1812</p>
-        </div>
-        <div class="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-1">
-          <span class="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Database Engine</span>
-          <p class="font-mono text-xs text-emerald-400 font-medium">PostgreSQL 16 (SSL)</p>
-        </div>
-        <div class="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-1">
-          <span class="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">Client Gateway IP</span>
-          <p class="font-mono text-xs text-slate-300" id="diagClientIp">Detecting...</p>
-        </div>
-        <div class="bg-slate-950 p-3.5 rounded-2xl border border-slate-800 space-y-1">
-          <span class="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">API Latency</span>
-          <p class="font-mono text-xs text-indigo-400 font-medium" id="diagLatency">-- ms</p>
-        </div>
-      </div>
-
-      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
-        <div class="flex items-center justify-between">
-          <span class="font-semibold text-slate-300">Active Security Protocols</span>
-          <span class="px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-300 text-[10px] font-mono">WPA2/WPA3-Enterprise</span>
-        </div>
-        <div class="space-y-1.5 text-[11px] text-slate-400">
-          <div class="flex items-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> EAP-TLS (Public Key Infrastructure X.509)</div>
-          <div class="flex items-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> PEAP / MSCHAPv2 (Encrypted User Credentials)</div>
-          <div class="flex items-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> Dynamic VLAN & Static IP Assignment per user</div>
-          <div class="flex items-center gap-2"><i class="fa-solid fa-check text-emerald-400"></i> CoA Disconnect & Bandwidth Rate-Limiting</div>
-        </div>
-      </div>
-
-      <button onclick="pingRadiusServer()" class="w-full py-2.5 rounded-xl bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 font-medium transition-all flex items-center justify-center gap-2">
-        <i class="fa-solid fa-rotate"></i>
-        <span>Run Latency Ping Test</span>
-      </button>
-    </div>
-
-    <!-- Footer -->
-    <div class="mt-6 pt-5 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
-      <div class="flex items-center gap-2">
-        <i class="fa-solid fa-lock text-indigo-400"></i>
-        <span>RajLabs Secure Wi-Fi AAA</span>
-      </div>
-      <a href="/radius/" class="text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1 font-medium">
-        <span>Admin Dashboard</span>
-        <i class="fa-solid fa-arrow-up-right-from-square text-[9px]"></i>
-      </a>
     </div>
 
   </div>
 
   <script>
-    // Tab Switching
-    function switchTab(tab) {
-      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+    function userPortalApp() {
+      return {
+        isLoggedIn: false,
+        authLoading: false,
+        refreshing: false,
+        showPass: false,
+        dashboardTab: 'recharge',
+        voucherInput: '',
+        voucherLoading: false,
+        newPassword: '',
 
-      const targetBtn = document.getElementById(`tabBtn-${tab}`);
-      const targetContent = document.getElementById(`tab-${tab}`);
-      if (targetBtn) targetBtn.classList.add('active');
-      if (targetContent) targetContent.classList.remove('hidden');
+        loginForm: { username: '', password: '', remember: true },
+        authAlert: { show: false, type: 'error', message: '' },
+        toast: { show: false, type: 'success', message: '' },
 
-      if (tab === 'diag') pingRadiusServer();
-    }
+        profile: {},
+        countdown: { days: 0, hours: 0, minutes: 0, seconds: 0 },
+        timerInterval: null,
 
-    function togglePassVisibility(id) {
-      const el = document.getElementById(id);
-      el.type = el.type === 'password' ? 'text' : 'password';
-    }
+        orderModal: {
+          show: false,
+          plan_id: null,
+          amount: 0,
+          upi_vpa: '',
+          upi_reference: '',
+          utr: '',
+          verifying: false
+        },
 
-    function showAlert(type, title, msg, msgHtml) {
-      const alertBox = document.getElementById('alertBox');
-      const alertMsg = document.getElementById('alertMsg');
-      const alertIcon = document.getElementById('alertIcon');
+        showToast(msg, type = 'success') {
+          this.toast = { show: true, type, message: msg };
+          setTimeout(() => this.toast.show = false, 4000);
+        },
 
-      alertBox.classList.remove('hidden');
-      if (type === 'success') {
-        alertBox.className = 'mb-6 p-4 rounded-2xl text-xs flex items-start gap-3 bg-emerald-950/80 border border-emerald-800 text-emerald-200';
-        alertIcon.className = 'fa-solid fa-circle-check text-emerald-400 mt-0.5 text-base';
-      } else if (type === 'error') {
-        alertBox.className = 'mb-6 p-4 rounded-2xl text-xs flex items-start gap-3 bg-rose-950/80 border border-rose-800 text-rose-200';
-        alertIcon.className = 'fa-solid fa-circle-xmark text-rose-400 mt-0.5 text-base';
-      } else {
-        alertBox.className = 'mb-6 p-4 rounded-2xl text-xs flex items-start gap-3 bg-indigo-950/80 border border-indigo-800 text-indigo-200';
-        alertIcon.className = 'fa-solid fa-circle-info text-indigo-400 mt-0.5 text-base';
-      }
+        async fetchWithAuth(url, opts = {}) {
+          const token = localStorage.getItem('user_token');
+          opts.headers = opts.headers || {};
+          if (token) opts.headers['Authorization'] = `Bearer ${token}`;
+          return fetch(url, opts);
+        },
 
-      // XSS-safe (issue #13): server/user-influenced strings go through
-      // textContent. Only explicit trusted markup uses msgHtml.
-      alertMsg.textContent = '';
-      const strong = document.createElement('strong');
-      strong.textContent = title;
-      const div = document.createElement('div');
-      div.className = 'mt-0.5 text-slate-300';
-      if (msgHtml) {
-        div.innerHTML = msgHtml; // trusted, caller-built markup only
-      } else {
-        div.textContent = msg;
-      }
-      alertMsg.appendChild(strong);
-      alertMsg.appendChild(div);
-    }
-
-    // Web login form handler (fallback for live browser testing outside router)
-    const form = document.getElementById('loginForm');
-    if (form && (!form.action.includes('http') && !form.action.includes(':') || form.action.includes('$(link-login-only)'))) {
-      form.onsubmit = async (e) => {
-        // If loaded directly in browser, test authentication via public API
-        e.preventDefault();
-        const u = document.getElementById('username').value.trim();
-        const p = document.getElementById('password').value;
-        const btn = document.getElementById('submitBtn');
-        btn.disabled = true;
-        btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Verifying with FreeRADIUS...';
-
-        try {
-          const res = await fetch('/radius/api/portal/enroll-certificate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: u, password: p, device_name: 'Web Captive Portal Test' })
-          });
-          const data = await res.json();
-          if (res.ok && data.success) {
-            showAlert('success', 'Authentication Successful!', `Welcome ${u}. Your enterprise credentials were authenticated with FreeRADIUS.`);
-          } else {
-            showAlert('error', 'Authentication Failed', data.detail || 'Invalid username or password. Please verify your credentials.');
+        async initApp() {
+          const token = localStorage.getItem('user_token');
+          if (token) {
+            await this.fetchUserProfile();
           }
-        } catch(err) {
-          showAlert('error', 'Gateway Connection Error', 'Unable to reach the FreeRADIUS authentication service.');
-        } finally {
-          btn.disabled = false;
-          btn.innerHTML = '<span>Authorize & Connect</span> <i class="fa-solid fa-arrow-right"></i>';
+        },
+
+        async submitLogin() {
+          this.authLoading = true;
+          this.authAlert.show = false;
+          try {
+            const res = await fetch('/radius/api/user/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(this.loginForm)
+            });
+            const data = await res.json();
+            if (res.ok && data.status === 'success') {
+              localStorage.setItem('user_token', data.token);
+              await this.fetchUserProfile();
+            } else {
+              this.authAlert = { show: true, type: 'error', message: data.detail || 'Invalid username or password.' };
+            }
+          } catch(e) {
+            this.authAlert = { show: true, type: 'error', message: 'Failed to reach server.' };
+          } finally {
+            this.authLoading = false;
+          }
+        },
+
+        async fetchUserProfile() {
+          this.refreshing = true;
+          try {
+            const res = await this.fetchWithAuth('/radius/api/user/me');
+            if (res.ok) {
+              this.profile = await res.json();
+              this.isLoggedIn = true;
+              this.startCountdown();
+            } else {
+              this.isLoggedIn = false;
+              localStorage.removeItem('user_token');
+            }
+          } catch(e) {
+            this.isLoggedIn = false;
+          } finally {
+            this.refreshing = false;
+          }
+        },
+
+        startCountdown() {
+          if (this.timerInterval) clearInterval(this.timerInterval);
+          
+          const update = () => {
+            if (!this.profile.subscription || !this.profile.subscription.expires_at) {
+              this.countdown = { days: 0, hours: 0, minutes: 0, seconds: 0 };
+              return;
+            }
+            const exp = new Date(this.profile.subscription.expires_at).getTime();
+            const now = new Date().getTime();
+            const diff = Math.max(0, Math.floor((exp - now) / 1000));
+
+            this.countdown.days = Math.floor(diff / 86400);
+            this.countdown.hours = Math.floor((diff % 86400) / 3600);
+            this.countdown.minutes = Math.floor((diff % 3600) / 60);
+            this.countdown.seconds = diff % 60;
+          };
+
+          update();
+          this.timerInterval = setInterval(update, 1000);
+        },
+
+        async selectRechargePlan(plan) {
+          try {
+            const res = await fetch('/radius/api/payments/create-order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ username: this.profile.username, plan_id: plan.id })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              this.orderModal = {
+                show: true,
+                plan_id: plan.id,
+                amount: data.amount,
+                upi_vpa: data.upi_vpa,
+                upi_reference: data.upi_reference,
+                utr: '',
+                verifying: false
+              };
+              this.$nextTick(() => {
+                QRCode.toCanvas(document.getElementById('userUpiQrCanvas'), data.upi_deeplink, { width: 160, margin: 1 });
+              });
+            } else {
+              this.showToast(data.detail || 'Could not create order', 'error');
+            }
+          } catch(e) {
+            this.showToast('Order creation failed', 'error');
+          }
+        },
+
+        async verifyUpiOrder() {
+          this.orderModal.verifying = true;
+          try {
+            const res = await fetch('/radius/api/payments/upi-verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                username: this.profile.username,
+                plan_id: this.orderModal.plan_id,
+                utr: this.orderModal.utr,
+                amount: this.orderModal.amount
+              })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              this.showToast('Payment verified! Validity extended.');
+              this.orderModal.show = false;
+              await this.fetchUserProfile();
+            } else {
+              this.showToast(data.detail || 'Verification failed', 'error');
+            }
+          } catch(e) {
+            this.showToast('Error verifying payment', 'error');
+          } finally {
+            this.orderModal.verifying = false;
+          }
+        },
+
+        async redeemVoucherCode() {
+          if (!this.voucherInput.trim()) return;
+          this.voucherLoading = true;
+          try {
+            const res = await this.fetchWithAuth('/radius/api/user/redeem-voucher', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ code: this.voucherInput.trim() })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              this.showToast(data.message || 'Voucher redeemed successfully!');
+              this.voucherInput = '';
+              await this.fetchUserProfile();
+            } else {
+              this.showToast(data.detail || 'Invalid voucher code', 'error');
+            }
+          } catch(e) {
+            this.showToast('Failed to redeem voucher', 'error');
+          } finally {
+            this.voucherLoading = false;
+          }
+        },
+
+        async updatePassword() {
+          if (!this.newPassword.trim()) return;
+          try {
+            const res = await this.fetchWithAuth('/radius/api/user/change-password', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password: this.newPassword.trim() })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              this.showToast('Password updated successfully!');
+              this.newPassword = '';
+            } else {
+              this.showToast(data.detail || 'Failed to change password', 'error');
+            }
+          } catch(e) {
+            this.showToast('Error changing password', 'error');
+          }
+        },
+
+        async logout() {
+          try { await fetch('/radius/api/user/logout', { method: 'POST' }); } catch(e) {}
+          localStorage.removeItem('user_token');
+          if (this.timerInterval) clearInterval(this.timerInterval);
+          this.isLoggedIn = false;
+          this.showToast('Signed out.');
         }
       };
     }
-
-    // Handle Certificate Self-Enrollment
-    async function handleCertEnroll(e) {
-      e.preventDefault();
-      const u = document.getElementById('certUser').value.trim();
-      const p = document.getElementById('certPass').value;
-      const d = document.getElementById('certDevice').value.trim() || 'User Device';
-      const btn = document.getElementById('certSubmitBtn');
-
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner animate-spin"></i> Generating PKI X.509 Certificate...';
-
-      try {
-        const res = await fetch('/radius/api/portal/enroll-certificate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: u, password: p, device_name: d })
-        });
-        const data = await res.json();
-
-        if (res.ok && data.success) {
-          // Owner-only downloads: password stays in POST body, never in the URL.
-          window._portalCreds = { username: u, password: p };
-          const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-          const trustedHtml = `Device certificate created for <strong>${esc(u)}</strong>.` +
-            (data.p12_password
-              ? ` Import password (shown once — save it now): <code class="font-mono font-bold text-amber-300">${esc(data.p12_password)}</code>`
-              : '') +
-            ` Download your platform profile below.`;
-          showAlert('success', 'Certificate Generated Successfully!', '', trustedHtml);
-
-          // Setup download buttons (authenticated POST → file blob)
-          const downloadSection = document.getElementById('certDownloadSection');
-          downloadSection.classList.remove('hidden');
-
-          document.getElementById('btnAppleProfile').onclick = (ev) => { ev.preventDefault(); downloadPortalFile('mobileconfig'); };
-          document.getElementById('btnCertBundle').onclick = (ev) => { ev.preventDefault(); downloadPortalFile('p12'); };
-        } else {
-          showAlert('error', 'Enrollment Failed', data.detail || 'Could not verify account credentials to generate certificate.');
-        }
-      } catch(err) {
-        showAlert('error', 'Server Error', 'Failed to reach Certificate Authority service.');
-      } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-id-card-clip"></i> <span>Generate Secure Device Certificate</span>';
-      }
-    }
-
-    // Authenticated owner-only download (POST keeps the password out of URLs/logs)
-    async function downloadPortalFile(kind) {
-      const creds = window._portalCreds;
-      if (!creds) { showAlert('error', 'Session Expired', 'Please generate your certificate again first.'); return; }
-      const endpoint = kind === 'p12' ? '/radius/api/portal/download-cert' : '/radius/api/portal/download-mobileconfig';
-      const filename = kind === 'p12' ? `RajLabs_${creds.username}_Certificate.p12` : `RajLabs_${creds.username}_WiFi.mobileconfig`;
-      try {
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(creds)
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          showAlert('error', 'Download Failed', err.detail || 'Could not verify ownership. Please re-enter your password and retry.');
-          return;
-        }
-        const blob = await res.blob();
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = filename;
-        document.body.appendChild(a); a.click();
-        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
-      } catch(err) {
-        showAlert('error', 'Download Failed', 'Network error while downloading your certificate.');
-      }
-    }
-
-    // Diagnostics Ping
-    async function pingRadiusServer() {
-      const t0 = performance.now();
-      try {
-        const res = await fetch('/radius/api/system-status');
-        const t1 = performance.now();
-        document.getElementById('diagLatency').innerText = Math.round(t1 - t0) + ' ms';
-        document.getElementById('diagClientIp').innerText = window.location.hostname || '80.225.195.202';
-      } catch(e) {
-        document.getElementById('diagLatency').innerText = 'Online';
-        document.getElementById('diagClientIp').innerText = window.location.hostname || '80.225.195.202';
-      }
-    }
-
-    // Detect browser IP on start
-    pingRadiusServer();
   </script>
 </body>
 </html>
