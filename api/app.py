@@ -1440,16 +1440,43 @@ def get_accounting(limit: int = 50, active_only: bool = False, username: Optiona
 
 @app.get("/radius/api/auth-logs", tags=["Logs & Accounting"])
 @app.get("/api/auth-logs", tags=["Logs & Accounting"])
-def get_auth_logs(limit: int = 50, _: str = Depends(authenticate_admin)):
+def get_auth_logs(limit: int = 50, username: Optional[str] = None, result: Optional[str] = None, _: str = Depends(authenticate_admin)):
+    """RADIUS authentication attempts. NOTE: the `pass` column (attempted passwords)
+    is deliberately never selected — it must not leak through the API."""
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, username, reply, authdate, pass 
-                FROM radpostauth 
-                ORDER BY id DESC LIMIT %s
-            """, (limit,))
-            return cur.fetchall()
+            query = "SELECT id, username, reply, authdate FROM radpostauth WHERE 1=1"
+            params: List[Any] = []
+            if username:
+                query += " AND username ILIKE %s"
+                params.append(f"%{username}%")
+            if result == "accept":
+                query += " AND reply = 'Access-Accept'"
+            elif result == "reject":
+                query += " AND reply = 'Access-Reject'"
+            query += " ORDER BY id DESC LIMIT %s"
+            params.append(min(max(int(limit or 50), 1), 500))
+            cur.execute(query, tuple(params))
+            rows = cur.fetchall()
+            out = []
+            for r in rows:
+                reply = (r.get("reply") or "").strip()
+                if reply == "Access-Accept":
+                    event = "accept"
+                elif reply == "Access-Reject":
+                    event = "reject"
+                else:
+                    event = "other"
+                ts = r.get("authdate")
+                out.append({
+                    "id": r.get("id"),
+                    "username": r.get("username"),
+                    "event": event,
+                    "reply": reply or "—",
+                    "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else None),
+                })
+            return out
     finally:
         conn.close()
 

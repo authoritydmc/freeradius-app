@@ -867,11 +867,31 @@
 
       <!-- TAB: LOGS -->
       <section x-show="activeTab === 'logs'" class="space-y-6">
-        <div class="flex justify-between items-center">
-          <h2 class="text-lg font-bold text-white">FreeRADIUS Audit & Accounting Logs</h2>
-          <button @click="fetchLogs()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-2">
-            <i class="fa-solid fa-rotate"></i> Refresh
-          </button>
+        <div class="flex flex-wrap gap-3 justify-between items-center">
+          <div>
+            <h2 class="text-lg font-bold text-white">RADIUS Authentication Log</h2>
+            <p class="text-[11px] text-slate-500 mt-0.5" x-text="logSummary()"></p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="relative">
+              <i class="fa-solid fa-magnifying-glass absolute left-3 top-3 text-slate-500 text-[11px]"></i>
+              <input type="text" x-model="logSearch" @input.debounce.400ms="fetchLogs()" placeholder="Filter username..." class="bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-2 text-xs text-white focus:border-indigo-500 outline-none w-40">
+            </div>
+            <div class="flex bg-slate-950 border border-slate-800 rounded-xl p-0.5 text-[11px] font-semibold">
+              <button @click="logResult = ''; fetchLogs()" :class="!logResult ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'" class="px-3 py-1.5 rounded-lg transition-all">All</button>
+              <button @click="logResult = 'accept'; fetchLogs()" :class="logResult === 'accept' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'" class="px-3 py-1.5 rounded-lg transition-all">Accepted</button>
+              <button @click="logResult = 'reject'; fetchLogs()" :class="logResult === 'reject' ? 'bg-rose-600 text-white' : 'text-slate-400 hover:text-white'" class="px-3 py-1.5 rounded-lg transition-all">Rejected</button>
+            </div>
+            <select x-model="logLimit" @change="fetchLogs()" class="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:border-indigo-500 outline-none">
+              <option value="25">Last 25</option>
+              <option value="50">Last 50</option>
+              <option value="100">Last 100</option>
+              <option value="200">Last 200</option>
+            </select>
+            <button @click="fetchLogs(); fetchAudit()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-2">
+              <i class="fa-solid fa-rotate"></i> Refresh
+            </button>
+          </div>
         </div>
 
         <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
@@ -879,38 +899,44 @@
             <thead class="bg-slate-950/60 text-slate-400 uppercase text-[10px]">
               <tr>
                 <th class="px-6 py-3.5">User</th>
-                <th class="px-6 py-3.5">Event</th>
-                <th class="px-6 py-3.5">Client IP</th>
-                <th class="px-6 py-3.5">NAS IP</th>
-                <th class="px-6 py-3.5">Timestamp</th>
+                <th class="px-6 py-3.5">Result</th>
+                <th class="px-6 py-3.5">Server Reply</th>
+                <th class="px-6 py-3.5">Time</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800">
               <template x-for="log in logs" :key="log.id">
                 <tr class="hover:bg-slate-800/40">
-                  <td class="px-6 py-3.5 font-semibold text-white" x-text="log.username"></td>
+                  <td class="px-6 py-3.5 font-semibold text-white font-mono" x-text="log.username"></td>
                   <td class="px-6 py-3.5">
-                    <span class="px-2 py-0.5 rounded text-[10px] font-mono"
-                          :class="log.event === 'Start' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-400'"
-                          x-text="log.event"></span>
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-mono border inline-flex items-center gap-1"
+                          :class="log.event === 'accept' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : (log.event === 'reject' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-slate-800 text-slate-400 border-slate-700')">
+                      <i :class="log.event === 'accept' ? 'fa-solid fa-check' : (log.event === 'reject' ? 'fa-solid fa-xmark' : 'fa-solid fa-question')"></i>
+                      <span x-text="log.event === 'accept' ? 'Accepted' : (log.event === 'reject' ? 'Rejected' : log.reply)"></span>
+                    </span>
                   </td>
-                  <td class="px-6 py-3.5 font-mono text-slate-400" x-text="log.framed_ip"></td>
-                  <td class="px-6 py-3.5 font-mono text-slate-400" x-text="log.nas_ip"></td>
-                  <td class="px-6 py-3.5 text-slate-500" x-text="log.timestamp"></td>
+                  <td class="px-6 py-3.5 font-mono text-slate-400" x-text="log.reply"></td>
+                  <td class="px-6 py-3.5 text-slate-500 whitespace-nowrap" :title="log.timestamp" x-text="relTime(log.timestamp)"></td>
                 </tr>
               </template>
               <tr x-show="!logs.length">
-                <td colspan="5" class="px-6 py-8 text-center text-slate-500 italic">No log records found.</td>
+                <td colspan="4" class="px-6 py-8 text-center text-slate-500 italic">No authentication attempts match these filters.</td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        <div class="flex justify-between items-center pt-2">
+        <div class="flex flex-wrap gap-2 justify-between items-center pt-2">
           <h3 class="text-sm font-bold text-white flex items-center gap-2"><i class="fa-solid fa-clipboard-list text-amber-400"></i> Admin Audit Trail <span class="text-[10px] font-normal text-slate-500">(who changed what, when)</span></h3>
-          <button @click="fetchAudit()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-[11px] font-semibold flex items-center gap-1.5">
-            <i class="fa-solid fa-rotate"></i> Refresh audit
-          </button>
+          <div class="flex items-center gap-2">
+            <div class="relative">
+              <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-500 text-[10px]"></i>
+              <input type="text" x-model="auditSearch" placeholder="Filter admin / action / target..." class="bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-[11px] text-white focus:border-amber-500 outline-none w-56">
+            </div>
+            <button @click="fetchAudit()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-[11px] font-semibold flex items-center gap-1.5">
+              <i class="fa-solid fa-rotate"></i> Refresh audit
+            </button>
+          </div>
         </div>
 
         <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
@@ -925,7 +951,7 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800">
-              <template x-for="a in auditLogs" :key="a.id">
+              <template x-for="a in filteredAudit()" :key="a.id">
                 <tr class="hover:bg-slate-800/40">
                   <td class="px-6 py-3 font-mono text-slate-500 whitespace-nowrap" x-text="a.ts"></td>
                   <td class="px-6 py-3 font-semibold text-white" x-text="a.admin_user"></td>
@@ -938,8 +964,8 @@
                   <td class="px-6 py-3 font-mono text-slate-500" x-text="a.detail || '—'"></td>
                 </tr>
               </template>
-              <tr x-show="!auditLogs.length">
-                <td colspan="5" class="px-6 py-8 text-center text-slate-500 italic">No admin actions recorded yet. Password resets, creates and deletes will appear here.</td>
+              <tr x-show="!filteredAudit().length">
+                <td colspan="5" class="px-6 py-8 text-center text-slate-500 italic" x-text="auditLogs.length ? 'No audit entries match this filter.' : 'No admin actions recorded yet. Password resets, creates and deletes will appear here.'"></td>
               </tr>
             </tbody>
           </table>
@@ -1222,7 +1248,11 @@
         nasList: [],
         sessions: [],
         logs: [],
+        logSearch: '',
+        logResult: '',
+        logLimit: 50,
         auditLogs: [],
+        auditSearch: '',
         publicConfig: { radius_host: '', radius_ports: {}, portal_path: '/radius/portal', signer_configured: false },
         signerStatus: { configured: false, mode: 'local', reachable: true, key_valid: null, detail: 'Checking signer status...' },
         testForm: { username: 'raj', password: '' },
@@ -1515,10 +1545,42 @@
 
         async fetchLogs() {
           try {
-            const res = await this.fetchWithAuth('/radius/api/auth-logs?limit=40');
+            const q = new URLSearchParams({ limit: this.logLimit || 50 });
+            if (this.logSearch) q.set('username', this.logSearch.trim());
+            if (this.logResult) q.set('result', this.logResult);
+            const res = await this.fetchWithAuth('/radius/api/auth-logs?' + q.toString());
             if (res.ok) this.logs = await res.json();
           } catch(e) {}
           this.fetchAudit();
+        },
+
+        logSummary() {
+          const acc = this.logs.filter(l => l.event === 'accept').length;
+          const rej = this.logs.filter(l => l.event === 'reject').length;
+          if (!this.logs.length) return 'No attempts loaded';
+          return `${this.logs.length} attempt${this.logs.length === 1 ? '' : 's'} in view · ${acc} accepted · ${rej} rejected`;
+        },
+
+        relTime(iso) {
+          if (!iso) return '—';
+          const t = new Date(iso).getTime();
+          if (isNaN(t)) return iso;
+          const s = Math.floor((Date.now() - t) / 1000);
+          if (s < 60) return 'just now';
+          if (s < 3600) return Math.floor(s / 60) + 'm ago';
+          if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+          const d = Math.floor(s / 86400);
+          return d === 1 ? 'yesterday' : d + 'd ago';
+        },
+
+        filteredAudit() {
+          const q = (this.auditSearch || '').toLowerCase();
+          if (!q) return this.auditLogs;
+          return this.auditLogs.filter(a =>
+            (a.admin_user || '').toLowerCase().includes(q) ||
+            (a.action || '').toLowerCase().includes(q) ||
+            (a.target_user || '').toLowerCase().includes(q) ||
+            (a.detail || '').toLowerCase().includes(q));
         },
 
         async fetchAudit() {
