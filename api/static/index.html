@@ -513,6 +513,7 @@
                     </div>
                   </td>
                   <td class="px-6 py-4 text-right space-x-1 whitespace-nowrap">
+                    <button @click="openDevicePolicy(user.username)" title="Verified devices — allow only this user's own devices (MAC lock, off by default)" class="text-sky-400 hover:text-sky-300 p-1.5"><i class="fa-solid fa-shield-halved"></i></button>
                     <button @click="openResetModal(user.username)" title="Reset password (1-click regenerate)" class="text-amber-400 hover:text-amber-300 p-1.5"><i class="fa-solid fa-key"></i></button>
                     <button @click="openEditUserModal(user)" title="Edit user (group)" class="text-slate-300 hover:text-white p-1.5"><i class="fa-solid fa-pen"></i></button>
                     <button @click="testUserAuth(user.username)" title="Test RADIUS Auth" class="text-indigo-400 hover:text-indigo-300 p-1.5"><i class="fa-solid fa-play"></i></button>
@@ -888,6 +889,7 @@
                 <th class="px-6 py-3.5">Last Seen</th>
                 <th class="px-6 py-3.5">Sessions</th>
                 <th class="px-6 py-3.5">Data Used</th>
+                <th class="px-6 py-3.5 text-right">Verified</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-slate-800">
@@ -905,10 +907,16 @@
                   <td class="px-6 py-4 text-slate-400 whitespace-nowrap" :title="d.last_seen" x-text="relTime(d.last_seen)"></td>
                   <td class="px-6 py-4 font-mono text-slate-300" :title="'First seen: ' + (d.first_seen || '—')" x-text="d.sessions"></td>
                   <td class="px-6 py-4 font-mono text-slate-300 whitespace-nowrap" :title="'Downloaded ' + d.down + ' / Uploaded ' + d.up" x-text="d.total"></td>
+                  <td class="px-6 py-4 text-right whitespace-nowrap">
+                    <button x-show="d.username" @click="trustDevice(d.mac, d.username)" title="Verify this device for its user — only verified devices will be allowed once MAC lockdown is on" class="px-2.5 py-1 rounded-lg bg-sky-950 text-sky-300 border border-sky-800/60 hover:bg-sky-900 text-[11px] font-semibold">
+                      <i class="fa-solid fa-shield-halved"></i> Trust
+                    </button>
+                    <span x-show="!d.username" class="text-slate-600 italic text-[11px]" title="No owning user known for this device yet">—</span>
+                  </td>
                 </tr>
               </template>
               <tr x-show="!filteredDevices().length">
-                <td colspan="9" class="px-6 py-8 text-center text-slate-500 italic" x-text="devices.length ? 'No devices match this search.' : 'No devices seen yet. Devices appear here after their first Wi-Fi session.'"></td>
+                <td colspan="10" class="px-6 py-8 text-center text-slate-500 italic" x-text="devices.length ? 'No devices match this search.' : 'No devices seen yet. Devices appear here after their first Wi-Fi session.'"></td>
               </tr>
             </tbody>
           </table>
@@ -932,6 +940,10 @@
               <label class="block text-slate-300 mb-1">Password</label>
               <input type="password" x-model="testForm.password" required class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none">
             </div>
+            <div>
+              <label class="block text-slate-300 mb-1">Device MAC <span class="text-slate-500 font-normal">(optional — simulates Calling-Station-Id, e.g. to test MAC lockdown)</span></label>
+              <input type="text" x-model="testForm.calling_station_id" placeholder="e.g. AA:BB:CC:DD:EE:FF (blank = no MAC)" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono">
+            </div>
             <button type="submit" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold tracking-wide transition-all">
               Send Access-Request Packet
             </button>
@@ -939,8 +951,13 @@
 
           <div x-show="testResult" class="p-4 rounded-xl text-xs font-mono border"
                :class="testResult && testResult.success ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300' : 'bg-rose-950/40 border-rose-800 text-rose-300'">
-            <div class="font-bold mb-1" x-text="testResult && testResult.success ? 'Received: Access-Accept' : 'Received: Access-Reject'"></div>
+            <div class="font-bold mb-1" x-text="testResult ? ('Verdict: ' + (testResult.status || (testResult.success ? 'Accepted' : 'Rejected'))) : ''"></div>
             <pre class="text-[11px] whitespace-pre-wrap" x-text="testResult && testResult.output"></pre>
+            <div x-show="testResult && !testResult.success" class="mt-2 text-[11px] font-sans">
+              <span class="text-slate-400">Rejected — see </span>
+              <button @click="activeTab = 'logs'; fetchLogs()" class="text-indigo-400 hover:text-indigo-300 underline">Auth History for the rule that blocked it</button>
+              <span class="text-slate-400">.</span>
+            </div>
           </div>
         </div>
       </section>
@@ -981,6 +998,7 @@
                 <th class="px-6 py-3.5"><span class="tip" :title="tip('user-name')">User</span></th>
                 <th class="px-6 py-3.5"><span class="tip" title="Simple: green Accepted = password OK, let in. Red Rejected = wrong password or blocked.">Result</span><i class="fa-solid fa-circle-info tip-icon" title="Simple: green Accepted = password OK, let in. Red Rejected = wrong password or blocked."></i></th>
                 <th class="px-6 py-3.5"><span class="tip" title="Simple: exact answer the server gave — Access-Accept (yes) or Access-Reject (no).">Server Reply</span><i class="fa-solid fa-circle-info tip-icon" title="Simple: exact answer the server gave — Access-Accept (yes) or Access-Reject (no)."></i></th>
+                <th class="px-6 py-3.5"><span class="tip" title="Simple: which rule blocked the login (e.g. unverified device), if the server recorded one.">Rule / Reason</span><i class="fa-solid fa-circle-info tip-icon" title="Simple: which rule blocked the login (e.g. unverified device), if the server recorded one."></i></th>
                 <th class="px-6 py-3.5">Time</th>
               </tr>
             </thead>
@@ -997,11 +1015,12 @@
                     </span>
                   </td>
                   <td class="px-6 py-3.5 font-mono text-slate-400 tip" :title="log.reply === 'Access-Accept' ? tip('access-accept') : (log.reply === 'Access-Reject' ? tip('access-reject') : log.reply)" x-text="log.reply"></td>
+                  <td class="px-6 py-3.5 text-slate-300 max-w-[280px] truncate" :title="log.rule || ''" x-text="log.rule || '—'"></td>
                   <td class="px-6 py-3.5 text-slate-500 whitespace-nowrap" :title="log.timestamp" x-text="relTime(log.timestamp)"></td>
                 </tr>
               </template>
               <tr x-show="!logs.length">
-                <td colspan="4" class="px-6 py-8 text-center text-slate-500 italic">No authentication attempts match these filters.</td>
+                <td colspan="5" class="px-6 py-8 text-center text-slate-500 italic">No authentication attempts match these filters.</td>
               </tr>
             </tbody>
           </table>
@@ -1285,6 +1304,52 @@
     </div>
   </div>
 
+  <!-- Device Policy Modal (verified-device MAC lockdown, per user) -->
+  <div x-show="devicePolicy.show" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl my-8">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div>
+          <h3 class="text-base font-bold text-white flex items-center gap-2">
+            <i class="fa-solid fa-shield-halved text-sky-400"></i>
+            <span>Verified devices: <span class="font-mono" x-text="devicePolicy.username"></span></span>
+          </h3>
+          <p class="text-[11px] text-slate-400 mt-0.5">Only this user's own devices can connect when lockdown is on. Default: off.</p>
+        </div>
+        <button type="button" @click="devicePolicy.show = false" class="text-slate-400 hover:text-white p-1">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+
+      <label class="flex items-start gap-2.5 p-3 rounded-xl cursor-pointer border transition-all"
+             :class="devicePolicy.require_verified ? 'bg-sky-950/50 border-sky-500/40' : 'bg-slate-950 border-slate-800'">
+        <input type="checkbox" x-model="devicePolicy.require_verified" @change="saveDevicePolicy()" class="w-4 h-4 mt-0.5 rounded text-sky-600 bg-slate-900 border-slate-700 focus:ring-0">
+        <span class="text-xs text-slate-200 font-medium">Only verified devices can connect
+          <span class="block text-[11px] font-normal text-slate-400 mt-0.5">When on, logins from any other MAC are rejected and logged with the reason. Test with the RADIUS Tester + a MAC.</span>
+        </span>
+      </label>
+
+      <div class="space-y-2">
+        <div class="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">Verified devices (<span x-text="devicePolicy.devices.length"></span>)</div>
+        <template x-for="dev in devicePolicy.devices" :key="dev.mac">
+          <div class="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs">
+            <div class="flex-1 min-w-0">
+              <div class="font-mono font-bold text-white" x-text="dev.pretty"></div>
+              <div class="text-[10px] text-slate-400 truncate" x-text="(dev.vendor || 'Unknown') + (dev.label ? ' • ' + dev.label : '')"></div>
+            </div>
+            <button @click="removeDevice(dev.mac)" title="Remove this device" class="text-rose-400 hover:text-rose-300 p-1"><i class="fa-solid fa-trash"></i></button>
+          </div>
+        </template>
+        <p x-show="!devicePolicy.devices.length" class="text-[11px] text-slate-500 italic">No verified devices yet — add one below, or Trust a device from the Devices tab.</p>
+      </div>
+
+      <form @submit.prevent="addDevice()" class="flex gap-1.5 text-xs">
+        <input type="text" x-model="devicePolicy.newMac" required placeholder="AA:BB:CC:DD:EE:FF" class="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:border-sky-500 outline-none font-mono">
+        <input type="text" x-model="devicePolicy.newLabel" placeholder="Label (e.g. iPhone)" class="w-28 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:border-sky-500 outline-none">
+        <button type="submit" class="px-3 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold whitespace-nowrap"><i class="fa-solid fa-plus"></i> Verify</button>
+      </form>
+    </div>
+  </div>
+
   <script>
     /* Simple-words RADIUS glossary for hover tooltips (mirrors /radius/api/glossary). */
     const RADIUS_GLOSSARY = {
@@ -1376,6 +1441,7 @@
         sessions: [],
         devices: [],
         deviceSearch: '',
+        devicePolicy: { show: false, username: '', require_verified: false, devices: [], newMac: '', newLabel: '' },
         logs: [],
         logSearch: '',
         logResult: '',
@@ -1384,7 +1450,7 @@
         auditSearch: '',
         publicConfig: { radius_host: '', radius_ports: {}, portal_path: '/radius/portal', signer_configured: false },
         signerStatus: { configured: false, mode: 'local', reachable: true, key_valid: null, detail: 'Checking signer status...' },
-        testForm: { username: 'raj', password: '' },
+        testForm: { username: 'raj', password: '', calling_station_id: '' },
         testResult: null,
 
         userModal: {
@@ -1715,6 +1781,92 @@
           const t = new Date(s.acctstarttime).getTime();
           if (isNaN(t)) return '—';
           return this.fmtDur((Date.now() - t) / 1000) + ' (live)';
+        },
+
+        async openDevicePolicy(username) {
+          this.devicePolicy = { show: true, username, require_verified: false, devices: [], newMac: '', newLabel: '' };
+          try {
+            const res = await this.fetchWithAuth(`/radius/api/users/${encodeURIComponent(username)}/devices`);
+            if (res.ok) {
+              const d = await res.json();
+              this.devicePolicy.require_verified = !!d.require_verified;
+              this.devicePolicy.devices = d.devices || [];
+            }
+          } catch(e) {}
+        },
+
+        async saveDevicePolicy() {
+          try {
+            const res = await this.fetchWithAuth(`/radius/api/users/${encodeURIComponent(this.devicePolicy.username)}/device-policy`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ require_verified: !!this.devicePolicy.require_verified })
+            });
+            const d = await res.json().catch(() => ({}));
+            if (res.ok) {
+              this.showToast(d.message || 'Device policy saved');
+            } else {
+              this.devicePolicy.require_verified = !this.devicePolicy.require_verified;
+              this.showToast(d.detail || 'Failed to save device policy', 'error');
+            }
+          } catch(e) {
+            this.showToast('Failed to save device policy', 'error');
+          }
+        },
+
+        async addDevice() {
+          const u = this.devicePolicy.username;
+          try {
+            const res = await this.fetchWithAuth(`/radius/api/users/${encodeURIComponent(u)}/devices`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mac: this.devicePolicy.newMac, label: this.devicePolicy.newLabel })
+            });
+            const d = await res.json().catch(() => ({}));
+            if (res.ok) {
+              this.showToast(d.message || 'Device verified');
+              this.devicePolicy.newMac = '';
+              this.devicePolicy.newLabel = '';
+              this.openDevicePolicy(u);
+            } else {
+              this.showToast(d.detail || 'Failed to verify device', 'error');
+            }
+          } catch(e) {
+            this.showToast('Failed to verify device', 'error');
+          }
+        },
+
+        async removeDevice(mac) {
+          const u = this.devicePolicy.username;
+          if (!confirm(`Remove verified device ${mac} from ${u}? They will be rejected while lockdown is on.`)) return;
+          try {
+            const res = await this.fetchWithAuth(`/radius/api/users/${encodeURIComponent(u)}/devices/${encodeURIComponent(mac)}`, { method: 'DELETE' });
+            if (res.ok) {
+              this.showToast('Device removed');
+              this.openDevicePolicy(u);
+            } else {
+              const d = await res.json().catch(() => ({}));
+              this.showToast(d.detail || 'Failed to remove device', 'error');
+            }
+          } catch(e) {
+            this.showToast('Failed to remove device', 'error');
+          }
+        },
+
+        async trustDevice(mac, username, label) {
+          if (!confirm(`Verify device ${mac} for user '${username}'?`)) return;
+          try {
+            const res = await this.fetchWithAuth(`/radius/api/users/${encodeURIComponent(username)}/devices`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ mac, label: label || 'trusted from Devices tab' })
+            });
+            const d = await res.json().catch(() => ({}));
+            if (res.ok) this.showToast(d.message || 'Device verified');
+            else this.showToast(d.detail || 'Failed to verify device', 'error');
+          } catch(e) {
+            this.showToast('Failed to verify device', 'error');
+          }
         },
 
         async fetchLogs() {
@@ -2178,7 +2330,8 @@
               body: JSON.stringify({
                 username: this.testForm.username,
                 password: this.testForm.password,
-                nas_ip: '127.0.0.1'
+                nas_ip: '127.0.0.1',
+                calling_station_id: (this.testForm.calling_station_id || '').trim() || null
                 // NOTE: no client-side secret — the server uses RADIUS_SECRET.
                 // Never put a shared secret in shipped JS (it becomes public).
               })
@@ -2193,6 +2346,8 @@
           this.activeTab = 'test-auth';
           this.testForm.username = username;
           this.testForm.password = '';
+          this.testForm.calling_station_id = '';
+          this.testResult = null;
         }
       }
     }

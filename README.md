@@ -267,6 +267,16 @@ POSTGRES_PASSWORD=... ./scripts/restore.sh ./backups/radius-db-<ts>.sql.gz ./bac
 
 Schedule `backup.sh` daily (cron) and copy both files encrypted offsite — losing the certs archive means re-issuing every certificate. Table retention: `AUDIT_RETENTION_DAYS` / `ACCOUNTING_RETENTION_DAYS` (default 365, `0` = keep forever), purged at startup.
 
+### 🔒 Verified devices (MAC lockdown, off by default)
+
+Per user: **Users → 🛡️ → Only verified devices can connect**. When on, FreeRADIUS
+rejects any device whose MAC isn't on that user's verified list, and the
+attempt is logged in **Auth History → Rule / Reason**
+(`Rejected: device MAC not verified for this user`).
+- Add MACs from the **Devices tab → Trust**, or type them in the user's policy modal (any format: `AA:BB:CC:DD:EE:FF`, dashes, Cisco dots — all normalized server-side).
+- Deleting a user also removes their verified list. Verify the behavior with the **RADIUS Tester** (optional MAC field simulates a device).
+- Note: phones with MAC randomization appear as several devices — verify each one, or turn randomization off for your SSID.
+
 ### 🧪 Tests & CI
 
 ```bash

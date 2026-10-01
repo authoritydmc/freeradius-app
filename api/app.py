@@ -773,6 +773,10 @@ async def lifespan(app: FastAPI):
         ensure_revoked_tokens_table()
     except Exception as e:
         logger.warning("Revoked-tokens table init failed: %s", e)
+    try:
+        ensure_device_tables()
+    except Exception as e:
+        logger.warning("Device tables init failed: %s", e)
     yield
 
 app = FastAPI(
@@ -937,6 +941,7 @@ class AuthTestRequest(BaseModel):
     password: str
     nas_ip: Optional[str] = "127.0.0.1"
     secret: Optional[str] = None
+    calling_station_id: Optional[str] = None  # optional device MAC to simulate (tests MAC-lock policy)
 
 class DisconnectSessionRequest(BaseModel):
     username: str
@@ -944,6 +949,15 @@ class DisconnectSessionRequest(BaseModel):
     nas_secret: Optional[str] = None
     acct_session_id: Optional[str] = None
     framed_ip: Optional[str] = None
+
+
+class DevicePolicyUpdate(BaseModel):
+    require_verified: bool
+
+
+class VerifiedDeviceAdd(BaseModel):
+    mac: str = Field(..., min_length=1, max_length=32)
+    label: Optional[str] = Field(default=None, max_length=64)
 
 class IssueCertRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
@@ -1363,6 +1377,82 @@ def delete_user(username: str, admin_user: str = Depends(authenticate_admin)):
             return {"status": "success", "message": msg, "cert_files_removed": removed_certs}
     finally:
         conn.close()
+
+# Verified-device lockdown (per-user MAC allowlist, default OFF)
+@app.get("/radius/api/users/{username}/devices", tags=["Users"])
+@app.get("/api/users/{username}/devices", tags=["Users"])
+def get_device_policy(username: str, _: str = Depends(authenticate_admin)):
+    return {"username": validate_username(username), **get_user_devices(validate_username(username))}
+
+
+@app.put("/radius/api/users/{username}/device-policy", tags=["Users"])
+@app.put("/api/users/{username}/device-policy", tags=["Users"])
+def set_device_policy(username: str, payload: DevicePolicyUpdate, admin_user: str = Depends(authenticate_admin)):
+    username = validate_username(username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO user_device_policy (username, require_verified, updated_at) VALUES (%s, %s, NOW()) "
+                "ON CONFLICT (username) DO UPDATE SET require_verified = EXCLUDED.require_verified, updated_at = NOW()",
+                (username, payload.require_verified),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    state = "ON — only verified devices can connect" if payload.require_verified else "OFF — any device can connect"
+    log_audit(admin_user, "device_policy", username, f"require_verified={payload.require_verified}")
+    return {"status": "success", "username": username,
+            "require_verified": payload.require_verified,
+            "message": f"MAC lockdown {state} for '{username}'."}
+
+
+@app.post("/radius/api/users/{username}/devices", tags=["Users"])
+@app.post("/api/users/{username}/devices", tags=["Users"])
+def add_verified_device(username: str, payload: VerifiedDeviceAdd, admin_user: str = Depends(authenticate_admin)):
+    username = validate_username(username)
+    mac = normalize_mac(payload.mac)
+    if not mac:
+        raise HTTPException(status_code=422, detail="Invalid MAC. Use e.g. AA:BB:CC:DD:EE:FF.")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (username,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
+            cur.execute(
+                "INSERT INTO verified_devices (username, mac, label, added_by) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (username, mac) DO UPDATE SET label = EXCLUDED.label",
+                (username, mac, (payload.label or "").strip() or None, admin_user),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    log_audit(admin_user, "device_trust", username, f"mac={pretty_mac(mac)} label={payload.label or '-'}")
+    return {"status": "success", "username": username, "mac": mac, "pretty": pretty_mac(mac),
+            "vendor": mac_vendor(mac),
+            "message": f"Device {pretty_mac(mac)} verified for '{username}'."}
+
+
+@app.delete("/radius/api/users/{username}/devices/{mac}", tags=["Users"])
+@app.delete("/api/users/{username}/devices/{mac}", tags=["Users"])
+def remove_verified_device(username: str, mac: str, admin_user: str = Depends(authenticate_admin)):
+    username = validate_username(username)
+    norm = normalize_mac(mac)
+    if not norm:
+        raise HTTPException(status_code=422, detail="Invalid MAC.")
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM verified_devices WHERE username = %s AND mac = %s", (username, norm))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="That device is not on this user's verified list.")
+            conn.commit()
+    finally:
+        conn.close()
+    log_audit(admin_user, "device_untrust", username, f"mac={pretty_mac(norm)}")
+    return {"status": "success", "message": f"Device {pretty_mac(norm)} removed from '{username}'."}
+
 
 @app.put("/radius/api/users/{username}/password", tags=["Users"])
 @app.put("/api/users/{username}/password", tags=["Users"])
@@ -2187,6 +2277,83 @@ def format_bytes(n: Any) -> str:
     return f"{v:.1f} TB"
 
 
+# ----------------------------------------------------------------------------
+# Verified-device lockdown (per-user MAC allowlist, default OFF).
+# Enforcement happens in FreeRADIUS (sites-available/default, unlang policy
+# reading these tables); the API manages the lists and audit trail.
+# MACs are stored normalized: 12 uppercase hex chars, no separators.
+# ----------------------------------------------------------------------------
+def normalize_mac(mac: Optional[str]) -> Optional[str]:
+    """'aa-bb-cc-dd-ee-ff' / 'aabb.ccdd.eeff' / 'AABBCCDDEEFF' -> 'AABBCCDDEEFF'."""
+    if not mac:
+        return None
+    clean = re.sub(r"[^0-9a-fA-F]", "", mac)
+    if len(clean) != 12 or not re.fullmatch(r"[0-9a-fA-F]{12}", clean):
+        return None
+    return clean.upper()
+
+
+def pretty_mac(normalized: str) -> str:
+    n = (normalized or "").upper()
+    if len(n) != 12:
+        return normalized or ""
+    return ":".join(n[i:i + 2] for i in range(0, 12, 2))
+
+
+def ensure_device_tables() -> None:
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS user_device_policy (
+                    username TEXT PRIMARY KEY,
+                    require_verified BOOLEAN NOT NULL DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS verified_devices (
+                    username TEXT NOT NULL,
+                    mac TEXT NOT NULL,
+                    label TEXT,
+                    added_by TEXT,
+                    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (username, mac)
+                )
+            """)
+            # Reject-reason column for the auth history (safe on existing DBs).
+            cur.execute("ALTER TABLE radpostauth ADD COLUMN IF NOT EXISTS reason TEXT")
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning("Could not ensure device tables: %s", e)
+
+
+def get_user_devices(username: str) -> Dict[str, Any]:
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT require_verified FROM user_device_policy WHERE username = %s", (username,))
+            row = cur.fetchone()
+            require_verified = bool(row["require_verified"]) if row else False
+            cur.execute("SELECT mac, label, added_by, added_at FROM verified_devices WHERE username = %s ORDER BY added_at",
+                        (username,))
+            devices = []
+            for r in cur.fetchall():
+                at = r.get("added_at")
+                devices.append({
+                    "mac": r["mac"],
+                    "pretty": pretty_mac(r["mac"]),
+                    "vendor": mac_vendor(r["mac"]),
+                    "label": r.get("label"),
+                    "added_by": r.get("added_by"),
+                    "added_at": at.isoformat() if hasattr(at, "isoformat") else (str(at) if at else None),
+                })
+            return {"require_verified": require_verified, "devices": devices}
+    finally:
+        conn.close()
+
+
 @app.get("/radius/api/devices", tags=["Logs & Accounting"])
 @app.get("/api/devices", tags=["Logs & Accounting"])
 def list_devices(username: Optional[str] = None, limit: int = 200,
@@ -2266,11 +2433,27 @@ def list_devices(username: Optional[str] = None, limit: int = 200,
 @app.get("/api/auth-logs", tags=["Logs & Accounting"])
 def get_auth_logs(limit: int = 50, username: Optional[str] = None, result: Optional[str] = None, _: str = Depends(authenticate_admin)):
     """RADIUS authentication attempts. NOTE: the `pass` column (attempted passwords)
-    is deliberately never selected — it must not leak through the API."""
+    is deliberately never selected — it must not leak through the API.
+    `reason` carries the rule that rejected the attempt (e.g. unverified device)."""
+    try:
+        select_reason = ", reason"
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name = 'radpostauth' AND column_name = 'reason'")
+            if not cur.fetchone():
+                select_reason = ""
+        conn.close()
+    except Exception:
+        select_reason = ""
+        try:
+            conn.close()
+        except Exception:
+            pass
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            query = "SELECT id, username, reply, authdate FROM radpostauth WHERE 1=1"
+            query = f"SELECT id, username, reply, authdate{select_reason} FROM radpostauth WHERE 1=1"
             params: List[Any] = []
             if username:
                 query += " AND username ILIKE %s"
@@ -2293,11 +2476,14 @@ def get_auth_logs(limit: int = 50, username: Optional[str] = None, result: Optio
                 else:
                     event = "other"
                 ts = r.get("authdate")
+                reason = (r.get("reason") or "").strip() if select_reason else ""
                 out.append({
                     "id": r.get("id"),
                     "username": r.get("username"),
                     "event": event,
                     "reply": reply or "—",
+                    "reason": reason or None,
+                    "rule": reason or ("Authenticated OK" if event == "accept" else "Rejected (no reason recorded — see server logs)"),
                     "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else None),
                 })
             return out
@@ -2544,30 +2730,57 @@ def download_apple_mobileconfig(username: str, ssid: str = "RajLabs-Enterprise",
         headers={"Content-Disposition": f'attachment; filename="RajLabs_{username}_WiFi.mobileconfig"'}
     )
 
-# Live RADIUS Testing (radtest)
+def parse_radtest_output(output: str) -> tuple[bool, str]:
+    """Verdict from radtest/radclient output.
+
+    Must match the actual reply line (``Received Access-Accept``): a bare
+    ``"Access-Accept" in output`` check is wrong because rejects print
+    ``Expected Access-Accept got Access-Reject`` (which made every reject
+    show green in the dashboard).
+    """
+    out = output or ""
+    if "Received Access-Reject" in out:
+        return False, "Rejected"
+    if "Received Access-Accept" in out:
+        return True, "Accepted"
+    if "No reply" in out or "timed out" in out.lower():
+        return False, "Timeout / no reply"
+    return False, "Rejected / Failed"
+
+
+# Live RADIUS Testing (radtest, or radclient when a device MAC is simulated)
 @app.post("/radius/api/test-auth", tags=["Testing"])
 @app.post("/api/test-auth", tags=["Testing"])
 def test_radius_authentication(payload: AuthTestRequest, request: Request, _: str = Depends(authenticate_admin)):
     check_rate_limit(request, "test-auth", RL_TEST_AUTH_PER_MIN)
+    validate_username(payload.username)
+    nas_ip = validate_nas_ip(payload.nas_ip or "127.0.0.1")
     secret = payload.secret or RADIUS_SECRET
-    cmd = [
-        "radtest",
-        payload.username,
-        payload.password,
-        payload.nas_ip or "127.0.0.1",
-        "0",
-        secret
-    ]
+    if payload.calling_station_id:
+        mac = normalize_mac(payload.calling_station_id)
+        if not mac:
+            raise HTTPException(status_code=422, detail="Invalid Calling-Station-Id. Use a MAC like AA:BB:CC:DD:EE:FF.")
+        cmd = ["radclient", f"{nas_ip}:1812", "auth", secret]
+        attrs = (f'User-Name = "{payload.username}"\n'
+                 f'User-Password = "{payload.password}"\n'
+                 f'Calling-Station-Id = "{pretty_mac(mac)}"\n'
+                 f'NAS-IP-Address = "127.0.0.1"')
+        shown = f"radclient {nas_ip}:1812 auth (+ Calling-Station-Id {pretty_mac(mac)})"
+    else:
+        cmd = ["radtest", payload.username, payload.password, nas_ip, "0", secret]
+        attrs = None
+        shown = f"radtest {payload.username} [REDACTED] {nas_ip} 0 [SECRET]"
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        result = subprocess.run(cmd, input=attrs, capture_output=True, text=True, timeout=5)
         output = result.stdout + result.stderr
-        success = "Access-Accept" in output
-        logger.info("Test-auth username=%s nas=%s success=%s by=%s", payload.username, payload.nas_ip, success, _)
+        success, verdict = parse_radtest_output(output)
+        logger.info("Test-auth username=%s nas=%s mac=%s success=%s by=%s",
+                    payload.username, nas_ip, payload.calling_station_id or "-", success, _)
         return {
             "success": success,
-            "status": "Accepted" if success else "Rejected / Failed",
+            "status": verdict,
             "output": output.strip(),
-            "command": f"radtest {payload.username} [REDACTED] {payload.nas_ip} 0 [SECRET]"
+            "command": shown
         }
     except subprocess.TimeoutExpired:
         return {
@@ -2575,6 +2788,8 @@ def test_radius_authentication(payload: AuthTestRequest, request: Request, _: st
             "status": "Timeout",
             "output": "RADIUS authentication timed out. Make sure the FreeRADIUS daemon is running and listening on UDP 1812."
         }
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="radtest/radclient binary not found on server.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to run radtest: {str(e)}")
 

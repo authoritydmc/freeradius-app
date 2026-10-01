@@ -129,3 +129,23 @@ CREATE TABLE IF NOT EXISTS revoked_tokens (
     revoked_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     reason      TEXT
 );
+
+-- Verified-device lockdown (per-user MAC allowlist, default OFF).
+-- Enforced by the unlang policy in sites-available/default (post-auth).
+CREATE TABLE IF NOT EXISTS user_device_policy (
+    username          TEXT PRIMARY KEY,
+    require_verified  BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS verified_devices (
+    username    TEXT NOT NULL,
+    mac         TEXT NOT NULL, -- normalized: 12 uppercase hex chars, no separators
+    label       TEXT,
+    added_by    TEXT,
+    added_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (username, mac)
+);
+CREATE INDEX IF NOT EXISTS idx_verified_devices_mac ON verified_devices (mac);
+
+-- Reject reason for the Auth History view (written by postauth_query).
+ALTER TABLE radpostauth ADD COLUMN IF NOT EXISTS reason TEXT;

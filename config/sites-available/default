@@ -93,6 +93,21 @@ server default {
     }
 
     post-auth {
+        # Verified-device lockdown (API-managed user_device_policy /
+        # verified_devices tables; Admin Console > Users > MAC lock).
+        # Default OFF: users without a policy row, and unknown users, pass
+        # through untouched. Placed here (not authorize) so it also covers
+        # EAP (which returns early from authorize) with the final User-Name.
+        # Rejects here jump to Post-Auth-Type REJECT below, whose -sql logs
+        # the Reply-Message into radpostauth.reason for the Auth History view.
+        if (&User-Name && "%{sql:SELECT CASE WHEN require_verified THEN 'yes' ELSE 'no' END FROM user_device_policy WHERE username='%{User-Name}'}" == 'yes') {
+            if (!&Calling-Station-Id || "%{sql:SELECT COUNT(*) FROM verified_devices WHERE username='%{User-Name}' AND mac=REPLACE(REPLACE(REPLACE(REPLACE(UPPER('%{Calling-Station-Id}'), ':', ''), '-', ''), ' ', ''), '.', '')}" == '0') {
+                update reply {
+                    Reply-Message := "Rejected: device MAC not verified for this user"
+                }
+                reject
+            }
+        }
         -sql
         exec
         remove_reply_message_if_eap

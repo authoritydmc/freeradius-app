@@ -40,4 +40,12 @@ sql {
 
     # Include PostgreSQL queries configuration
     $INCLUDE ${modconfdir}/${.:name}/main/${dialect}/queries.conf
+
+    # Store the reject reason (Reply-Message set by policies such as the
+    # verified-device lockdown) in radpostauth.reason for the Auth History
+    # view. Overrides the stock postauth_query from queries.conf above.
+    # The column is created by config/schema.sql and auto-migrated by the API
+    # on existing databases; sections call sql as "-sql" so a missing column
+    # on old DBs is ignored, never fatal.
+    postauth_query = "INSERT INTO ${postauth_table} (username, pass, reply, reason, authdate) VALUES ('%{User-Name}', '%{%{User-Password}:-%{Chap-Password}}', '%{reply:Packet-Type}', '%{reply:Reply-Message}', '%S')"
 }

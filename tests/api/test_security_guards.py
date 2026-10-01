@@ -190,6 +190,81 @@ def test_devices_route_registered():
     assert "/radius/api/devices" in paths
 
 
+# --- tester verdict parsing (reject must never show green) -----------------------
+
+REJECT_SAMPLE = """Sending Access-Request of id 12 to 127.0.0.1 port 1812
+\tUser-Name = "raj"
+Received Access-Reject Id 12 from 127.0.0.1:1812 length 20
+(0) -: Expected Access-Accept got Access-Reject"""
+
+ACCEPT_SAMPLE = """Sending Access-Request of id 13 to 127.0.0.1 port 1812
+\tUser-Name = "raj"
+Received Access-Accept Id 13 from 127.0.0.1:1812 length 26"""
+
+
+def test_reject_with_expected_accept_line_is_failure():
+    ok, verdict = app.parse_radtest_output(REJECT_SAMPLE)
+    assert ok is False
+    assert "eject" in verdict
+
+
+def test_accept_is_success():
+    ok, verdict = app.parse_radtest_output(ACCEPT_SAMPLE)
+    assert ok is True
+    assert "ccept" in verdict
+
+
+def test_empty_output_is_failure():
+    ok, _ = app.parse_radtest_output("")
+    assert ok is False
+
+
+# --- verified-device MAC helpers --------------------------------------------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("aa:bb:cc:dd:ee:ff", "AABBCCDDEEFF"),
+    ("AA-BB-CC-DD-EE-FF", "AABBCCDDEEFF"),
+    ("aabb.ccdd.eeff", "AABBCCDDEEFF"),
+    ("AABBCCDDEEFF", "AABBCCDDEEFF"),
+    ("aa bb cc dd ee ff", "AABBCCDDEEFF"),
+])
+def test_normalize_mac_formats(raw, expected):
+    assert app.normalize_mac(raw) == expected
+
+
+@pytest.mark.parametrize("bad", ["", "AA:BB:CC", "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ", "AABBCCDDEEFF00", None])
+def test_normalize_mac_rejects_garbage(bad):
+    assert app.normalize_mac(bad) is None
+
+
+def test_pretty_mac():
+    assert app.pretty_mac("AABBCCDDEEFF") == "AA:BB:CC:DD:EE:FF"
+
+
+def test_device_policy_routes_registered():
+    paths = {getattr(r, "path", "") for r in app.app.routes}
+    for needed in (
+        "/radius/api/users/{username}/devices",
+        "/radius/api/users/{username}/device-policy",
+        "/radius/api/users/{username}/devices/{mac}",
+    ):
+        assert needed in paths, needed
+
+
+def test_radius_enforcement_config():
+    repo = os.path.join(os.path.dirname(app.__file__), "..")
+    sites = open(os.path.join(repo, "config", "sites-available", "default"), encoding="utf-8").read()
+    assert "verified_devices" in sites
+    assert "user_device_policy" in sites
+    assert "Reply-Message" in sites
+    assert "reject" in sites
+    sqlmod = open(os.path.join(repo, "config", "mods-available", "sql"), encoding="utf-8").read()
+    assert "postauth_query" in sqlmod and "reason" in sqlmod
+    schema = open(os.path.join(repo, "config", "schema.sql"), encoding="utf-8").read()
+    assert "user_device_policy" in schema and "verified_devices" in schema
+    assert "reason TEXT" in schema
+
+
 # --- route registration smoke test ----------------------------------------------
 
 def test_critical_routes_registered():
