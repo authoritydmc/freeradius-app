@@ -4132,4 +4132,15 @@ def get_dashboard(request: Request):
     return HTMLResponse(content="<h1>RajLabs FreeRADIUS Dashboard</h1>")
 
 
-
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/favicon.svg", include_in_schema=False)
+@app.get("/radius/favicon.ico", include_in_schema=False)
+@app.get("/radius/favicon.svg", include_in_schema=False)
+def get_favicon():
+    for base in (DIST_DIR, STATIC_DIR):
+        for name in ("favicon.svg", "favicon.ico"):
+            p = os.path.join(base, name)
+            if os.path.exists(p):
+                mt = "image/svg+xml" if name.endswith(".svg") else "image/x-icon"
+                return FileResponse(p, media_type=mt)
+    raise HTTPException(status_code=404, detail="Favicon not found")
