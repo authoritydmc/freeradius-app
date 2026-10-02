@@ -107,7 +107,7 @@ def test_audit_logs_endpoint_aliases():
 
 def test_health_check_endpoint():
     res = client.get("/radius/api/health")
-    assert res.status_code == 200
+    assert res.status_code in (200, 503)
     data = res.json()
     assert "status" in data
     assert data["api_ok"] is True

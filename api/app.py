@@ -1800,15 +1800,19 @@ def public_health_check():
         mig_info = {"ok": False, "error": str(me)}
 
     overall_status = "healthy" if (db_ok and radius_ok and mig_info.get("ok", True)) else "degraded"
-    return {
-        "status": overall_status,
-        "api_ok": True,
-        "db_ok": db_ok,
-        "radius_ok": radius_ok,
-        "migrations": mig_info,
-        "database": {"connected": db_ok, "error": db_error, "host": POSTGRES_HOST, "database": POSTGRES_DB},
-        "freeradius_process": {"running": radius_ok}
-    }
+    status_code = 200 if overall_status == "healthy" else 503
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": overall_status,
+            "api_ok": True,
+            "db_ok": db_ok,
+            "radius_ok": radius_ok,
+            "migrations": mig_info,
+            "database": {"connected": db_ok, "error": db_error, "host": POSTGRES_HOST, "database": POSTGRES_DB},
+            "freeradius_process": {"running": radius_ok}
+        }
+    )
 
 # Storage & Database Retention Diagnostics & Operations
 @app.get("/radius/api/system/storage-health", tags=["System"])
