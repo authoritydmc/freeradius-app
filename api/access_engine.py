@@ -239,11 +239,12 @@ def _resolve_group_policy(cur, username: str):
     except Exception:
         return None, None, None
 
-def sync_user_radius_attributes(username: str, conn=None):
+def sync_user_radius_attributes(username: str, conn=None, commit: bool = True):
     """
     Synchronizes radcheck, radreply, and radusergroup for FreeRADIUS
     based on the central Access Decision Engine result.
     Returns the decision dict (or None when the central user is unknown).
+    commit=False joins the caller's transaction (voucher/payment flows).
     """
     should_close = False
     if conn is None:
@@ -333,7 +334,8 @@ def sync_user_radius_attributes(username: str, conn=None):
                     VALUES (%s, 'Reply-Message', '=', %s)
                 """, (username, decision["reason"]))
 
-            conn.commit()
+            if commit:
+                conn.commit()
             return decision
     finally:
         if should_close:

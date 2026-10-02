@@ -310,6 +310,99 @@ def test_delete_purges_access_and_resets_central(monkeypatch):
                    or s.startswith("DELETE FROM payments") for s in stmts)
 
 
+def test_duplicate_webhook_acknowledged_without_500(monkeypatch):
+    """Concurrent duplicate delivery resolves via ON CONFLICT, no 500 (#29)."""
+    import entitlements
+
+    state = {"selects": 0}
+
+    def handler(q, p):
+        if "FROM payments" in q and "WHERE gateway_payment_id" in q:
+            state["selects"] += 1
+            if state["selects"] == 1:
+                return []  # first check: unknown...
+            return [{"id": 9, "user_id": 7, "plan_id": 2,
+                     "status": "SUCCESS", "created_at": "2026-10-02"}]
+        if q.startswith("INSERT INTO payments"):
+            return []  # ...lost the race: ON CONFLICT DO NOTHING, no row
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(entitlements, "get_db_connection", lambda: conn)
+    res = entitlements.process_verified_payment(
+        gateway="RAZORPAY", gateway_payment_id="pay_123",
+        gateway_order_id="o1", user_id=7, plan_id=2, amount=100.0)
+    assert res["status"] == "duplicate_acknowledged"
+    assert res["payment_id"] == 9
+
+
+def test_activation_takes_advisory_lock(monkeypatch):
+    """First-time activation serializes per user (stacking, not dupes) (#29)."""
+    import datetime
+    import entitlements
+
+    exp = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+
+    def handler(q, p):
+        if "SELECT id, username FROM users" in q:
+            return [{"id": 7, "username": "ram"}]
+        if "SELECT id, name, validity_seconds, price FROM plans" in q:
+            return [{"id": 2, "name": "P", "validity_seconds": 86400, "price": 10.0}]
+        if "FROM subscriptions" in q:
+            return []
+        if q.startswith("INSERT INTO subscriptions"):
+            return [{"id": 11, "starts_at": exp, "expires_at": exp, "status": "ACTIVE"}]
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(entitlements, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(entitlements, "sync_user_radius_attributes",
+                        lambda *a, **k: {"decision": "ALLOW"})
+    res = entitlements.activate_or_extend_subscription(user_id=7, plan_id=2)
+    assert res["status"] == "success"
+    assert any("pg_advisory_xact_lock" in s for s, _ in conn.log)
+
+
+def test_voucher_redeem_single_commit(monkeypatch):
+    """Quota + entitlement + ledger commit atomically (#29)."""
+    import datetime
+    import entitlements
+
+    exp = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)
+
+    def handler(q, p):
+        if "SELECT id, username FROM users" in q:
+            return [{"id": 7, "username": "ram"}]
+        if "FROM vouchers" in q and "UPPER(code)" in q:
+            return [{"id": 3, "code": "WIFI-AAAA", "plan_id": 2,
+                     "validity_seconds": 86400, "max_uses": 1,
+                     "current_uses": 0, "is_active": True, "expires_at": exp}]
+        if "FROM voucher_redemptions" in q:
+            return []
+        if "FROM subscriptions s" in q:
+            return []
+        if q.startswith("INSERT INTO subscriptions"):
+            return [{"id": 12, "starts_at": exp, "expires_at": exp, "status": "ACTIVE"}]
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(entitlements, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(entitlements, "sync_user_radius_attributes",
+                        lambda *a, **k: {"decision": "ALLOW"})
+    res = entitlements.redeem_voucher(7, "wifi-aaaa")
+    assert res["status"] == "success"
+    commits = [s for s, _ in conn.log if s == "COMMIT"]
+    assert len(commits) == 1, f"expected single atomic commit, got {len(commits)}"
+
+
+def test_voucher_routes_registered():
+    paths = {getattr(r, "path", "") for r in app.app.routes}
+    assert "/radius/api/vouchers/redeem" in paths
+    assert "/radius/api/me/vouchers/redeem" in paths
+    assert "/radius/api/vouchers/batch" in paths
+    assert "/radius/api/vouchers" in paths
+
+
 def test_sync_allow_stamps_expiration_from_subscription():
     """ALLOW with a subscription upserts wall-clock Expiration (#25)."""
     import datetime

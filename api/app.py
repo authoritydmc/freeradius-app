@@ -3106,6 +3106,102 @@ def bulk_reset_passwords(payload: BulkPasswordResetRequest, admin_user: str = De
             _resync_user(r["username"])
     return {"status": "success", "mode": mode, "reset": ok_count, "failed": len(results) - ok_count, "results": results}
 
+class VoucherRedeemRequest(BaseModel):
+    code: str = Field(..., min_length=1)
+    username: Optional[str] = None  # admin redeems for a user; self-service uses the caller
+
+class VoucherBatchRequest(BaseModel):
+    count: int = Field(default=10, ge=1, le=500)
+    plan_id: Optional[int] = None
+    validity_seconds: Optional[int] = None
+    prefix: str = "WIFI"
+    max_uses: int = Field(default=1, ge=1)
+    expires_in_days: Optional[int] = 30
+
+def _redeem_voucher_for_username(username: str, code: str, ip: Optional[str], actor: str) -> Dict[str, Any]:
+    """Shared redeem path: username -> user_id -> atomic redeem_voucher."""
+    try:
+        from api.entitlements import redeem_voucher
+    except ImportError:
+        from entitlements import redeem_voucher  # type: ignore
+    uname = validate_username(username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE username = %s", (uname,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"User '{uname}' not found.")
+            uid = row["id"]
+    finally:
+        conn.close()
+    try:
+        result = redeem_voucher(uid, code, ip=ip)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    log_audit(actor, "voucher_redeem", uname, f"code={code.strip().upper()}")
+    return result
+
+@app.post("/radius/api/vouchers/redeem", tags=["Vouchers"])
+@app.post("/api/vouchers/redeem", tags=["Vouchers"])
+def admin_redeem_voucher(payload: VoucherRedeemRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
+    """Admin redeems a voucher code for a user (atomic quota + entitlement)."""
+    if not (payload.username or "").strip():
+        raise HTTPException(status_code=422, detail="username is required.")
+    return _redeem_voucher_for_username(payload.username, payload.code, _client_ip(request), admin_user)
+
+@app.post("/radius/api/me/vouchers/redeem", tags=["Self Service"])
+@app.post("/api/me/vouchers/redeem", tags=["Self Service"])
+def self_redeem_voucher(payload: VoucherRedeemRequest, request: Request, caller: str = Depends(authenticate_self)):
+    """Self-service voucher redemption for your own account."""
+    return _redeem_voucher_for_username(caller, payload.code, _client_ip(request), caller)
+
+@app.post("/radius/api/vouchers/batch", tags=["Vouchers"])
+@app.post("/api/vouchers/batch", tags=["Vouchers"])
+def batch_create_vouchers(payload: VoucherBatchRequest, admin_user: str = Depends(authenticate_admin)):
+    """Generate voucher codes in bulk (admin)."""
+    try:
+        from api.entitlements import batch_generate_vouchers
+    except ImportError:
+        from entitlements import batch_generate_vouchers  # type: ignore
+    codes = batch_generate_vouchers(
+        count=payload.count, plan_id=payload.plan_id,
+        validity_seconds=payload.validity_seconds,
+        prefix=(payload.prefix or "WIFI"), max_uses=payload.max_uses,
+        expires_in_days=payload.expires_in_days, created_by=admin_user)
+    log_audit(admin_user, "voucher_batch", f"{len(codes)} codes", f"prefix={payload.prefix} plan={payload.plan_id}")
+    return {"status": "success", "count": len(codes), "vouchers": codes}
+
+@app.get("/radius/api/vouchers", tags=["Vouchers"])
+@app.get("/api/vouchers", tags=["Vouchers"])
+def list_vouchers(_: str = Depends(authenticate_admin)):
+    """Voucher inventory with usage (admin)."""
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT v.id, v.code, v.plan_id, p.name AS plan_name,
+                       v.validity_seconds, v.max_uses, v.current_uses,
+                       v.is_active, v.created_by, v.expires_at
+                FROM vouchers v LEFT JOIN plans p ON p.id = v.plan_id
+                ORDER BY v.id DESC LIMIT 500
+            """)
+            rows = cur.fetchall()
+            out = []
+            for r in rows:
+                exp = r.get("expires_at")
+                out.append({
+                    "id": r.get("id"), "code": r.get("code"),
+                    "plan_id": r.get("plan_id"), "plan_name": r.get("plan_name"),
+                    "validity_seconds": r.get("validity_seconds"),
+                    "max_uses": r.get("max_uses"), "current_uses": r.get("current_uses"),
+                    "is_active": bool(r.get("is_active")), "created_by": r.get("created_by"),
+                    "expires_at": exp.isoformat() if hasattr(exp, "isoformat") else (str(exp) if exp else None),
+                })
+            return out
+    finally:
+        conn.close()
+
 @app.get("/radius/api/audit", tags=["Users"])
 @app.get("/api/audit", tags=["Users"])
 @app.get("/radius/api/audit-logs", tags=["Users"])

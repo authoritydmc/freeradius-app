@@ -53,8 +53,9 @@ def set_system_setting(key: str, value: str, description: Optional[str] = None, 
 
 def log_audit_event(actor_type: str, actor_id: Optional[str], event: str,
                     target_type: Optional[str] = None, target_id: Optional[str] = None,
-                    metadata: Optional[Dict[str, Any]] = None, ip: Optional[str] = None, conn=None):
-    """Writes an immutable audit log entry."""
+                    metadata: Optional[Dict[str, Any]] = None, ip: Optional[str] = None, conn=None,
+                    commit: bool = True):
+    """Writes an immutable audit log entry. commit=False joins the caller's transaction."""
     should_close = False
     if conn is None:
         conn = get_db_connection()
@@ -74,7 +75,8 @@ def log_audit_event(actor_type: str, actor_id: Optional[str], event: str,
                 json.dumps(metadata) if metadata else None,
                 ip
             ))
-            conn.commit()
+            if commit:
+                conn.commit()
     except Exception as e:
         logging.error(f"Failed to record audit event {event}: {e}")
     finally:
@@ -88,13 +90,20 @@ def activate_or_extend_subscription(
     custom_validity_seconds: Optional[int] = None,
     actor_type: str = "SYSTEM",
     actor_id: Optional[str] = None,
-    ip: Optional[str] = None
+    ip: Optional[str] = None,
+    conn=None,
+    commit: bool = True,
 ) -> Dict[str, Any]:
     """
     Idempotently activates or stacks/extends subscription validity.
     Stacking formula: new_expiry = max(now, current_active_expiry) + validity_seconds.
+    conn/commit join the caller's transaction when given (voucher flow needs
+    quota + entitlement + ledger to commit atomically).
     """
-    conn = get_db_connection()
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
     try:
         with conn.cursor() as cur:
             # 1. Fetch user
@@ -118,6 +127,11 @@ def activate_or_extend_subscription(
                 validity_sec = 86400
 
             now = datetime.datetime.now(datetime.timezone.utc)
+
+            # Serialize concurrent first-time activations for this user: without
+            # this, two racers with no ACTIVE row both fall through to INSERT
+            # and create overlapping subscriptions instead of one stacked row.
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (int(user_id),))
 
             # 2. Check for existing active subscription to stack
             cur.execute("""
@@ -158,10 +172,11 @@ def activate_or_extend_subscription(
                 sub_record = dict(cur.fetchone())
                 action = "SUBSCRIPTION_CREATED"
 
-            conn.commit()
+            if commit:
+                conn.commit()
 
             # 3. Synchronize FreeRADIUS tables
-            sync_user_radius_attributes(username, conn=conn)
+            sync_user_radius_attributes(username, conn=conn, commit=commit)
 
             # 4. Audit Log
             log_audit_event(
@@ -179,7 +194,8 @@ def activate_or_extend_subscription(
                     "payment_id": payment_id
                 },
                 ip=ip,
-                conn=conn
+                conn=conn,
+                commit=commit,
             )
 
             return {
@@ -194,7 +210,8 @@ def activate_or_extend_subscription(
                 "validity_seconds_added": validity_sec
             }
     finally:
-        conn.close()
+        if should_close:
+            conn.close()
 
 def process_verified_payment(
     gateway: str,
@@ -236,12 +253,29 @@ def process_verified_payment(
                     amount, currency, status, verified_at, raw_reference
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, 'SUCCESS', %s, %s)
+                ON CONFLICT (gateway_payment_id) DO NOTHING
                 RETURNING id
             """, (
                 user_id, plan_id, gateway, gateway_order_id, gateway_payment_id,
                 amount, currency, now, raw_reference
             ))
-            payment_id = cur.fetchone()["id"]
+            row = cur.fetchone()
+            if row is None:
+                # Concurrent duplicate delivery won the race: acknowledge from
+                # the existing row instead of 500ing on UNIQUE.
+                cur.execute("""
+                    SELECT id, user_id, plan_id, status, created_at
+                    FROM payments
+                    WHERE gateway_payment_id = %s
+                """, (gateway_payment_id,))
+                existing = cur.fetchone()
+                conn.commit()
+                return {
+                    "status": "duplicate_acknowledged",
+                    "payment_id": existing["id"] if existing else None,
+                    "message": "Payment was already processed previously."
+                }
+            payment_id = row["id"]
             conn.commit()
 
             log_audit_event(
@@ -333,24 +367,32 @@ def redeem_voucher(user_id: int, voucher_code: str, ip: Optional[str] = None) ->
                 SET current_uses = %s, is_active = %s
                 WHERE id = %s
             """, (new_uses, is_active, v_row["id"]))
-            conn.commit()
 
-        # Activate / extend entitlement
-        sub_res = activate_or_extend_subscription(
-            user_id=user_id,
-            plan_id=v_row["plan_id"],
-            custom_validity_seconds=v_row["validity_seconds"],
-            actor_type="VOUCHER",
-            actor_id=clean_code,
-            ip=ip
-        )
+            # Activate / extend entitlement in the SAME transaction: quota burn
+            # without entitlement (crash between separate commits) is now
+            # impossible. Commits are deferred to the single commit below.
+            sub_res = activate_or_extend_subscription(
+                user_id=user_id,
+                plan_id=v_row["plan_id"],
+                custom_validity_seconds=v_row["validity_seconds"],
+                actor_type="VOUCHER",
+                actor_id=clean_code,
+                ip=ip,
+                conn=conn,
+                commit=False,
+            )
 
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO voucher_redemptions (voucher_id, user_id, subscription_id)
-                VALUES (%s, %s, %s)
-            """, (v_row["id"], user_id, sub_res["subscription_id"]))
-            conn.commit()
+            try:
+                cur.execute("""
+                    INSERT INTO voucher_redemptions (voucher_id, user_id, subscription_id)
+                    VALUES (%s, %s, %s)
+                """, (v_row["id"], user_id, sub_res["subscription_id"]))
+            except psycopg2.errors.UniqueViolation:
+                # Lost a concurrent double-redeem race after passing the check
+                # above: quota was already incremented in THIS txn, so roll
+                # back everything (no burn) and report cleanly.
+                conn.rollback()
+                raise ValueError("You have already redeemed this voucher on your account.")
 
             log_audit_event(
                 actor_type="USER",
@@ -360,8 +402,10 @@ def redeem_voucher(user_id: int, voucher_code: str, ip: Optional[str] = None) ->
                 target_id=str(v_row["id"]),
                 metadata={"code": clean_code, "validity_seconds": v_row["validity_seconds"]},
                 ip=ip,
-                conn=conn
+                conn=conn,
+                commit=False,
             )
+            conn.commit()
 
         return {
             "status": "success",
