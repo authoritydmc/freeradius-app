@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Server, Plus, Trash2, Key, Globe, Shield, RefreshCw,
-  Search, CheckCircle2, Copy, Check, Eye, EyeOff, Radio
+  Search, CheckCircle2, Radio
 } from 'lucide-react';
 import { fetchJson } from '../utils/api';
 
@@ -20,8 +20,6 @@ export default function NasTab({ onNotify }) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
-  const [copiedId, setCopiedId] = useState(null);
-  const [revealedSecrets, setRevealedSecrets] = useState({});
 
   const [form, setForm] = useState({
     nasname: '',
@@ -46,16 +44,6 @@ export default function NasTab({ onNotify }) {
   useEffect(() => {
     loadNas();
   }, []);
-
-  const handleCopy = (text, id) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
-  const toggleSecret = (id) => {
-    setRevealedSecrets(prev => ({ ...prev, [id]: !prev[id] }));
-  };
 
   const generateRandomSecret = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
@@ -167,7 +155,6 @@ export default function NasTab({ onNotify }) {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {filtered.map(nas => {
             const id = nas.id || nas.nasname;
-            const isRevealed = revealedSecrets[id];
             return (
               <div 
                 key={id}
@@ -213,25 +200,9 @@ export default function NasTab({ onNotify }) {
                       <span className="flex items-center gap-1 text-slate-400">
                         <Key className="w-3.5 h-3.5 text-amber-400" /> Shared Secret:
                       </span>
-                      <div className="flex items-center gap-1">
-                        <span className="font-mono text-xs bg-slate-950 px-2 py-0.5 rounded border border-slate-800 text-amber-300">
-                          {isRevealed ? (nas.secret || '••••••••') : '••••••••••••'}
-                        </span>
-                        <button
-                          onClick={() => toggleSecret(id)}
-                          className="p-1 text-slate-400 hover:text-slate-200"
-                          title={isRevealed ? "Hide" : "Show"}
-                        >
-                          {isRevealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                        </button>
-                        <button
-                          onClick={() => handleCopy(nas.secret, id)}
-                          className="p-1 text-slate-400 hover:text-blue-400"
-                          title="Copy Secret"
-                        >
-                          {copiedId === id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                        </button>
-                      </div>
+                      <span className="font-mono text-[11px] text-slate-500" title="Secrets are never returned by the server. To rotate: delete this NAS and re-add it with the new secret (update the AP too).">
+                        Hidden — set at creation
+                      </span>
                     </div>
                   </div>
                 </div>

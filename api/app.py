@@ -3326,9 +3326,22 @@ def get_all_settings(_: str = Depends(authenticate_admin)):
             if "wifi_auth_type" not in settings_map:
                 settings_map["wifi_auth_type"] = "WPA2-Enterprise / EAP-TLS"
 
+            # Secrets are never returned: masked to "" with a *_set flag so
+            # the UI can show "configured" without ever holding the value.
+            masked_records = []
+            for r in rows:
+                d = dict(r)
+                if d.get("key") in SECRET_SETTING_KEYS:
+                    d["value"] = ""
+                masked_records.append(d)
+            masked_map = {k: ("" if k in SECRET_SETTING_KEYS else v)
+                          for k, v in settings_map.items()}
+            for k in SECRET_SETTING_KEYS:
+                masked_map[f"{k}_set"] = bool((settings_map.get(k) or "").strip())
+
             return {
-                "settings": settings_map,
-                "records": rows
+                "settings": masked_map,
+                "records": masked_records
             }
     finally:
         conn.close()
@@ -3381,7 +3394,8 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
                     VALUES ('cert_signer_api_url', %s, 'Central Rajlabs-CA Cert-Signer API Base URL', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                     """, (payload.cert_signer_api_url.strip().rstrip("/"),))
-            if payload.cert_signer_api_key is not None:
+            if payload.cert_signer_api_key is not None and payload.cert_signer_api_key.strip() != "":
+                # Empty = keep existing (masked reads round-trip as "").
                 cur.execute("""
                     INSERT INTO system_settings (key, value, description, updated_at)
                     VALUES ('cert_signer_api_key', %s, 'Central Rajlabs-CA Cert-Signer API Key / Token', CURRENT_TIMESTAMP)
@@ -3417,13 +3431,15 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
                     VALUES ('razorpay_key_id', %s, 'Razorpay API Key ID', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                 """, (payload.razorpay_key_id.strip(),))
-            if payload.razorpay_key_secret is not None:
+            if payload.razorpay_key_secret is not None and payload.razorpay_key_secret.strip() != "":
+                # Empty = keep existing (masked reads round-trip as "").
                 cur.execute("""
                     INSERT INTO system_settings (key, value, description, updated_at)
                     VALUES ('razorpay_key_secret', %s, 'Razorpay API Key Secret', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                 """, (payload.razorpay_key_secret.strip(),))
-            if payload.razorpay_webhook_secret is not None:
+            if payload.razorpay_webhook_secret is not None and payload.razorpay_webhook_secret.strip() != "":
+                # Empty = keep existing (masked reads round-trip as "").
                 cur.execute("""
                     INSERT INTO system_settings (key, value, description, updated_at)
                     VALUES ('razorpay_webhook_secret', %s, 'Razorpay Webhook Secret', CURRENT_TIMESTAMP)
@@ -3435,7 +3451,8 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
                     VALUES ('cashfree_app_id', %s, 'Cashfree App ID', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                 """, (payload.cashfree_app_id.strip(),))
-            if payload.cashfree_secret_key is not None:
+            if payload.cashfree_secret_key is not None and payload.cashfree_secret_key.strip() != "":
+                # Empty = keep existing (masked reads round-trip as "").
                 cur.execute("""
                     INSERT INTO system_settings (key, value, description, updated_at)
                     VALUES ('cashfree_secret_key', %s, 'Cashfree Secret Key', CURRENT_TIMESTAMP)
@@ -3453,7 +3470,8 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
                     VALUES ('payu_merchant_key', %s, 'PayU Merchant Key', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                 """, (payload.payu_merchant_key.strip(),))
-            if payload.payu_merchant_salt is not None:
+            if payload.payu_merchant_salt is not None and payload.payu_merchant_salt.strip() != "":
+                # Empty = keep existing (masked reads round-trip as "").
                 cur.execute("""
                     INSERT INTO system_settings (key, value, description, updated_at)
                     VALUES ('payu_merchant_salt', %s, 'PayU Merchant Salt', CURRENT_TIMESTAMP)
@@ -3477,7 +3495,8 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
                     VALUES ('email_imap_user', %s, 'Email IMAP Username/Address', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                 """, (payload.email_imap_user.strip(),))
-            if payload.email_imap_password is not None:
+            if payload.email_imap_password is not None and payload.email_imap_password.strip() != "":
+                # Empty = keep existing (masked reads round-trip as "").
                 cur.execute("""
                     INSERT INTO system_settings (key, value, description, updated_at)
                     VALUES ('email_imap_password', %s, 'Email IMAP Password / App Password', CURRENT_TIMESTAMP)
@@ -4798,15 +4817,33 @@ def delete_group(groupname: str, admin_user: str = Depends(authenticate_admin)):
     return {"status": "success", "message": f"Policy Group '{groupname}' and associated user assignments removed successfully."
             + (f" ({resynced}/{len(members)} member(s) re-synced)" if members else "")}
 
+# Settings keys whose values are secrets: never returned on read (masked
+# to ""), and an empty write means "keep existing" so a masked round-trip
+# through the UI can never wipe them. To rotate, send a non-empty value.
+SECRET_SETTING_KEYS = frozenset({
+    "razorpay_key_secret", "razorpay_webhook_secret",
+    "cashfree_secret_key", "payu_merchant_salt",
+    "email_imap_password", "cert_signer_api_key",
+})
+
 # NAS Clients
 @app.get("/radius/api/nas", tags=["NAS"])
 @app.get("/api/nas", tags=["NAS"])
 def list_nas(_: str = Depends(authenticate_admin)):
+    """NAS inventory. Shared secrets are NEVER returned (masked): they are
+    set at creation and can only be rotated by delete + recreate (the AP
+    must be updated too)."""
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id, nasname, shortname, type, ports, secret, description FROM nas ORDER BY id ASC")
-            return cur.fetchall()
+            out = []
+            for r in cur.fetchall():
+                d = dict(r)
+                d["secret_set"] = bool(d.get("secret"))
+                d["secret"] = ""
+                out.append(d)
+            return out
     finally:
         conn.close()
 

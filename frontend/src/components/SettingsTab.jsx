@@ -33,17 +33,23 @@ export default function SettingsTab({ onNotify }) {
     payment_active_gateway: 'UPI_QR',
     razorpay_key_id: '',
     razorpay_key_secret: '',
+    razorpay_key_secret_set: false,
     razorpay_webhook_secret: '',
+    razorpay_webhook_secret_set: false,
     cashfree_app_id: '',
     cashfree_secret_key: '',
+    cashfree_secret_key_set: false,
     cashfree_env: 'TEST',
     payu_merchant_key: '',
     payu_merchant_salt: '',
+    payu_merchant_salt_set: false,
     email_imap_host: 'imap.gmail.com',
     email_imap_port: 993,
     email_imap_user: '',
     email_imap_password: '',
-    email_imap_folder: 'INBOX'
+    email_imap_password_set: false,
+    email_imap_folder: 'INBOX',
+    cert_signer_api_key_set: false
   });
 
   const loadSettings = async () => {
@@ -59,23 +65,29 @@ export default function SettingsTab({ onNotify }) {
           default_voucher_code: data.settings.default_voucher_code || '',
           currency: data.settings.currency || 'INR',
           cert_signer_api_url: data.settings.cert_signer_api_url || '',
-          cert_signer_api_key: data.settings.cert_signer_api_key || '',
           wifi_ssid: data.settings.wifi_ssid || 'RajLabs-Enterprise',
           wifi_auth_type: data.settings.wifi_auth_type || 'WPA2-Enterprise / EAP-TLS',
           payment_active_gateway: data.settings.payment_active_gateway || 'UPI_QR',
           razorpay_key_id: data.settings.razorpay_key_id || '',
-          razorpay_key_secret: data.settings.razorpay_key_secret || '',
-          razorpay_webhook_secret: data.settings.razorpay_webhook_secret || '',
+          razorpay_key_secret: '',
+          razorpay_key_secret_set: !!data.settings.razorpay_key_secret_set,
+          razorpay_webhook_secret: '',
+          razorpay_webhook_secret_set: !!data.settings.razorpay_webhook_secret_set,
           cashfree_app_id: data.settings.cashfree_app_id || '',
-          cashfree_secret_key: data.settings.cashfree_secret_key || '',
+          cashfree_secret_key: '',
+          cashfree_secret_key_set: !!data.settings.cashfree_secret_key_set,
           cashfree_env: data.settings.cashfree_env || 'TEST',
           payu_merchant_key: data.settings.payu_merchant_key || '',
-          payu_merchant_salt: data.settings.payu_merchant_salt || '',
+          payu_merchant_salt: '',
+          payu_merchant_salt_set: !!data.settings.payu_merchant_salt_set,
           email_imap_host: data.settings.email_imap_host || 'imap.gmail.com',
           email_imap_port: parseInt(data.settings.email_imap_port || 993),
           email_imap_user: data.settings.email_imap_user || '',
-          email_imap_password: data.settings.email_imap_password || '',
-          email_imap_folder: data.settings.email_imap_folder || 'INBOX'
+          email_imap_password: '',
+          email_imap_password_set: !!data.settings.email_imap_password_set,
+          email_imap_folder: data.settings.email_imap_folder || 'INBOX',
+          cert_signer_api_key: '',
+          cert_signer_api_key_set: !!data.settings.cert_signer_api_key_set
         });
       }
       checkSignerStatus(false);
@@ -401,8 +413,8 @@ export default function SettingsTab({ onNotify }) {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-400">API Key Configured:</span>
-                <span className={form.cert_signer_api_key ? 'text-emerald-400' : 'text-amber-400'}>
-                  {form.cert_signer_api_key ? 'Yes (Bearer / X-API-KEY)' : 'None'}
+                <span className={form.cert_signer_api_key || form.cert_signer_api_key_set ? 'text-emerald-400' : 'text-amber-400'}>
+                  {(form.cert_signer_api_key || form.cert_signer_api_key_set) ? 'Yes (Bearer / X-API-KEY)' : 'None'}
                 </span>
               </div>
               <div className="pt-1 text-slate-400 text-[10px] border-t border-slate-900 leading-relaxed">
@@ -426,11 +438,11 @@ export default function SettingsTab({ onNotify }) {
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Cert-Signer API Key / Token</label>
-            <input
-              type="password"
-              placeholder="Bearer API Key / Secret Token"
-              value={form.cert_signer_api_key}
+              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Cert-Signer API Key / Token {form.cert_signer_api_key_set && <span className="text-emerald-400 font-bold normal-case">· saved ✓</span>}</label>
+              <input
+                type="password"
+                placeholder="Blank = keep saved value"
+                value={form.cert_signer_api_key}
               onChange={e => setForm({ ...form, cert_signer_api_key: e.target.value })}
               className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
             />
@@ -542,7 +554,7 @@ export default function SettingsTab({ onNotify }) {
             <button
               type="button"
               onClick={() => handleTestGateway('razorpay')}
-              disabled={testingGateway === 'razorpay' || !form.razorpay_key_id || !form.razorpay_key_secret}
+              disabled={testingGateway === 'razorpay' || !form.razorpay_key_id || !(form.razorpay_key_secret || form.razorpay_key_secret_set)}
               className="px-2.5 py-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-semibold transition disabled:opacity-40 flex items-center gap-1"
             >
               <RefreshCw className={`w-3 h-3 ${testingGateway === 'razorpay' ? 'animate-spin' : ''}`} />
@@ -562,20 +574,20 @@ export default function SettingsTab({ onNotify }) {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400">Razorpay Key Secret</label>
+              <label className="text-xs font-semibold text-slate-400">Razorpay Key Secret {form.razorpay_key_secret_set && <span className="text-emerald-400 font-bold">· saved ✓</span>}</label>
               <input
                 type="password"
-                placeholder="••••••••••••••••"
+                placeholder="Blank = keep saved value"
                 value={form.razorpay_key_secret}
                 onChange={e => setForm({ ...form, razorpay_key_secret: e.target.value })}
                 className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono"
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400">Webhook Secret</label>
+              <label className="text-xs font-semibold text-slate-400">Webhook Secret {form.razorpay_webhook_secret_set && <span className="text-emerald-400 font-bold">· saved ✓</span>}</label>
               <input
                 type="password"
-                placeholder="Webhook signature secret"
+                placeholder="Blank = keep saved value"
                 value={form.razorpay_webhook_secret}
                 onChange={e => setForm({ ...form, razorpay_webhook_secret: e.target.value })}
                 className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-blue-500 font-mono"
@@ -597,7 +609,7 @@ export default function SettingsTab({ onNotify }) {
             <button
               type="button"
               onClick={() => handleTestGateway('cashfree')}
-              disabled={testingGateway === 'cashfree' || !form.cashfree_app_id || !form.cashfree_secret_key}
+              disabled={testingGateway === 'cashfree' || !form.cashfree_app_id || !(form.cashfree_secret_key || form.cashfree_secret_key_set)}
               className="px-2.5 py-1 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-lg text-xs font-semibold transition disabled:opacity-40 flex items-center gap-1"
             >
               <RefreshCw className={`w-3 h-3 ${testingGateway === 'cashfree' ? 'animate-spin' : ''}`} />
@@ -617,10 +629,10 @@ export default function SettingsTab({ onNotify }) {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400">Cashfree Secret Key</label>
+              <label className="text-xs font-semibold text-slate-400">Cashfree Secret Key {form.cashfree_secret_key_set && <span className="text-emerald-400 font-bold">· saved ✓</span>}</label>
               <input
                 type="password"
-                placeholder="••••••••••••••••"
+                placeholder="Blank = keep saved value"
                 value={form.cashfree_secret_key}
                 onChange={e => setForm({ ...form, cashfree_secret_key: e.target.value })}
                 className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-purple-500 font-mono"
@@ -658,10 +670,10 @@ export default function SettingsTab({ onNotify }) {
               />
             </div>
             <div className="space-y-1">
-              <label className="text-xs font-semibold text-slate-400">PayU Merchant Salt</label>
+              <label className="text-xs font-semibold text-slate-400">PayU Merchant Salt {form.payu_merchant_salt_set && <span className="text-emerald-400 font-bold">· saved ✓</span>}</label>
               <input
                 type="password"
-                placeholder="••••••••••••••••"
+                placeholder="Blank = keep saved value"
                 value={form.payu_merchant_salt}
                 onChange={e => setForm({ ...form, payu_merchant_salt: e.target.value })}
                 className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-emerald-500 font-mono"
@@ -688,7 +700,7 @@ export default function SettingsTab({ onNotify }) {
             <button
               type="button"
               onClick={handleTestImap}
-              disabled={testingImap || !form.email_imap_user || !form.email_imap_password}
+              disabled={testingImap || !form.email_imap_user || !(form.email_imap_password || form.email_imap_password_set)}
               className="px-3 py-1.5 bg-slate-800 hover:bg-slate-750 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold transition disabled:opacity-40 flex items-center gap-1.5"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${testingImap ? 'animate-spin text-amber-400' : ''}`} />
@@ -741,11 +753,11 @@ export default function SettingsTab({ onNotify }) {
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Google App Password</label>
-            <input
-              type="password"
-              placeholder="16-character Google App Password"
-              value={form.email_imap_password}
+              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Google App Password {form.email_imap_password_set && <span className="text-emerald-400 font-bold normal-case">· saved ✓</span>}</label>
+              <input
+                type="password"
+                placeholder="Blank = keep saved value"
+                value={form.email_imap_password}
               onChange={e => setForm({ ...form, email_imap_password: e.target.value })}
               className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-amber-500 font-mono"
             />

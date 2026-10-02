@@ -403,6 +403,53 @@ def test_voucher_routes_registered():
     assert "/radius/api/vouchers" in paths
 
 
+def test_nas_secret_masked_on_read(monkeypatch):
+    """GET /nas never returns the shared secret (#19)."""
+
+    def handler(q, p):
+        if "FROM nas" in q:
+            return [{"id": 1, "nasname": "10.0.0.1", "shortname": "ap1",
+                     "type": "other", "ports": None, "secret": "s3cr3t!",
+                     "description": "x"}]
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    out = app.list_nas("admin")
+    assert out[0]["secret"] == ""
+    assert out[0]["secret_set"] is True
+
+
+def test_settings_secrets_masked_and_empty_kept(monkeypatch):
+    """Secrets masked on read; blank writes keep existing values (#19)."""
+
+    def handler(q, p):
+        if "FROM system_settings" in q:
+            return [{"key": "razorpay_key_secret", "value": "live_secret",
+                     "description": "", "updated_at": None},
+                    {"key": "wifi_ssid", "value": "MySSID",
+                     "description": "", "updated_at": None}]
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    res = app.get_all_settings("admin")
+    assert res["settings"]["razorpay_key_secret"] == ""
+    assert res["settings"]["razorpay_key_secret_set"] is True
+    assert res["settings"]["wifi_ssid"] == "MySSID"
+
+    # Blank secret must not overwrite...
+    conn2 = FakeConn(lambda q, p: [])
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn2)
+    app.update_settings(app.SystemSettingsUpdateRequest(razorpay_key_secret=""), "admin")
+    assert not any("razorpay_key_secret" in s for s, _ in conn2.log)
+    # ...but a real value still writes.
+    conn3 = FakeConn(lambda q, p: [])
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn3)
+    app.update_settings(app.SystemSettingsUpdateRequest(razorpay_key_secret="new_secret"), "admin")
+    assert any("razorpay_key_secret" in s and s.startswith("INSERT") for s, _ in conn3.log)
+
+
 def test_sync_allow_stamps_expiration_from_subscription():
     """ALLOW with a subscription upserts wall-clock Expiration (#25)."""
     import datetime
