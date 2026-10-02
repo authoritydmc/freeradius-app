@@ -99,21 +99,49 @@ export function formatDuration(seconds) {
   return parts.join(' ') || '0s';
 }
 
-export function formatDateTime(isoString) {
-  if (!isoString) return '—';
+export function formatDateTime(input, opts = {}) {
+  if (input == null || input === '') return '—';
   try {
-    const d = new Date(isoString);
-    if (isNaN(d.getTime())) return String(isoString);
+    // Epoch millis (number or numeric string, 13 digits) or epoch seconds (10 digits)
+    if (typeof input === 'number' || /^\d{10,13}$/.test(String(input).trim())) {
+      const n = Number(input);
+      const ms = n < 1e12 ? n * 1000 : n;
+      const d = new Date(ms);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+          timeZoneName: opts.tzName || 'short'
+        });
+      }
+    }
+    let s = String(input).trim();
+    // FreeRADIUS Expiration "03 Oct 2026 01:30:41" carries no zone — the
+    // server generates it from UTC, so parse it as UTC explicitly.
+    if (/^\d{2} \w{3} \d{4} \d{2}:\d{2}(:\d{2})?$/.test(s)) {
+      // "03 Oct 2026 01:30:41" is not ISO — rebuild as ISO UTC explicitly.
+      const m = s.match(/^(\d{2}) (\w{3}) (\d{4}) (\d{2}:\d{2}(?::\d{2})?)$/);
+      const months = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
+      if (m) {
+        const mon = months[m[2].toLowerCase()] || '01';
+        s = `${m[3]}-${mon}-${m[1]}T${m[4].length === 5 ? m[4] + ':00' : m[4]}Z`;
+      }
+    }
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return String(input);
+    // Always render in the viewer's LOCAL zone with an explicit TZ label,
+    // so "UTC or local?" is never ambiguous again.
     return d.toLocaleString(undefined, {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
-      second: '2-digit'
+      second: '2-digit',
+      timeZoneName: opts.tzName || 'short'
     });
   } catch {
-    return String(isoString);
+    return String(input);
   }
 }
 

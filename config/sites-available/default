@@ -112,6 +112,16 @@ server default {
         exec
         remove_reply_message_if_eap
         Post-Auth-Type REJECT {
+            # Always log a human-readable reject reason into radpostauth.reason.
+            # Specific policies (device lockdown, subscription sync) already set
+            # Reply-Message; fall back to a generic credential/expiry message so
+            # "password invalid / user unknown / no subscription / expired" never
+            # shows as empty in the Auth History view.
+            if (!&reply:Reply-Message) {
+                update reply {
+                    Reply-Message := "Rejected: authentication failed (invalid password, unknown user, expired or no active subscription)"
+                }
+            }
             -sql
             attr_filter.access_reject
             eap

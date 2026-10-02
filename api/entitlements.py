@@ -190,6 +190,7 @@ def activate_or_extend_subscription(
                 "plan_name": plan_name,
                 "starts_at": sub_record["starts_at"].isoformat(),
                 "expires_at": sub_record["expires_at"].isoformat(),
+                "expires_at_epoch_ms": int(sub_record["expires_at"].timestamp() * 1000),
                 "validity_seconds_added": validity_sec
             }
     finally:

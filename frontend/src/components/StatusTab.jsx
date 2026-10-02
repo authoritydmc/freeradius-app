@@ -59,7 +59,12 @@ export default function StatusTab({
 
   useEffect(() => {
     loadData();
-    const interval = setInterval(loadData, 15000);
+    // 60s refresh (was 15s) + hidden-tab guard + manual refresh button.
+    // Status data is near-static; no reason to hammer the API.
+    const interval = setInterval(() => {
+      if (document.hidden) return;
+      loadData();
+    }, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -299,8 +304,9 @@ export default function StatusTab({
           </button>
         </div>
 
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-sm">
-          <table className="w-full text-left text-xs">
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl shadow-sm">
+          <div className="table-scroll overflow-x-auto rounded-3xl" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table className="w-full min-w-[720px] text-left text-xs">
             <tbody className="divide-y divide-slate-800/80 font-mono">
               {(auditLogs || []).slice(0, 5).map((a, i) => (
                 <tr key={a.id || i} className="hover:bg-slate-800/40 transition-colors">
@@ -324,6 +330,7 @@ export default function StatusTab({
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
 

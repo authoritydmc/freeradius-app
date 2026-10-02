@@ -265,8 +265,9 @@ export default function CertsTab({
       </div>
 
       {/* Certificates Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-sm">
-        <table className="w-full text-left text-xs">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl shadow-sm">
+        <div className="table-scroll overflow-x-auto rounded-3xl" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+        <table className="w-full min-w-[720px] text-left text-xs">
           <thead className="bg-slate-950/60 text-slate-400 uppercase border-b border-slate-800 text-[10px] tracking-wider">
             <tr>
               <th className="px-6 py-4">Client Identity (CN)</th>
@@ -358,6 +359,7 @@ export default function CertsTab({
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Orphaned Certificates Section (if any found) */}

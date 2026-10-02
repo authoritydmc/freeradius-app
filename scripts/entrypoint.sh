@@ -17,6 +17,10 @@ CA_KEY_PASSWORD="${CA_KEY_PASSWORD:-whatever}"
 
 export RADIUS_SECRET CA_KEY_PASSWORD
 
+# UTC everywhere: Python expiry uses UTC epoch and FreeRADIUS `expiration`
+# parses Expiration wall-time in local zone — these must agree.
+export TZ=UTC
+
 # Fail closed on published default admin/session secrets (GitHub issue #5).
 weak_secret() {
   case "$1" in
@@ -41,9 +45,13 @@ until PGPASSWORD="${POSTGRES_PASSWORD}" pg_isready -h "${POSTGRES_HOST}" -p "${P
 done
 echo "PostgreSQL is ready!"
 
-# Apply DB schema on fresh installs (GitHub issue #12): only when radcheck is
-# missing, so reboots never touch existing data.
-if [ -f /app/config/schema.sql ]; then
+# Apply versioned DB migrations (api/migrations/*.sql via api/migrate.py).
+# Forward-only, idempotent, tracked in schema_migrations — safe on every boot.
+# Falls back to legacy config/schema.sql only if the migrator is missing.
+if python3 -c "import api.migrate" 2>/dev/null; then
+  echo "Applying versioned database migrations..."
+  python3 -m api.migrate || echo "WARNING: migration runner failed — API will retry at startup." >&2
+elif [ -f /app/config/schema.sql ]; then
   if [ "$(PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tAc "SELECT to_regclass('public.radcheck')" 2>/dev/null)" != "radcheck" ]; then
     echo "Applying database schema from /app/config/schema.sql..."
     PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -f /app/config/schema.sql
@@ -52,7 +60,7 @@ if [ -f /app/config/schema.sql ]; then
     echo "Database schema already present (radcheck exists), skipping."
   fi
 else
-  echo "WARNING: /app/config/schema.sql not found, skipping auto-apply." >&2
+  echo "WARNING: no migrator or schema.sql found, skipping auto-apply." >&2
 fi
 
 RAD_DIR="/etc/freeradius/3.0"

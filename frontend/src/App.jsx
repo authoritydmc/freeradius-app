@@ -12,12 +12,13 @@ import TesterTab from './components/TesterTab';
 import LogsTab from './components/LogsTab';
 import SettingsTab from './components/SettingsTab';
 import LoginView from './components/LoginView';
+import UserDashboard from './components/UserDashboard';
 import PortalView from './components/PortalView';
 import CredResultModal from './components/CredResultModal';
 import ChangelogModal from './components/ChangelogModal';
 import ErrorBoundary from './components/ErrorBoundary';
 import { getAuthToken, setAuthToken, removeAuthToken, getUserInfo, setUserInfo, fetchJson } from './utils/api';
-import { AlertCircle, CheckCircle2, Info, X, Sparkles, Wifi, Shield, ExternalLink } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Info, X, Sparkles, ExternalLink } from 'lucide-react';
 
 export default function App() {
   const [isPortal, setIsPortal] = useState(
@@ -41,13 +42,14 @@ export default function App() {
     }, 4500);
   };
 
+  // Background poll: navbar badges only (health + stats). Everything else
+  // (signer/status, public-config) is fetched on-demand by the tab that needs
+  // it. 60s + hidden-tab guard so idle browsers don't spam the API.
   const loadHealthAndStats = async () => {
     try {
-      const [hRes, sRes, sigRes, pRes] = await Promise.allSettled([
+      const [hRes, sRes] = await Promise.allSettled([
         fetchJson('health'),
         fetchJson('stats'),
-        fetchJson('signer/status'),
-        fetchJson('public-config')
       ]);
       if (hRes.status === 'fulfilled' && hRes.value) {
         setHealth(hRes.value);
@@ -55,6 +57,19 @@ export default function App() {
       if (sRes.status === 'fulfilled' && sRes.value) {
         setStats(sRes.value);
       }
+    } catch (e) {
+      // Ignore background poll errors
+    }
+  };
+
+  // One-time aux config for tabs that accept it as a prop (Status/Certs fall
+  // back to their own on-demand fetch when props are null).
+  const loadAuxConfig = async () => {
+    try {
+      const [sigRes, pRes] = await Promise.allSettled([
+        fetchJson('signer/status'),
+        fetchJson('public-config')
+      ]);
       if (sigRes.status === 'fulfilled' && sigRes.value) {
         setSignerStatus(sigRes.value);
       }
@@ -62,11 +77,13 @@ export default function App() {
         setPublicConfig(pRes.value);
       }
     } catch (e) {
-      // Ignore background poll errors
+      // Ignore background errors
     }
   };
-
   const checkAuth = async () => {
+    // Admin console: only the admin token counts. User tokens (portal) and
+    // garbage values must NOT unlock this console — verified server-side via
+    // the admin-only auth/me endpoint (signature + expiry + role + revocation).
     const token = getAuthToken();
     if (!token) {
       setCurrentUser(null);
@@ -75,11 +92,14 @@ export default function App() {
     }
 
     try {
-      // Validate session with backend
-      const data = await fetchJson('status');
+      // Validate session with backend (401 unless a live admin session)
+      const me = await fetchJson('auth/me');
       const savedUser = getUserInfo();
-      setCurrentUser(savedUser || { username: 'Administrator', role: 'admin' });
+      const username = me.username || savedUser?.username || 'Administrator';
+      setCurrentUser({ username, role: 'admin', group: savedUser?.group || 'admins' });
+      setUserInfo({ username, role: 'admin', group: savedUser?.group || 'admins' });
       loadHealthAndStats();
+      loadAuxConfig();
     } catch (err) {
       console.warn('Session verification failed, resetting to login:', err);
       removeAuthToken();
@@ -92,7 +112,10 @@ export default function App() {
   useEffect(() => {
     if (!isPortal && currentUser) {
       loadHealthAndStats();
-      const interval = setInterval(loadHealthAndStats, 20000);
+      const interval = setInterval(() => {
+        if (document.hidden) return;
+        loadHealthAndStats();
+      }, 60000);
       return () => clearInterval(interval);
     }
   }, [isPortal, currentUser]);
@@ -146,6 +169,23 @@ export default function App() {
 
   if (!currentUser) {
     return <LoginView onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  // Role gate: the admin console (every tab incl. Tester/Payments/Settings) is
+  // admin-only (backend enforces the same via authenticate_admin on every
+  // management route). Regular users get their own self-service dashboard:
+  // subscription status, UPI recharge, own password change, certificates,
+  // devices/activity and support — nothing administrative.
+  if (currentUser.role && currentUser.role !== 'admin') {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+        <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <ErrorBoundary scoped section="UserDashboard" title="My Wi-Fi Account">
+            <UserDashboard user={currentUser} onLogout={handleLogout} onNotify={showToast} />
+          </ErrorBoundary>
+        </main>
+      </div>
+    );
   }
 
   return (

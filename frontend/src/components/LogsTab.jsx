@@ -116,8 +116,8 @@ export default function LogsTab({ onNotify }) {
       {/* Auth Logs Table */}
       {activeSubTab === 'auth' ? (
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm text-slate-300">
+          <div className="table-scroll overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left text-sm text-slate-300">
               <thead className="bg-slate-950/80 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
                 <tr>
                   <th className="py-3.5 px-4 font-semibold">User</th>
@@ -178,8 +178,8 @@ export default function LogsTab({ onNotify }) {
       ) : (
         /* Audit Logs Table */
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm text-slate-300">
+          <div className="table-scroll overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left text-sm text-slate-300">
               <thead className="bg-slate-950/80 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">
                 <tr>
                   <th className="py-3.5 px-4 font-semibold">Admin</th>

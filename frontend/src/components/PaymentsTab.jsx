@@ -314,8 +314,8 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
             No payment records found matching criteria.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-sans">
+          <div className="table-scroll overflow-x-auto">
+            <table className="w-full min-w-[760px] text-left text-xs font-sans">
               <thead className="bg-slate-950/60 text-slate-400 font-semibold border-b border-slate-800">
                 <tr>
                   <th className="py-3 px-4">Ref / UTR / Order ID</th>
@@ -495,11 +495,19 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
                     <button
                       key={pill.days}
                       type="button"
-                      onClick={() => setManualForm({
-                        ...manualForm,
-                        validity_days: pill.days,
-                        amount: pill.price
-                      })}
+                      onClick={() => {
+                        // Keep plan_id in sync: link to matching plan when available,
+                        // otherwise fall back to Custom Plan (empty plan_id) so the
+                        // ledger doesn't show a mismatched plan name.
+                        const match = plans.find(p => Number(p.validity_days) === pill.days && Number(p.price) === Number(pill.price));
+                        const exactDay = plans.find(p => Number(p.validity_days) === pill.days);
+                        setManualForm({
+                          ...manualForm,
+                          plan_id: match ? String(match.id) : (exactDay && pill.days <= 30 ? String(exactDay.id) : ''),
+                          validity_days: pill.days,
+                          amount: pill.price
+                        });
+                      }}
                       className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition ${
                         manualForm.validity_days === pill.days
                           ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-bold'

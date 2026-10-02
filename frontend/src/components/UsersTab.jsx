@@ -26,8 +26,10 @@ import {
   Unlock,
   ShieldAlert
 } from 'lucide-react';
-import { calculatePasswordStrength, fetchJson } from '../utils/api';
+import { calculatePasswordStrength, fetchJson, formatDateTime } from '../utils/api';
 import WifiQrModal from './WifiQrModal';
+import ResponsiveTable from './ResponsiveTable';
+import UserDetailModal from './UserDetailModal';
 
 export default function UsersTab({
   users: propUsers,
@@ -82,6 +84,9 @@ export default function UsersTab({
 
   // Wi-Fi QR Access Pass Modal
   const [qrModalUser, setQrModalUser] = useState(null);
+
+  // Subscriber dossier popup (subscription + stats + devices + history)
+  const [detailUser, setDetailUser] = useState(null);
 
   const loadData = async () => {
     try {
@@ -457,15 +462,17 @@ export default function UsersTab({
       </div>
 
       {/* Users Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-sm">
-        <table className="w-full text-left text-xs">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl shadow-sm">
+        <ResponsiveTable className="rounded-3xl">
+        <table className="w-full min-w-[760px] text-left text-xs">
           <thead className="bg-slate-950/60 text-slate-400 uppercase border-b border-slate-800 text-[10px] tracking-wider">
             <tr>
-              <th className="px-6 py-4">Username & Status</th>
-              <th className="px-6 py-4">Group Policy</th>
-              <th className="px-6 py-4">EAP-TLS Certificate</th>
-              <th className="px-6 py-4">Network Attributes</th>
-              <th className="px-6 py-4 text-right">Actions</th>
+              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Username & Status</th>
+              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Subscription</th>
+              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Group Policy</th>
+              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">EAP-TLS Certificate</th>
+              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Network Attributes</th>
+              <th className="px-3 sm:px-6 py-3 sm:py-4 text-right whitespace-nowrap">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/80">
@@ -473,15 +480,19 @@ export default function UsersTab({
               <tr key={user.username} className="hover:bg-slate-800/40 transition-colors">
                 
                 {/* Username + Expiry + Online Status */}
-                <td className="px-6 py-4 font-semibold text-white">
+                <td className="px-3 sm:px-6 py-3 sm:py-4 font-semibold text-white whitespace-nowrap">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-slate-800 border border-slate-700/80 flex items-center justify-center text-xs text-slate-300 font-mono font-bold">
+                    <div className="w-8 h-8 rounded-xl bg-slate-800 border border-slate-700/80 flex items-center justify-center text-xs text-slate-300 font-mono font-bold shrink-0">
                       {user.username.charAt(0).toUpperCase()}
                     </div>
-                    <div>
-                      <div className="font-bold text-slate-100 flex items-center gap-2">
-                        <span>{user.username}</span>
-                      </div>
+                    <div className="min-w-0">
+                      <button
+                        onClick={() => setDetailUser(user.username)}
+                        title="Open subscriber dossier (subscription, stats, devices, history)"
+                        className="font-bold text-slate-100 hover:text-indigo-300 hover:underline text-left truncate"
+                      >
+                        {user.username}
+                      </button>
                       <div className="flex flex-wrap items-center gap-1.5 mt-1">
                         {user.active_sessions > 0 && (
                           <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 text-[9px] font-mono border border-emerald-500/20 flex items-center gap-1">
@@ -490,14 +501,14 @@ export default function UsersTab({
                           </span>
                         )}
                         {user.expiration && (
-                          <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 text-[9px] font-mono border border-amber-500/20 flex items-center gap-1" title={`FreeRADIUS Expiration: ${user.expiration}`}>
+                          <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 text-[9px] font-mono border border-amber-500/20 flex items-center gap-1" title={`FreeRADIUS Expiration (server UTC): ${user.expiration} — shown in your local time`}>
                             <Hourglass className="w-2.5 h-2.5 text-amber-400" />
-                            <span>Exp: {user.expiration}</span>
+                            <span>Exp: {formatDateTime(user.expiration)}</span>
                           </span>
                         )}
                         {user.last_auth && (
-                          <span className="text-[10px] text-slate-500 font-mono">
-                            last: {user.last_auth}
+                          <span className="text-[10px] text-slate-500 font-mono" title={`Last attempt (server time): ${user.last_auth} — shown in your local time`}>
+                            last: {formatDateTime(user.last_auth)}
                           </span>
                         )}
                       </div>
@@ -505,8 +516,34 @@ export default function UsersTab({
                   </div>
                 </td>
 
+                {/* Subscription */}
+                <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
+                  {user.subscription ? (
+                    <button
+                      onClick={() => setDetailUser(user.username)}
+                      title="Open dossier — click for full subscription details"
+                      className="text-left group"
+                    >
+                      <span className="px-2.5 py-1 rounded-xl text-[10px] font-mono border font-semibold bg-emerald-500/10 text-emerald-300 border-emerald-500/20 group-hover:bg-emerald-500/20">
+                        {user.subscription.plan_name}
+                      </span>
+                      <span className="block text-[10px] text-slate-500 font-mono mt-1">
+                        till {user.subscription.expires_at ? new Date(user.subscription.expires_at).toLocaleDateString() : '—'}
+                      </span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setDetailUser(user.username)}
+                      title="No active subscription — open dossier"
+                      className="px-2.5 py-1 rounded-xl text-[10px] font-mono border font-semibold bg-rose-500/10 text-rose-300 border-rose-500/20 hover:bg-rose-500/20"
+                    >
+                      No subscription
+                    </button>
+                  )}
+                </td>
+
                 {/* Group Policy */}
-                <td className="px-6 py-4">
+                <td className="px-3 sm:px-6 py-3 sm:py-4">
                   {user.group ? (
                     <span className={`px-2.5 py-1 rounded-xl text-[10px] font-mono border font-semibold ${
                       user.group === 'admins' || user.group === 'admin'
@@ -521,7 +558,7 @@ export default function UsersTab({
                 </td>
 
                 {/* EAP-TLS Cert */}
-                <td className="px-6 py-4">
+                <td className="px-3 sm:px-6 py-3 sm:py-4">
                   {user.has_certificate ? (
                     <div className="flex items-center gap-2">
                       <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-medium border border-emerald-500/20 flex items-center gap-1">
@@ -553,7 +590,7 @@ export default function UsersTab({
                 </td>
 
                 {/* Reply Attributes */}
-                <td className="px-6 py-4">
+                <td className="px-3 sm:px-6 py-3 sm:py-4">
                   <div className="flex flex-wrap gap-1">
                     {(user.reply_attributes || []).map((attr) => (
                       <span 
@@ -570,7 +607,7 @@ export default function UsersTab({
                 </td>
 
                 {/* Action Buttons */}
-                <td className="px-6 py-4 text-right space-x-1 whitespace-nowrap">
+                <td className="px-3 sm:px-6 py-3 sm:py-4 text-right space-x-1 whitespace-nowrap">
                   <button
                     onClick={() => setQrModalUser(user)}
                     title="Show / Send Wi-Fi QR Access Pass"
@@ -620,13 +657,14 @@ export default function UsersTab({
 
             {filteredUsers.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-6 py-10 text-center text-slate-500 italic">
+                <td colSpan={6} className="px-6 py-10 text-center text-slate-500 italic">
                   No users found matching current filter.
                 </td>
               </tr>
             )}
           </tbody>
         </table>
+        </ResponsiveTable>
       </div>
 
       {/* ---------------------------------------------------- */}
@@ -1130,6 +1168,15 @@ export default function UsersTab({
         user={qrModalUser}
         onNotify={onNotify}
       />
+
+      {/* 6. SUBSCRIBER DOSSIER POPUP */}
+      {detailUser && (
+        <UserDetailModal
+          username={detailUser}
+          onClose={() => setDetailUser(null)}
+          onNotify={onNotify}
+        />
+      )}
 
     </div>
   );

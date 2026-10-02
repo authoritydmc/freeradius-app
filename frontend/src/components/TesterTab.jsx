@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Play, Terminal, Shield, CheckCircle2, XCircle, Clock, 
   RefreshCw, Cpu, Server, Smartphone, Key, AlertCircle
@@ -10,9 +10,17 @@ export default function TesterTab({ onNotify }) {
     username: '',
     password: '',
     nas_ip: '127.0.0.1',
-    secret: '',
     calling_station_id: ''
   });
+  const [users, setUsers] = useState([]);
+
+  // Username autocomplete from the user inventory (best-effort)
+  useEffect(() => {
+    fetchJson('users').then(u => {
+      const list = Array.isArray(u) ? u : (u?.users || []);
+      setUsers(list.map(x => x.username).filter(Boolean));
+    }).catch(() => {});
+  }, []);
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -72,11 +80,15 @@ export default function TesterTab({ onNotify }) {
               <input
                 type="text"
                 required
-                placeholder="e.g. staff_user or voucher code"
+                list="tester-users-list"
+                placeholder="e.g. staff_user"
                 value={form.username}
                 onChange={e => setForm({ ...form, username: e.target.value })}
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-violet-500 font-mono"
               />
+              <datalist id="tester-users-list">
+                {users.map(u => <option key={u} value={u} />)}
+              </datalist>
             </div>
 
             <div className="space-y-1">
@@ -84,35 +96,12 @@ export default function TesterTab({ onNotify }) {
               <input
                 type="password"
                 required
-                placeholder="User cleartext or hash password"
+                placeholder="User cleartext password"
                 value={form.password}
                 onChange={e => setForm({ ...form, password: e.target.value })}
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-violet-500 font-mono"
               />
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">NAS Server IP</label>
-                <input
-                  type="text"
-                  placeholder="127.0.0.1"
-                  value={form.nas_ip}
-                  onChange={e => setForm({ ...form, nas_ip: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-violet-500 font-mono"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Shared Secret</label>
-                <input
-                  type="password"
-                  placeholder="Default testing123"
-                  value={form.secret}
-                  onChange={e => setForm({ ...form, secret: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-violet-500 font-mono"
-                />
-              </div>
+              <p className="text-[11px] text-slate-500">Server uses its own configured RADIUS secret — no need to enter it.</p>
             </div>
 
             <div className="space-y-1">
@@ -125,6 +114,21 @@ export default function TesterTab({ onNotify }) {
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-violet-500 font-mono"
               />
             </div>
+
+            <details className="bg-slate-950/60 border border-slate-800 rounded-xl px-3 py-2">
+              <summary className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider cursor-pointer">Advanced: NAS options</summary>
+              <div className="space-y-1 pt-2">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">NAS Server IP</label>
+                <input
+                  type="text"
+                  placeholder="127.0.0.1"
+                  value={form.nas_ip}
+                  onChange={e => setForm({ ...form, nas_ip: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-violet-500 font-mono"
+                />
+                <p className="text-[11px] text-slate-500">Default 127.0.0.1 with the server-side secret.</p>
+              </div>
+            </details>
 
             <div className="pt-2">
               <button
@@ -161,7 +165,7 @@ export default function TesterTab({ onNotify }) {
             </div>
 
             {result && (
-              <div>
+              <div className="text-right">
                 {result.success ? (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                     <CheckCircle2 className="w-3.5 h-3.5" />
@@ -172,6 +176,11 @@ export default function TesterTab({ onNotify }) {
                     <XCircle className="w-3.5 h-3.5" />
                     {result.status || 'ACCESS-REJECT'}
                   </span>
+                )}
+                {(result.nas_ip || result.secret_source) && (
+                  <div className="text-[10px] font-mono text-slate-500 mt-1">
+                    via {result.nas_ip || '127.0.0.1'} • {result.secret_source === 'custom' ? 'custom secret' : 'server secret'}
+                  </div>
                 )}
               </div>
             )}

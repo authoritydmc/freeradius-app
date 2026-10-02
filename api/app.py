@@ -523,22 +523,19 @@ def generate_secure_password(length: int = 16, use_symbols: bool = True, exclude
         chars[i], chars[j] = chars[j], chars[i]
     return "".join(chars)
 
+def generate_session_secret(length: int = 24) -> str:
+    """Random secret for auto-provisioned users / radcheck passwords.
+
+    Wrapper around generate_secure_password so legacy call-sites
+    (manual-activate, email-scan, webhook, cert auto-provision) work.
+    """
+    return generate_secure_password(length, use_symbols=False, exclude_ambiguous=True)
+
 def ensure_audit_table():
+    """Deprecated shim — schema is owned by api/migrations via api/migrate.py."""
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS admin_audit_log (
-                    id SERIAL PRIMARY KEY,
-                    ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    admin_user TEXT NOT NULL,
-                    action TEXT NOT NULL,
-                    target_user TEXT,
-                    detail TEXT
-                )
-            """)
-            conn.commit()
-        conn.close()
+        from api.migrate import ensure_migrated
+        ensure_migrated()
     except Exception as e:
         logger.warning("Could not ensure admin_audit_log table: %s", e)
 
@@ -599,19 +596,10 @@ def _token_hash(token: str) -> str:
 
 
 def ensure_revoked_tokens_table() -> None:
+    """Deprecated shim — schema is owned by api/migrations via api/migrate.py."""
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS revoked_tokens (
-                    token_hash TEXT PRIMARY KEY,
-                    username TEXT NOT NULL,
-                    revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    reason TEXT
-                )
-            """)
-            conn.commit()
-        conn.close()
+        from api.migrate import ensure_migrated
+        ensure_migrated()
     except Exception as e:
         logger.warning("Could not ensure revoked_tokens table: %s", e)
 
@@ -919,6 +907,36 @@ def authenticate_admin(request: Request) -> str:
         headers={"WWW-Authenticate": 'Bearer realm="RajLabs FreeRADIUS Admin Area"'}
     )
 
+def authenticate_self(request: Request) -> str:
+    """Any valid session (admin token, user token, or session cookie).
+
+    Returns the caller's own username. Used by /me/* self-service endpoints so
+    regular users can manage ONLY their own account — never anyone else's.
+    Admins calling /me/* get their own dossier, not another user's.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    elif request.cookies.get("admin_session"):
+        token = request.cookies.get("admin_session")
+    elif request.cookies.get("user_session"):
+        token = request.cookies.get("user_session")
+
+    if token:
+        user = verify_session_token(token)
+        if user:
+            return user
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Unauthorized. Please sign in to access your account."
+    )
+
+class SelfPasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=1, max_length=128)
+
 async def _periodic_expiry_worker_loop():
     """Background worker loop: checks database for expired subscriptions and sends RFC 5176 CoA disconnects."""
     logger.info("Background session expiry worker started (RFC 5176 CoA / DB Entitlements).")
@@ -938,6 +956,15 @@ async def _periodic_expiry_worker_loop():
 async def lifespan(app: FastAPI):
     # Fail closed on published default secrets (issue #5) before touching the DB.
     check_startup_secrets()
+    # Versioned migrations — single source of truth (api/migrations/*.sql).
+    # Replaces the old scattered init_all_tables / ensure_* per-request DDL.
+    try:
+        from api.migrate import run_migrations
+        applied = run_migrations()
+        if applied:
+            logger.info("Startup migrations applied: %s", applied)
+    except Exception as e:
+        logger.warning("DB migration check: %s", e)
     try:
         purge_expired_tables()
     except Exception as e:
@@ -949,23 +976,6 @@ async def lifespan(app: FastAPI):
         logger.info("Connected successfully to PostgreSQL database: %s", POSTGRES_DB)
     except Exception as e:
         logger.warning("Database connection failed during startup: %s", e)
-    try:
-        from api.db_init import init_all_tables
-        init_all_tables()
-    except Exception as e:
-        logger.warning("DB schema initialization check: %s", e)
-    try:
-        ensure_audit_table()
-    except Exception as e:
-        logger.warning("Audit table init failed: %s", e)
-    try:
-        ensure_revoked_tokens_table()
-    except Exception as e:
-        logger.warning("Revoked-tokens table init failed: %s", e)
-    try:
-        ensure_device_tables()
-    except Exception as e:
-        logger.warning("Device tables init failed: %s", e)
     
     expiry_task = asyncio.create_task(_periodic_expiry_worker_loop())
     try:
@@ -1551,6 +1561,33 @@ def list_users(_: str = Depends(authenticate_admin)):
                 data["active_sessions"] = active_counts.get(u, 0)
                 data["last_auth"] = last_auth.get(u)
 
+            # Active subscription per user (for Users-table subscription column).
+            # Best-effort: central `users`/`subscriptions` may lag radcheck-only rows.
+            try:
+                cur.execute("""
+                    SELECT u.username, p.name AS plan_name, s.expires_at AS expires_at,
+                           s.status AS status
+                    FROM users u
+                    JOIN subscriptions s ON s.user_id = u.id
+                    LEFT JOIN plans p ON s.plan_id = p.id
+                    WHERE s.status = 'ACTIVE' AND s.expires_at > CURRENT_TIMESTAMP
+                """)
+                for r in cur.fetchall():
+                    un = r.get("username")
+                    if un in users_map:
+                        exp = r.get("expires_at")
+                        users_map[un]["subscription"] = {
+                            "plan_name": r.get("plan_name") or "Custom Pass",
+                            "expires_at": exp.isoformat() if hasattr(exp, "isoformat") else (str(exp) if exp else None),
+                            "status": r.get("status"),
+                        }
+                for u, data in users_map.items():
+                    data.setdefault("subscription", None)
+            except Exception as e:
+                logger.debug("list_users subscription enrichment skipped: %s", e)
+                for u, data in users_map.items():
+                    data.setdefault("subscription", None)
+
             return list(users_map.values())
     finally:
         conn.close()
@@ -1607,6 +1644,278 @@ def get_user_detail(username: str, _: str = Depends(authenticate_admin)):
             }
     finally:
         conn.close()
+
+@app.get("/radius/api/users/{username}/overview", tags=["Users"])
+@app.get("/api/users/{username}/overview", tags=["Users"])
+def get_user_overview(username: str, _: str = Depends(authenticate_admin)):
+    """Full subscriber dossier for the Users-table detail popup.
+
+    Returns identity + group, active subscription (plan, expiry, remaining),
+    recent payments/subscriptions, usage stats, verified + seen devices,
+    live sessions and recent auth history with reject reasons.
+    Passwords are never returned.
+    """
+    uname = validate_username(username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT rc.username, rug.groupname
+                FROM radcheck rc
+                LEFT JOIN radusergroup rug ON rc.username = rug.username
+                WHERE rc.username = %s LIMIT 1
+            """, (uname,))
+            id_row = cur.fetchone()
+            if not id_row:
+                raise HTTPException(status_code=404, detail=f"User '{uname}' not found.")
+            group = id_row.get("groupname")
+
+            # Central user id (may be missing for legacy radcheck-only users)
+            user_id = None
+            try:
+                cur.execute("SELECT id, status FROM users WHERE username = %s LIMIT 1", (uname,))
+                u_row = cur.fetchone()
+                if u_row:
+                    user_id = u_row["id"]
+            except Exception:
+                u_row = None
+
+            # Subscriptions (latest 10, active first)
+            subscriptions = []
+            active_sub = None
+            try:
+                if user_id is not None:
+                    cur.execute("""
+                        SELECT s.id, s.starts_at, s.expires_at, s.status,
+                               p.id AS plan_id, p.name AS plan_name, p.price AS plan_price,
+                               p.validity_days AS plan_validity_days,
+                               pay.amount AS pay_amount, pay.gateway AS pay_gateway,
+                               pay.gateway_payment_id AS pay_ref
+                        FROM subscriptions s
+                        LEFT JOIN plans p ON s.plan_id = p.id
+                        LEFT JOIN payments pay ON s.payment_id = pay.id
+                        WHERE s.user_id = %s
+                        ORDER BY CASE WHEN s.status = 'ACTIVE' AND s.expires_at > CURRENT_TIMESTAMP THEN 0 ELSE 1 END,
+                                 s.expires_at DESC
+                        LIMIT 10
+                    """, (user_id,))
+                    for r in cur.fetchall():
+                        def _iso(v):
+                            return v.isoformat() if hasattr(v, "isoformat") else (str(v) if v else None)
+                        def _ms(v):
+                            try:
+                                return int(v.timestamp() * 1000) if hasattr(v, "timestamp") else None
+                            except Exception:
+                                return None
+                        item = {
+                            "id": r["id"],
+                            "plan_id": r.get("plan_id"),
+                            "plan_name": r.get("plan_name") or "Custom Pass",
+                            "plan_price": float(r["plan_price"]) if r.get("plan_price") is not None else None,
+                            "plan_validity_days": r.get("plan_validity_days"),
+                            "starts_at": _iso(r.get("starts_at")),
+                            "expires_at": _iso(r.get("expires_at")),
+                            "expires_at_epoch_ms": _ms(r.get("expires_at")),
+                            "status": r.get("status"),
+                            "payment_amount": float(r["pay_amount"]) if r.get("pay_amount") is not None else None,
+                            "payment_gateway": r.get("pay_gateway"),
+                            "payment_ref": r.get("pay_ref"),
+                        }
+                        subscriptions.append(item)
+                    active_sub = next((s for s in subscriptions
+                                       if s["status"] == "ACTIVE"), None)
+            except Exception as e:
+                logger.debug("overview subscriptions skipped for %s: %s", uname, e)
+
+            # Payments (latest 10)
+            payments = []
+            try:
+                if user_id is not None:
+                    cur.execute("""
+                        SELECT p.id, p.plan_id, COALESCE(pl.name, 'Custom Pass') AS plan_name,
+                               p.gateway, p.gateway_payment_id, p.amount, p.status,
+                               p.verified_at, p.created_at
+                        FROM payments p
+                        LEFT JOIN plans pl ON p.plan_id = pl.id
+                        WHERE p.user_id = %s
+                        ORDER BY p.created_at DESC LIMIT 10
+                    """, (user_id,))
+                    for r in cur.fetchall():
+                        def _iso2(v):
+                            return v.isoformat() if hasattr(v, "isoformat") else (str(v) if v else None)
+                        payments.append({
+                            "id": r["id"],
+                            "plan_name": r.get("plan_name"),
+                            "gateway": r.get("gateway"),
+                            "reference": r.get("gateway_payment_id"),
+                            "amount": float(r["amount"]) if r.get("amount") is not None else 0.0,
+                            "status": r.get("status"),
+                            "created_at": _iso2(r.get("created_at")),
+                        })
+            except Exception as e:
+                logger.debug("overview payments skipped for %s: %s", uname, e)
+
+            # Live sessions
+            live_sessions = []
+            try:
+                cur.execute("""
+                    SELECT radacctid, acctsessionid, nasipaddress::text AS nas_ip,
+                           framedipaddress::text AS framed_ip, callingstationid,
+                           acctstarttime, acctinputoctets, acctoutputoctets
+                    FROM radacct WHERE username = %s AND acctstoptime IS NULL
+                    ORDER BY radacctid DESC LIMIT 20
+                """, (uname,))
+                for r in cur.fetchall():
+                    st = r.get("acctstarttime")
+                    live_sessions.append({
+                        "radacctid": r.get("radacctid"),
+                        "acctsessionid": r.get("acctsessionid"),
+                        "nas_ip": r.get("nas_ip"),
+                        "framed_ip": r.get("framed_ip"),
+                        "mac": r.get("callingstationid"),
+                        "started_at": st.isoformat() if hasattr(st, "isoformat") else (str(st) if st else None),
+                        "in_octets": int(r.get("acctinputoctets") or 0),
+                        "out_octets": int(r.get("acctoutputoctets") or 0),
+                    })
+            except Exception:
+                pass
+
+            # Recent auth history (with reject reason, never passwords)
+            auth_history = []
+            try:
+                cur.execute("SELECT 1 FROM information_schema.columns WHERE table_name='radpostauth' AND column_name='reason'")
+                has_reason = bool(cur.fetchone())
+                q = "SELECT username, reply, authdate" + (", reason" if has_reason else "") + " FROM radpostauth WHERE username = %s ORDER BY id DESC LIMIT 15"
+                cur.execute(q, (uname,))
+                for r in cur.fetchall():
+                    ts = r.get("authdate")
+                    auth_history.append({
+                        "reply": r.get("reply") or "—",
+                        "reason": (r.get("reason") if has_reason else None),
+                        "at": ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else None),
+                    })
+            except Exception:
+                pass
+
+            # Usage totals (upload/download/sessions) from radacct
+            usage = {"total_sessions": 0, "up_bytes": 0, "down_bytes": 0, "total_hours": 0.0}
+            try:
+                cur.execute("""
+                    SELECT COUNT(*) AS n,
+                           COALESCE(SUM(acctinputoctets),0)::bigint AS up_b,
+                           COALESCE(SUM(acctoutputoctets),0)::bigint AS down_b,
+                           COALESCE(SUM(acctsessiontime),0)::bigint AS secs
+                    FROM radacct WHERE username = %s
+                """, (uname,))
+                ur = cur.fetchone() or {}
+                usage = {
+                    "total_sessions": int(ur.get("n") or 0),
+                    "up_bytes": int(ur.get("up_b") or 0),
+                    "down_bytes": int(ur.get("down_b") or 0),
+                    "total_hours": round(int(ur.get("secs") or 0) / 3600, 2),
+                }
+            except Exception:
+                pass
+
+            # Seen devices (from accounting Calling-Station-Id)
+            seen_devices = []
+            try:
+                cur.execute("""
+                    SELECT callingstationid AS mac, COUNT(*) AS sessions,
+                           MAX(acctstarttime) AS last_seen
+                    FROM radacct
+                    WHERE username = %s AND callingstationid IS NOT NULL AND callingstationid <> ''
+                    GROUP BY callingstationid ORDER BY last_seen DESC NULLS LAST LIMIT 20
+                """, (uname,))
+                for r in cur.fetchall():
+                    ls = r.get("last_seen")
+                    seen_devices.append({
+                        "mac": r.get("mac"),
+                        "sessions": int(r.get("sessions") or 0),
+                        "last_seen": ls.isoformat() if hasattr(ls, "isoformat") else (str(ls) if ls else None),
+                    })
+            except Exception:
+                pass
+
+            # Verified devices (MAC allowlist)
+            verified = {"require_verified": False, "devices": []}
+            try:
+                cur.execute("SELECT require_verified FROM user_device_policy WHERE username = %s", (uname,))
+                pr = cur.fetchone()
+                if pr:
+                    verified["require_verified"] = bool(pr.get("require_verified"))
+                cur.execute("SELECT mac, label, added_at FROM verified_devices WHERE username = %s ORDER BY added_at DESC LIMIT 50", (uname,))
+                for r in cur.fetchall():
+                    at = r.get("added_at")
+                    verified["devices"].append({
+                        "mac": r.get("mac"),
+                        "label": r.get("label"),
+                        "added_at": at.isoformat() if hasattr(at, "isoformat") else (str(at) if at else None),
+                    })
+            except Exception:
+                pass
+
+            cert_path = os.path.join(CLIENT_CERTS_DIR, f"{uname}.p12")
+            return {
+                "username": uname,
+                "group": group,
+                "status": (u_row.get("status") if u_row else "ACTIVE"),
+                "has_certificate": os.path.exists(cert_path),
+                "active_subscription": active_sub,
+                "subscriptions": subscriptions,
+                "payments": payments,
+                "usage": usage,
+                "verified_devices": verified,
+                "seen_devices": seen_devices,
+                "live_sessions": live_sessions,
+                "auth_history": auth_history,
+            }
+    finally:
+        conn.close()
+
+@app.get("/radius/api/me/overview", tags=["Self Service"])
+@app.get("/api/me/overview", tags=["Self Service"])
+def get_my_overview(caller: str = Depends(authenticate_self)):
+    """Own subscriber dossier (subscription, usage, payments, devices,
+    sessions, auth history). Users can ONLY see themselves; admins calling
+    this get their own account, never another user's."""
+    return get_user_overview(username=caller, _=caller)
+
+
+@app.post("/radius/api/me/password", tags=["Self Service"])
+@app.post("/api/me/password", tags=["Self Service"])
+def change_own_password(payload: SelfPasswordChangeRequest, request: Request, caller: str = Depends(authenticate_self)):
+    """Change your own Wi-Fi password (current-password proof required).
+
+    Keeps the current session alive. Plaintext passwords are never logged.
+    """
+    uname = validate_username(caller)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT rc.username, rc.attribute, rc.value FROM radcheck rc "
+                "WHERE rc.username = %s AND rc.attribute LIKE '%%Password'",
+                (uname,),
+            )
+            row = cur.fetchone()
+            if not row or not secrets.compare_digest(str(row["value"]), payload.current_password):
+                raise HTTPException(status_code=401, detail="Current password is incorrect.")
+            validate_password_policy(payload.new_password, uname)
+            attr = row["attribute"] or "Cleartext-Password"
+            cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (uname,))
+            cur.execute(
+                "INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, %s, ':=', %s)",
+                (uname, attr, payload.new_password),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    info = password_strength(payload.new_password)
+    log_audit(uname, "self_password_change", uname, f"strength={info['strength']}")
+    logger.info("Self-service password change username=%s strength=%s", uname, info["strength"])
+    return {"status": "success", "message": "Your Wi-Fi password was updated successfully."}
+
 
 @app.post("/radius/api/users/password/generate", tags=["Users"])
 @app.post("/api/users/password/generate", tags=["Users"])
@@ -1897,10 +2206,14 @@ def generate_guest_user(payload: Optional[GuestUserGenerateRequest] = None, admi
             # 2. Generate secure policy-compliant password
             password = generate_secure_password(length=14, use_symbols=True, exclude_ambiguous=True)
             
-            # 3. Compute timestamps and FreeRADIUS standard Expiration format ("03 Oct 2026 01:14:00")
+            # 3. Compute timestamps from UTC epoch (never wall-clock math).
+            # FreeRADIUS `expiration` parses Expiration in the daemon's local
+            # zone, so the container runs TZ=UTC (Dockerfile + entrypoint pin)
+            # and this string is formatted from gmtime(epoch) explicitly.
             now = datetime.datetime.now(datetime.timezone.utc)
             expires_at = now + datetime.timedelta(seconds=validity_sec)
-            expiration_str = expires_at.strftime("%d %b %Y %H:%M:%S")
+            expires_epoch_ms = int(expires_at.timestamp() * 1000)
+            expiration_str = time.strftime("%d %b %Y %H:%M:%S", time.gmtime(expires_epoch_ms // 1000))
             
             # 4. Insert into FreeRADIUS radcheck (Cleartext-Password & Expiration check attribute)
             cur.execute("DELETE FROM radcheck WHERE username = %s", (username,))
@@ -1928,11 +2241,26 @@ def generate_guest_user(payload: Optional[GuestUserGenerateRequest] = None, admi
                 VALUES (%s, 'Session-Timeout', '=', %s)
             """, (username, str(session_timeout)))
             
-            # 7. Record in central users & subscriptions tables (best-effort)
+            # 7. Record in central users, 0-Rs guest sale + subscription (so
+            # recharge-gated groups see a valid entitlement, not "no subscription").
+            # Best-effort: RADIUS radcheck above is authoritative; ledger must not fail guest creation.
+            guest_payment_id = None
+            guest_plan_id = None
             try:
-                cur.execute("SELECT id FROM groups WHERE name = %s", (group_name,))
+                cur.execute("SELECT id FROM groups WHERE UPPER(name) = UPPER(%s) LIMIT 1", (group_name,))
                 g_row = cur.fetchone()
+                if not g_row:
+                    # Fall back to GUEST / FREE central group (case-insensitive)
+                    cur.execute("SELECT id FROM groups WHERE UPPER(name) IN ('GUEST', 'GUESTS', 'FREE') ORDER BY CASE WHEN UPPER(name) LIKE 'GUEST%' THEN 0 ELSE 1 END LIMIT 1")
+                    g_row = cur.fetchone()
                 g_id = g_row["id"] if g_row else None
+                # Resolve 1-day plan for ledger linkage (validity_days=1, cheapest first)
+                try:
+                    cur.execute("SELECT id FROM plans WHERE validity_days = 1 ORDER BY price ASC LIMIT 1")
+                    p_row = cur.fetchone()
+                    guest_plan_id = p_row["id"] if p_row else None
+                except Exception:
+                    guest_plan_id = None
                 cur.execute("""
                     INSERT INTO users (username, password_hash, group_id, status)
                     VALUES (%s, %s, %s, 'ACTIVE')
@@ -1942,10 +2270,23 @@ def generate_guest_user(payload: Optional[GuestUserGenerateRequest] = None, admi
                 u_row = cur.fetchone()
                 if u_row:
                     uid = u_row["id"]
+                    guest_ref = f"GUEST-{username}-{int(time.time())}"
+                    try:
+                        cur.execute("""
+                            INSERT INTO payments (user_id, plan_id, gateway, gateway_order_id, gateway_payment_id,
+                                                  amount, currency, status, verified_at, raw_reference)
+                            VALUES (%s, %s, 'GUEST', %s, %s, 0.00, 'INR', 'SUCCESS', CURRENT_TIMESTAMP, %s)
+                            RETURNING id
+                        """, (uid, guest_plan_id, f"1-click guest {dur_label} by {admin_user}",
+                              guest_ref, f"Complimentary 1-click guest pass ({dur_label}), 0 Rs sale"))
+                        guest_payment_id = cur.fetchone()["id"]
+                    except Exception as pay_err:
+                        logger.debug("Guest 0-Rs payment write skipped: %s", pay_err)
+                        guest_payment_id = None
                     cur.execute("""
-                        INSERT INTO subscriptions (user_id, starts_at, expires_at, status)
-                        VALUES (%s, %s, %s, 'ACTIVE')
-                    """, (uid, now, expires_at))
+                        INSERT INTO subscriptions (user_id, plan_id, starts_at, expires_at, status, payment_id)
+                        VALUES (%s, %s, %s, %s, 'ACTIVE', %s)
+                    """, (uid, guest_plan_id, now, expires_at, guest_payment_id))
             except Exception as sub_err:
                 logger.debug("Central subscription write skipped: %s", sub_err)
             
@@ -1961,6 +2302,7 @@ def generate_guest_user(payload: Optional[GuestUserGenerateRequest] = None, admi
                 "duration_label": dur_label,
                 "validity_seconds": validity_sec,
                 "expires_at": expires_at.isoformat(),
+                "expires_at_epoch_ms": expires_epoch_ms,
                 "expiration_str": expiration_str,
                 "message": f"Guest user '{username}' created successfully with {dur_label} access (expires {expiration_str})."
             }
@@ -2429,69 +2771,14 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
 # Wi-Fi Plans & Pricing Management
 # ============================================================================
 def ensure_plans_table():
+    """Deprecated shim — schema + seeds owned by api/migrations/001_baseline.sql.
+
+    No legacy price rewrites: this project has no legacy system, plans are
+    seeded once as ₹10 / ₹30 / ₹51.35 and edited only via the Plans API.
+    """
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS plans (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(64) NOT NULL,
-                    price NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
-                    currency VARCHAR(8) NOT NULL DEFAULT 'INR',
-                    validity_days INT NOT NULL DEFAULT 1,
-                    validity_seconds BIGINT NOT NULL DEFAULT 86400,
-                    max_session_seconds INT NOT NULL DEFAULT 86400,
-                    description TEXT,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-            # Ensure columns exist if table was created by older schema
-            cur.execute("""
-                ALTER TABLE plans ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'INR';
-                ALTER TABLE plans ADD COLUMN IF NOT EXISTS validity_days INT NOT NULL DEFAULT 1;
-                ALTER TABLE plans ADD COLUMN IF NOT EXISTS validity_seconds BIGINT NOT NULL DEFAULT 86400;
-                ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_session_seconds INT NOT NULL DEFAULT 86400;
-            """)
-            # Check if empty or only older dummy plans, seed/update standard pricing
-            cur.execute("SELECT COUNT(*) as c FROM plans")
-            row = cur.fetchone()
-            if row and row["c"] == 0:
-                cur.execute("""
-                    INSERT INTO plans (name, price, currency, validity_days, validity_seconds, max_session_seconds, description)
-                    VALUES 
-                    ('1 Day Daily Pass', 10.00, 'INR', 1, 86400, 86400, 'Emergency 24-hour unlimited high-speed access (₹10/day)'),
-                    ('7 Days Weekly Pass', 30.00, 'INR', 7, 604800, 86400, '7 Days high-speed broadband access (₹4.28/day — Save 57% vs Daily)'),
-                    ('30 Days Monthly Unlimited', 51.35, 'INR', 30, 2592000, 86400, 'Best Value! Full 30 days unlimited Wi-Fi at ₹1.71/day (₹50 base + 2.7% PG gateway fee)')
-                """)
-            else:
-                # Migrate older default seeds if present
-                cur.execute("""
-                    UPDATE plans SET 
-                        name = '1 Day Daily Pass', 
-                        price = 10.00, 
-                        validity_days = 1, 
-                        validity_seconds = 86400, 
-                        description = 'Emergency 24-hour unlimited high-speed access (₹10/day)'
-                    WHERE (id = 1 AND price = 20.00) OR name = '1 Day Pass';
-
-                    UPDATE plans SET 
-                        name = '7 Days Weekly Pass', 
-                        price = 30.00, 
-                        validity_days = 7, 
-                        validity_seconds = 604800, 
-                        description = '7 Days high-speed broadband access (₹4.28/day — Save 57% vs Daily)'
-                    WHERE (id = 2 AND price = 100.00) OR name = '7 Days (Weekly)';
-
-                    UPDATE plans SET 
-                        name = '30 Days Monthly Unlimited', 
-                        price = 51.35, 
-                        validity_days = 30, 
-                        validity_seconds = 2592000, 
-                        description = 'Best Value! Full 30 days unlimited Wi-Fi at ₹1.71/day (₹50 base + 2.7% PG gateway fee)'
-                    WHERE (id = 3 AND price = 250.00) OR name = '30 Days (Monthly)';
-                """)
-            conn.commit()
-        conn.close()
+        from api.migrate import ensure_migrated
+        ensure_migrated()
     except Exception as e:
         logger.debug("Could not ensure plans table: %s", e)
 
@@ -2585,8 +2872,8 @@ def list_payments(
     _: str = Depends(authenticate_admin)
 ):
     """List payment transactions with associated user, plan, gateway, and financial analytics."""
-    from api.db_init import init_all_tables
-    init_all_tables()
+    from api.migrate import ensure_migrated
+    ensure_migrated()
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -2674,15 +2961,30 @@ def list_payments(
 @app.post("/api/payments/manual-activate", tags=["Payments"])
 def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: str = Depends(authenticate_admin)):
     """1-Click manual top-up & plan activation via UTR, Note, or Cash collection."""
-    from api.db_init import init_all_tables
+    from api.migrate import ensure_migrated
     from api.entitlements import process_verified_payment
-    init_all_tables()
-    ensure_plans_table()
-    
-    uname = validate_username(payload.username)
-    conn = get_db_connection()
+    ensure_migrated()
+
+    uname = validate_username((payload.username or "").strip())
+    # Normalize + validate validity_days (default 30, cap 1..3650)
+    validity_days = payload.validity_days if payload.validity_days and payload.validity_days > 0 else 30
+    validity_days = max(1, min(int(validity_days), 3650))
+    # Normalize UTR / note (DB columns are VARCHAR(128))
+    raw_utr = (payload.utr or "").strip().replace(" ", "")
+    payment_ref = raw_utr[:128] if raw_utr else f"MANUAL-{uname}-{int(time.time())}"
+    note_text = (payload.note or "").strip()[:128]
+    gateway_name = (payload.gateway or "MANUAL_ADMIN").strip()[:64] or "MANUAL_ADMIN"
+
+    conn = None
     try:
+        conn = get_db_connection()
         with conn.cursor() as cur:
+            # Validate plan_id up-front to avoid FK violation (payments.plan_id -> plans.id)
+            effective_plan_id = payload.plan_id
+            if effective_plan_id is not None:
+                cur.execute("SELECT id FROM plans WHERE id = %s LIMIT 1", (effective_plan_id,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail=f"Plan ID {effective_plan_id} not found.")
             # Check or auto-provision in users table
             cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1", (uname,))
             u_row = cur.fetchone()
@@ -2706,32 +3008,39 @@ def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: s
 
             conn.commit()
 
-        # Generate unique payment ref if UTR not supplied
-        payment_ref = payload.utr.strip() if payload.utr and payload.utr.strip() else f"MANUAL-{uname}-{int(time.time())}"
-        
-        validity_secs = (payload.validity_days * 86400) if payload.validity_days and payload.validity_days > 0 else None
-        
+        validity_secs = validity_days * 86400
+
         result = process_verified_payment(
-            gateway=payload.gateway or "MANUAL_ADMIN",
+            gateway=gateway_name,
             gateway_payment_id=payment_ref,
-            gateway_order_id=payload.note or f"Manual activation by {admin_user}",
+            gateway_order_id=note_text or f"Manual activation by {admin_user}",
             user_id=user_id,
-            plan_id=payload.plan_id,
+            plan_id=effective_plan_id,
             amount=payload.amount,
             currency="INR",
             custom_validity_seconds=validity_secs,
-            raw_reference=f"Manual Admin Top-up by {admin_user}: note={payload.note or ''}",
+            raw_reference=f"Manual Admin Top-up by {admin_user}: note={note_text}",
             actor_type="ADMIN",
             ip="127.0.0.1"
         )
-        log_audit(admin_user, "MANUAL_PAYMENT_ACTIVATED", uname, f"amount={payload.amount} ref={payment_ref} plan_id={payload.plan_id} validity_days={payload.validity_days}")
+        log_audit(admin_user, "MANUAL_PAYMENT_ACTIVATED", uname, f"amount={payload.amount} ref={payment_ref} plan_id={effective_plan_id} validity_days={validity_days}")
+        if result.get("status") == "duplicate_acknowledged":
+            return {
+                "status": "success",
+                "message": f"Payment '{payment_ref}' was already processed for user '{uname}' (idempotent replay).",
+                "details": result
+            }
         return {
             "status": "success",
             "message": f"Plan successfully activated for user '{uname}' (Ref: {payment_ref})",
             "details": result
         }
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 @app.post("/radius/api/payments/email/test", tags=["Payments"])
@@ -3754,30 +4063,10 @@ def pretty_mac(normalized: str) -> str:
 
 
 def ensure_device_tables() -> None:
+    """Deprecated shim — schema is owned by api/migrations via api/migrate.py."""
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS user_device_policy (
-                    username TEXT PRIMARY KEY,
-                    require_verified BOOLEAN NOT NULL DEFAULT FALSE,
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS verified_devices (
-                    username TEXT NOT NULL,
-                    mac TEXT NOT NULL,
-                    label TEXT,
-                    added_by TEXT,
-                    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (username, mac)
-                )
-            """)
-            # Reject-reason column for the auth history (safe on existing DBs).
-            cur.execute("ALTER TABLE radpostauth ADD COLUMN IF NOT EXISTS reason TEXT")
-            conn.commit()
-        conn.close()
+        from api.migrate import ensure_migrated
+        ensure_migrated()
     except Exception as e:
         logger.warning("Could not ensure device tables: %s", e)
 
@@ -4431,7 +4720,10 @@ def test_radius_authentication(payload: AuthTestRequest, request: Request, _: st
     check_rate_limit(request, "test-auth", RL_TEST_AUTH_PER_MIN)
     validate_username(payload.username)
     nas_ip = validate_nas_ip(payload.nas_ip or "127.0.0.1")
+    # Server-side secret is authoritative — a client-supplied secret is only
+    # honored for advanced NAS setups; the UI no longer asks for it.
     secret = payload.secret or RADIUS_SECRET
+    secret_source = "custom" if payload.secret else "server-default"
     if payload.calling_station_id:
         mac = normalize_mac(payload.calling_station_id)
         if not mac:
@@ -4456,13 +4748,17 @@ def test_radius_authentication(payload: AuthTestRequest, request: Request, _: st
             "success": success,
             "status": verdict,
             "output": output.strip(),
-            "command": shown
+            "command": shown,
+            "nas_ip": nas_ip,
+            "secret_source": secret_source
         }
     except subprocess.TimeoutExpired:
         return {
             "success": False,
             "status": "Timeout",
-            "output": "RADIUS authentication timed out. Make sure the FreeRADIUS daemon is running and listening on UDP 1812."
+            "output": "RADIUS authentication timed out. Make sure the FreeRADIUS daemon is running and listening on UDP 1812.",
+            "nas_ip": nas_ip,
+            "secret_source": secret_source
         }
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="radtest/radclient binary not found on server.")
