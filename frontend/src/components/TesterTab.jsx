@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Play, Terminal, Shield, CheckCircle2, XCircle, Clock, 
+import {
+  Play, Terminal, Shield, CheckCircle2, XCircle, Clock,
   RefreshCw, Cpu, Server, Smartphone, Key, AlertCircle
 } from 'lucide-react';
 import { fetchJson } from '../utils/api';
 
-export default function TesterTab({ onNotify }) {
+export default function TesterTab({ onNotify, initialUsername = '' }) {
   const [form, setForm] = useState({
-    username: '',
+    username: initialUsername || '',
     password: '',
     nas_ip: '127.0.0.1',
     calling_station_id: ''
@@ -21,6 +21,14 @@ export default function TesterTab({ onNotify }) {
       setUsers(list.map(x => x.username).filter(Boolean));
     }).catch(() => {});
   }, []);
+
+  // Deep-link from Users table test button: prefill + focus password
+  useEffect(() => {
+    if (initialUsername) {
+      setForm(prev => ({ ...prev, username: initialUsername }));
+      setResult(null);
+    }
+  }, [initialUsername]);
 
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);

@@ -329,10 +329,11 @@ export default function UsersTab({
 
   const handleTestAuth = async (username) => {
     if (propOnTestAuth) {
+      // Jump to the RADIUS tester with this user prefilled
       propOnTestAuth(username);
       return;
     }
-    // Real test needs the secret: prompt for it (stored passwords are hashes).
+    // Fallback when embedded without a tester tab: prompt + test inline.
     setAuthTest({ username, password: '', result: null, loading: false });
   };
 
@@ -712,7 +713,7 @@ export default function UsersTab({
                   </button>
                   <button
                     onClick={() => handleTestAuth(user.username)}
-                    title="Test RADIUS Auth"
+                    title="Open in RADIUS tester"
                     className="p-1.5 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 rounded-lg transition-colors"
                   >
                     <Play className="w-4 h-4" />

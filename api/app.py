@@ -939,15 +939,19 @@ class SelfPasswordChangeRequest(BaseModel):
     new_password: str = Field(..., min_length=1, max_length=128)
 
 async def _periodic_expiry_worker_loop():
-    """Background worker loop: checks database for expired subscriptions and sends RFC 5176 CoA disconnects."""
+    """Background worker loop: expires subscriptions (RFC 5176 CoA kicks) and
+    auto-deletes expired captive-portal guest accounts that never recharged."""
     logger.info("Background session expiry worker started (RFC 5176 CoA / DB Entitlements).")
     while True:
         try:
             await asyncio.sleep(60)
-            from api.entitlements import run_periodic_expiry_worker
+            from api.entitlements import run_periodic_expiry_worker, cleanup_expired_guest_accounts
             count = run_periodic_expiry_worker()
             if count:
                 logger.info("Periodic expiry worker: disconnected/expired %s past-due user session(s)", count)
+            purged = cleanup_expired_guest_accounts()
+            if purged:
+                logger.info("Periodic expiry worker: auto-deleted %s expired guest account(s)", purged)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -3308,6 +3312,7 @@ def scan_email_payments(payload: EmailScanRequest, admin_user: str = Depends(aut
                 utr = item["utr"]
                 amt = item.get("amount") or 0.0
                 plan_id = item.get("plan_id")
+                invoice = item.get("invoice")
                 
                 try:
                     c = get_db_connection()
@@ -3350,12 +3355,12 @@ def scan_email_payments(payload: EmailScanRequest, admin_user: str = Depends(aut
                     p_res = process_verified_payment(
                         gateway="EMAIL_IMAP",
                         gateway_payment_id=f"UTR-{utr}",
-                        gateway_order_id=f"Note: {uname}",
+                        gateway_order_id=(f"WIFI:{uname}:{invoice}:{plan_id}" if invoice else f"Note: {uname}"),
                         user_id=uid,
                         plan_id=plan_id,
                         amount=amt,
                         currency="INR",
-                        raw_reference=f"Parsed from: {item.get('from', '')} | Subject: {item.get('subject', '')}",
+                        raw_reference=f"Parsed from: {item.get('from', '')} | Subject: {item.get('subject', '')} | invoice={invoice or '-'}",
                         actor_type="WEBHOOK",
                         ip="127.0.0.1"
                     )
@@ -3363,6 +3368,7 @@ def scan_email_payments(payload: EmailScanRequest, admin_user: str = Depends(aut
                         "utr": utr,
                         "username": uname,
                         "amount": amt,
+                        "invoice": invoice,
                         "status": p_res.get("status")
                     })
                 except Exception as e:
@@ -5288,11 +5294,19 @@ def portal_login(payload: PortalDownloadRequest):
 @app.post("/radius/api/portal/create-guest-pass", tags=["Captive Portal"])
 @app.post("/api/portal/create-guest-pass", tags=["Captive Portal"])
 def portal_create_guest_pass(request: Request):
-    """Generate a temporary 1-day guest account with random credentials."""
+    """Generate a temporary 1-day guest account with random credentials.
+
+    No subscription is granted — the pass must be recharged to stay usable.
+    A 24h FreeRADIUS Expiration is stamped so the account stops working AND
+    is later auto-deleted by the expiry worker (see cleanup_expired_guests).
+    """
     check_rate_limit(request, "guest-pass", 10)
     guest_id = "guest_" + "".join(secrets.choice(string.digits) for _ in range(6))
     guest_pass = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
-    
+    # UTC wall-time Expiration (container runs TZ=UTC; parsed back the same way)
+    expires_epoch = int(time.time()) + 86400
+    expiration_str = time.strftime("%d %b %Y %H:%M:%S", time.gmtime(expires_epoch))
+
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -5300,6 +5314,11 @@ def portal_create_guest_pass(request: Request):
             cur.execute(
                 "INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, 'Cleartext-Password', ':=', %s)",
                 (guest_id, guest_pass)
+            )
+            # 24-hour hard expiry (RADIUS-level reject after this)
+            cur.execute(
+                "INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, 'Expiration', ':=', %s)",
+                (guest_id, expiration_str)
             )
             # Insert into radusergroup as 'guests'
             cur.execute(
@@ -5315,7 +5334,7 @@ def portal_create_guest_pass(request: Request):
             conn.commit()
     finally:
         conn.close()
-        
+
     return {
         "status": "success",
         "username": guest_id,
@@ -5324,6 +5343,8 @@ def portal_create_guest_pass(request: Request):
         "max_session_hours": 24,
         "group": "guests",
         "is_guest": True,
+        "expires_at_epoch_ms": expires_epoch * 1000,
+        "expiration": expiration_str,
         "message": "Guest pass created successfully. Valid for 1-day plans only."
     }
 

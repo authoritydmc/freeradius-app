@@ -227,3 +227,33 @@ def test_onboarding_invite_with_password_and_wifi_url():
     assert "portalUrlFor" in cred and "window.location.origin" not in cred
     qr = Path("frontend/src/components/WifiQrModal.jsx").read_text(encoding="utf-8")
     assert "portalUrlFor" in qr
+
+
+def test_upi_invoice_note_and_guest_lifecycle():
+    from api.payment_engine import parse_bank_upi_text
+    # New canonical note carries username + invoice + plan
+    r = parse_bank_upi_text("Rs. 51.35 credited by UPI/CRED/123456789012/WIFI:guest-9185:20261002-K7Q2:3.")
+    assert r["matched"] is True
+    assert r["username"] == "guest-9185"
+    assert r["invoice"] == "20261002-K7Q2"
+    assert r["plan_id"] == 3
+    # Legacy notes keep parsing exactly as before
+    old = parse_bank_upi_text("Rs. 30.0 credited Ref No 987654321098 Note wifi:aman.")
+    assert (old["username"], old["plan_id"], old["invoice"]) == ("aman", None, None)
+    old2 = parse_bank_upi_text("Rs. 10 credited UTR 111122223333 wifi:raj:1")
+    assert (old2["username"], old2["plan_id"]) == ("raj", 1)
+    # Portal QR builds a spec-shaped UPI intent with the invoice note
+    portal = Path("frontend/src/components/PortalView.jsx").read_text(encoding="utf-8")
+    assert "WIFI:${u}:${getInvoice(plan.id, u)}:${plan.id}" in portal
+    assert "upi://pay?${params.toString()}" in portal
+    # Portal guests get a 24h Expiration and are auto-purged when it lapses
+    import inspect
+    from api.app import portal_create_guest_pass
+    from api.entitlements import cleanup_expired_guest_accounts
+    assert "Expiration" in inspect.getsource(portal_create_guest_pass)
+    assert "guest\\_%" in inspect.getsource(cleanup_expired_guest_accounts) or "guest\\\\_%" in inspect.getsource(cleanup_expired_guest_accounts)
+    # Table test-auth jumps to the tester with the user prefilled
+    users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
+    assert "propOnTestAuth(username)" in users_tab
+    tester = Path("frontend/src/components/TesterTab.jsx").read_text(encoding="utf-8")
+    assert "initialUsername" in tester

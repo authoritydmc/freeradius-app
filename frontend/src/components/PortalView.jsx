@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { 
   Wifi, Shield, Smartphone, Key, Download, CheckCircle2, 
@@ -110,6 +110,7 @@ export default function PortalView() {
         group: 'guests',
         is_guest: true,
         validity_days: 1,
+        expires_at_epoch_ms: res.expires_at_epoch_ms || (Date.now() + 86400000),
         created_at: Date.now()
       };
       saveAuthSession(session);
@@ -179,18 +180,51 @@ export default function PortalView() {
     setPaymentStatus(null);
     setTimeout(() => {
       setVerifyingPayment(false);
+      const who = payerUsername || authSession?.username || 'Guest';
+      const inv = selectedPlanForUpi ? getUpiNote(selectedPlanForUpi, who) : '';
       setPaymentStatus({
         status: 'submitted',
-        message: `Recharge request with Ref #${utrRef.trim()} recorded for user '${payerUsername || authSession?.username || 'Guest'}'. If your account isn't auto-activated in 2 minutes, WhatsApp your screenshot to support desk.`
+        message: `Recharge request with Ref #${utrRef.trim()} recorded for user '${who}'${inv ? ` (invoice ${inv})` : ''}. If your account isn't auto-activated in 2 minutes, WhatsApp your screenshot to support desk.`
       });
     }, 1200);
   };
 
+  // Machine-readable payment note for automated reconciliation.
+  // Format WIFI:<username>:<invoice>:<plan_id> — the invoice (date + random)
+  // ties the bank alert to one payment intent; the email/IMAP recon engine
+  // parses username + invoice + plan out of it. Memoized per plan+user so the
+  // QR, the guide text and the UTR claim below all show the SAME invoice.
+  // useRef (not state): values are stable across renders, no re-render needed.
+  const invoiceCache = useRef({});
+  const getInvoice = (planId, user = '') => {
+    const key = `${user}|${planId}`;
+    if (!invoiceCache.current[key]) {
+      const d = new Date();
+      const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+      const rand = Math.random().toString(36).slice(2, 6).toUpperCase().replace(/[^A-Z0-9]/g, 'X');
+      invoiceCache.current[key] = `${stamp}-${rand}`;
+    }
+    return invoiceCache.current[key];
+  };
+
+  const getUpiNote = (plan, user = '') => {
+    const u = String(user || '').trim().replace(/\s+/g, '');
+    return `WIFI:${u}:${getInvoice(plan.id, u)}:${plan.id}`;
+  };
+
   const getUpiUrl = (plan, user = '') => {
-    const userNote = user ? ` for ${user}` : '';
-    const note = encodeURIComponent(`${plan.name} WiFi Recharge${userNote}`);
-    const merchant = encodeURIComponent(upiMerchant);
-    return `upi://pay?pa=${encodeURIComponent(upiVpa)}&pn=${merchant}&am=${plan.price}&cu=INR&tn=${note}`;
+    const amount = Number(plan.price).toFixed(2);
+    const params = new URLSearchParams({
+      pa: upiVpa,
+      pn: upiMerchant,
+      mc: '0000',
+      mode: '02',
+      purpose: '00',
+      am: amount,
+      cu: 'INR',
+      tn: getUpiNote(plan, user)
+    });
+    return `upi://pay?${params.toString()}`;
   };
 
   return (
@@ -693,7 +727,7 @@ export default function PortalView() {
                   </div>
                   <ul className="list-disc list-inside space-y-0.5 pl-1 text-[11px] text-slate-400">
                     <li>Payee: <strong className="text-slate-200">{upiMerchant}</strong> (<span className="text-emerald-400 font-mono">{upiVpa}</span>)</li>
-                    <li>Remark / Note in UPI: <strong className="text-slate-200">{selectedPlanForUpi.name} for {payerUsername || authSession?.username}</strong></li>
+                    <li>Remark / Note in UPI (auto-filled, do not change): <strong className="text-emerald-300 font-mono">{getUpiNote(selectedPlanForUpi, payerUsername || authSession?.username)}</strong></li>
                     <li>Keep the 12-digit UTR / Transaction Reference Number handy after payment.</li>
                   </ul>
                 </div>

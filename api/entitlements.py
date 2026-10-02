@@ -474,6 +474,73 @@ def disconnect_active_radius_session(username: str, nas_ip: str = "127.0.0.1", s
         logging.warning(f"Could not disconnect session for {username}: {e}")
         return False
 
+def cleanup_expired_guest_accounts() -> int:
+    """Auto-delete expired captive-portal guest accounts (`guest_NNNNNN`).
+
+    Portal guests get no subscription at creation, so once their 24h
+    FreeRADIUS Expiration passes AND they hold no active subscription
+    (i.e. they never recharged), the account is fully removed: RADIUS rows,
+    device-lock rows, and the central users row when it has no payment
+    history. Admin-created `guest-XXXX` accounts (dash pattern, ledger
+    backed) are never touched here.
+    Returns the number of accounts removed.
+    """
+    import datetime as _dt
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT rc.username AS username, e.value AS expiration
+                FROM radcheck rc
+                JOIN radcheck e ON e.username = rc.username AND e.attribute = 'Expiration'
+                WHERE rc.username LIKE 'guest\\_%' ESCAPE '\\'
+            """)
+            rows = cur.fetchall()
+
+            now = _dt.datetime.now(_dt.timezone.utc)
+            expired = []
+            for r in rows:
+                try:
+                    exp = _dt.datetime.strptime(r["expiration"], "%d %b %Y %H:%M:%S").replace(
+                        tzinfo=_dt.timezone.utc)
+                except (ValueError, TypeError, KeyError):
+                    continue
+                if exp <= now:
+                    expired.append(r["username"])
+
+            removed = 0
+            for uname in expired:
+                # Recharged guests became paying users — keep them.
+                cur.execute("""
+                    SELECT 1 FROM subscriptions s
+                    JOIN users u ON s.user_id = u.id
+                    WHERE u.username = %s AND s.status = 'ACTIVE' AND s.expires_at > CURRENT_TIMESTAMP
+                    LIMIT 1
+                """, (uname,))
+                if cur.fetchone():
+                    continue
+                cur.execute("DELETE FROM radreply WHERE username = %s", (uname,))
+                cur.execute("DELETE FROM radusergroup WHERE username = %s", (uname,))
+                cur.execute("DELETE FROM verified_devices WHERE username = %s", (uname,))
+                cur.execute("DELETE FROM user_device_policy WHERE username = %s", (uname,))
+                cur.execute("DELETE FROM radcheck WHERE username = %s", (uname,))
+                # Drop the central row only when it carries no payment history.
+                cur.execute("""
+                    DELETE FROM users u
+                    WHERE u.username = %s
+                      AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.user_id = u.id)
+                """, (uname,))
+                conn.commit()
+                removed += 1
+                log_audit_event(
+                    actor_type="SYSTEM", actor_id="EXPIRY_WORKER", event="GUEST_ACCOUNT_PURGED",
+                    target_type="USER", target_id=uname,
+                    metadata={"username": uname}, conn=conn,
+                )
+            return removed
+    finally:
+        conn.close()
+
 def run_periodic_expiry_worker():
     """Background worker: expires past-due subscriptions and kicks active sessions."""
     conn = get_db_connection()

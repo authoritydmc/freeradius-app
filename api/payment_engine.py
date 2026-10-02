@@ -104,23 +104,33 @@ def parse_bank_upi_text(text: str, subject: str = "") -> Dict[str, Any]:
         if standalone_12:
             utr = standalone_12.group(1)
 
-    # 3. Extract Note / Tag (e.g. wifi:aman:1, wifi:raj, RL-1234, username)
+    # 3. Extract Note / Tag.
+    # Canonical portal note: WIFI:<username>[:<invoice>][:<plan_id>]
+    #   e.g. WIFI:aman:20261002-K7Q2:3  (invoice ties the alert to one intent)
+    # Legacy notes (WIFI:aman:3, wifi:aman, RL-1234) still parse as before.
     note_username = None
     note_plan_id = None
+    note_invoice = None
 
-    # Check for explicit wifi/rl prefix first: wifi:username[:plan_id] or wifi-username
-    wifi_prefix_match = re.search(r"\b(?:wifi|rl)[\s:\-_/]+([a-zA-Z0-9_.@-]{2,64}(?::\d+)?)", combined, re.IGNORECASE)
+    # Check for explicit wifi/rl prefix first
+    wifi_prefix_match = re.search(r"\b(?:wifi|rl)[\s:\-_/]+([a-zA-Z0-9_.@-]{2,64}(?::[a-zA-Z0-9-]{1,24}){0,2})", combined, re.IGNORECASE)
     if wifi_prefix_match:
         raw_note = wifi_prefix_match.group(1).strip().rstrip(".,;:! ")
-        if ":" in raw_note:
-            parts = raw_note.split(":", 1)
-            note_username = parts[0].strip().rstrip(".,;:! ")
-            try:
-                note_plan_id = int(parts[1].rstrip(".,;:! "))
-            except ValueError:
-                pass
-        else:
-            note_username = raw_note
+        segments = raw_note.split(":")
+        note_username = segments[0].strip().rstrip(".,;:! ") or None
+        for tail in segments[1:]:
+            tail = tail.strip().rstrip(".,;:! ")
+            if not tail:
+                continue
+            if tail.isdigit():
+                # Pure digits = plan id (legacy WIFI:user:3 and new ...:invoice:3)
+                try:
+                    note_plan_id = int(tail)
+                except ValueError:
+                    pass
+            elif note_invoice is None:
+                # First non-numeric tail segment = invoice id
+                note_invoice = tail
     else:
         # Check for generic note/remark/for prefix
         generic_note_match = re.search(r"\b(?:note|remark|remarks|desc|msg)[\s:\-]+([a-zA-Z0-9_.@-]{2,64})", combined, re.IGNORECASE)
@@ -138,6 +148,7 @@ def parse_bank_upi_text(text: str, subject: str = "") -> Dict[str, Any]:
         "utr": utr,
         "username": note_username,
         "plan_id": note_plan_id,
+        "invoice": note_invoice,
         "matched": bool(amount and utr and note_username)
     }
 

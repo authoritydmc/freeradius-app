@@ -30,6 +30,12 @@ export default function App() {
   const [credModalData, setCredModalData] = useState(null);
   const [showChangelog, setShowChangelog] = useState(false);
   const [toast, setToast] = useState(null);
+  const [testerUsername, setTesterUsername] = useState('');
+
+  const jumpToTester = (username) => {
+    setTesterUsername(username || '');
+    setActiveTab('tester');
+  };
   const [health, setHealth] = useState({ status: 'healthy' });
   const [stats, setStats] = useState(null);
   const [signerStatus, setSignerStatus] = useState(null);
@@ -245,6 +251,7 @@ export default function App() {
             <UsersTab
               onNotify={showToast}
               onShowCredModal={setCredModalData}
+              onTestAuth={jumpToTester}
             />
           </ErrorBoundary>
         )}
@@ -286,7 +293,7 @@ export default function App() {
         )}
         {activeTab === 'tester' && (
           <ErrorBoundary scoped section="TesterTab" title="RADIUS Protocol Tester">
-            <TesterTab onNotify={showToast} />
+            <TesterTab onNotify={showToast} initialUsername={testerUsername} />
           </ErrorBoundary>
         )}
         {activeTab === 'logs' && (

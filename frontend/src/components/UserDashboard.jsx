@@ -227,7 +227,8 @@ export default function UserDashboard({ user, onLogout, onNotify }) {
           {!visiblePlans.length && <p className="text-[11px] text-slate-500 italic">No plans available for your group right now.</p>}
         </div>
         <p className="text-[11px] text-slate-400 mt-3">
-          Pay with Google Pay / PhonePe / Paytm in the portal using note <code className="text-indigo-300 font-mono">wifi:{username}</code> — activation is automatic after verification.
+          Pay with Google Pay / PhonePe / Paytm in the portal — keep the auto-filled remark
+          (<code className="text-indigo-300 font-mono">WIFI:{username}:planId</code>) untouched so activation is automatic after verification.
         </p>
       </Card>
 
