@@ -171,6 +171,19 @@ export default function CertsTab({
     }
   };
 
+  const handleCleanupOrphan = async (username) => {
+    if (!window.confirm(`Purge orphaned certificate files for '${username}'?`)) return;
+    try {
+      await fetchJson(`certs/${encodeURIComponent(username)}/revoke`, { method: 'POST' });
+      onNotify?.(`Purged orphan certificate files for '${username}'`, 'success');
+      loadData();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to purge orphan certificate files', 'error');
+    }
+  };
+
+  const onCleanupOrphan = propOnCleanupOrphan || handleCleanupOrphan;
+
   const handleDeleteCert = async (username) => {
     if (!window.confirm(`Are you sure you want to permanently DELETE the certificate bundle files for '${username}'?`)) return;
     try {

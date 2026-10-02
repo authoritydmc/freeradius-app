@@ -1,0 +1,23 @@
+#!/bin/bash
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+echo "🔍 [pre-push] 1/3 Running Frontend Lint & Build..."
+cd "$REPO_ROOT/frontend"
+npm run lint
+npm run build
+
+echo "🧪 [pre-push] 2/3 Running Backend Pytest Suite..."
+cd "$REPO_ROOT"
+if [ -f "/home/ubuntu/.venv/bin/pytest" ]; then
+    PYTHONPATH="$REPO_ROOT" /home/ubuntu/.venv/bin/pytest "$REPO_ROOT/tests" -q
+else
+    PYTHONPATH="$REPO_ROOT" pytest "$REPO_ROOT/tests" -q
+fi
+
+echo "🛡️ [pre-push] 3/3 Running Security Guards..."
+! grep -rn "shell=True" api/ --include="*.py" | grep -v "no shell=True anywhere" || (echo "FAIL: shell=True found"; exit 1)
+! grep -rni "whatever" api/app.py api/static/ || (echo "FAIL: well-known password literal"; exit 1)
+
+echo "✅ [pre-push] All test suites, linting, and security guards passed!"

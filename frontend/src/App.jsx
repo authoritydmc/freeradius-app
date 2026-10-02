@@ -15,6 +15,7 @@ import LoginView from './components/LoginView';
 import PortalView from './components/PortalView';
 import CredResultModal from './components/CredResultModal';
 import ChangelogModal from './components/ChangelogModal';
+import ErrorBoundary from './components/ErrorBoundary';
 import { getAuthToken, setAuthToken, removeAuthToken, getUserInfo, setUserInfo, fetchJson } from './utils/api';
 import { AlertCircle, CheckCircle2, Info, X, Sparkles, Wifi, Shield, ExternalLink } from 'lucide-react';
 
@@ -188,40 +189,76 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {activeTab === 'status' && (
-          <StatusTab 
-            health={health} 
-            stats={stats} 
-            signerStatus={signerStatus}
-            publicConfig={publicConfig}
-            onNotify={showToast} 
-            onJumpTab={setActiveTab} 
-          />
+          <ErrorBoundary scoped section="StatusTab" title="System Status Dashboard">
+            <StatusTab 
+              health={health} 
+              stats={stats} 
+              signerStatus={signerStatus}
+              publicConfig={publicConfig}
+              onNotify={showToast} 
+              onJumpTab={setActiveTab} 
+            />
+          </ErrorBoundary>
         )}
         {activeTab === 'users' && (
-          <UsersTab
-            onNotify={showToast}
-            onShowCredModal={setCredModalData}
-          />
+          <ErrorBoundary scoped section="UsersTab" title="User Management">
+            <UsersTab
+              onNotify={showToast}
+              onShowCredModal={setCredModalData}
+            />
+          </ErrorBoundary>
         )}
-        {activeTab === 'groups' && <GroupsTab onNotify={showToast} />}
-        {activeTab === 'nas' && <NasTab onNotify={showToast} />}
-        {activeTab === 'sessions' && <SessionsTab onNotify={showToast} />}
-        {activeTab === 'devices' && <DevicesTab onNotify={showToast} />}
+        {activeTab === 'groups' && (
+          <ErrorBoundary scoped section="GroupsTab" title="RADIUS Groups & Policies">
+            <GroupsTab onNotify={showToast} />
+          </ErrorBoundary>
+        )}
+        {activeTab === 'nas' && (
+          <ErrorBoundary scoped section="NasTab" title="NAS Clients & Routers">
+            <NasTab onNotify={showToast} />
+          </ErrorBoundary>
+        )}
+        {activeTab === 'sessions' && (
+          <ErrorBoundary scoped section="SessionsTab" title="Active Accounting Sessions">
+            <SessionsTab onNotify={showToast} />
+          </ErrorBoundary>
+        )}
+        {activeTab === 'devices' && (
+          <ErrorBoundary scoped section="DevicesTab" title="Known Client Devices">
+            <DevicesTab onNotify={showToast} />
+          </ErrorBoundary>
+        )}
         {activeTab === 'certs' && (
-          <CertsTab 
-            signerStatus={signerStatus}
-            onNotify={showToast} 
-          />
+          <ErrorBoundary scoped section="CertsTab" title="EAP-TLS Certificates">
+            <CertsTab 
+              signerStatus={signerStatus}
+              onNotify={showToast} 
+            />
+          </ErrorBoundary>
         )}
         {activeTab === 'payments' && (
-          <PaymentsTab 
-            onNotify={showToast} 
-            onJumpSettings={() => setActiveTab('settings')}
-          />
+          <ErrorBoundary scoped section="PaymentsTab" title="Payments & Reconciliation">
+            <PaymentsTab 
+              onNotify={showToast} 
+              onJumpSettings={() => setActiveTab('settings')}
+            />
+          </ErrorBoundary>
         )}
-        {activeTab === 'tester' && <TesterTab onNotify={showToast} />}
-        {activeTab === 'logs' && <LogsTab onNotify={showToast} />}
-        {activeTab === 'settings' && <SettingsTab onNotify={showToast} />}
+        {activeTab === 'tester' && (
+          <ErrorBoundary scoped section="TesterTab" title="RADIUS Protocol Tester">
+            <TesterTab onNotify={showToast} />
+          </ErrorBoundary>
+        )}
+        {activeTab === 'logs' && (
+          <ErrorBoundary scoped section="LogsTab" title="Security & Accounting Logs">
+            <LogsTab onNotify={showToast} />
+          </ErrorBoundary>
+        )}
+        {activeTab === 'settings' && (
+          <ErrorBoundary scoped section="SettingsTab" title="System Settings & Gateways">
+            <SettingsTab onNotify={showToast} />
+          </ErrorBoundary>
+        )}
       </main>
 
       {/* Enterprise Footer */}
