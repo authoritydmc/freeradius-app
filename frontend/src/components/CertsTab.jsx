@@ -71,16 +71,21 @@ export default function CertsTab({
     setTimeout(() => setCopiedFingerprint(false), 2000);
   };
 
+  const [internalUsers, setInternalUsers] = useState([]);
+  const [showIssuePassword, setShowIssuePassword] = useState(false);
+
   const loadData = async () => {
     try {
       setLoading(true);
-      const [cData, sData] = await Promise.all([
+      const [cData, sData, uData] = await Promise.all([
         fetchJson('certs'),
-        fetchJson('certs/signer-status')
+        fetchJson('certs/signer-status'),
+        fetchJson('users').catch(() => [])
       ]);
       setInternalCerts(cData?.certificates || cData || []);
       setInternalOrphans(cData?.orphans || []);
       setInternalSignerStatus(sData);
+      setInternalUsers(Array.isArray(uData) ? uData : (uData?.users || []));
     } catch (err) {
       onNotify?.(err.message || 'Failed to load certificate inventory', 'error');
     } finally {
@@ -97,6 +102,14 @@ export default function CertsTab({
   const certs = propCerts || internalCerts;
   const orphans = propOrphans || internalOrphans;
   const signerStatus = propSignerStatus || internalSignerStatus;
+  const users = internalUsers || [];
+
+  const handleGeneratePassword = () => {
+    const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%-_=+";
+    const pass = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    setIssueForm(prev => ({ ...prev, cert_password: pass }));
+    setShowIssuePassword(true);
+  };
 
   const handleOpenIssue = () => {
     setIssueForm({
@@ -105,6 +118,7 @@ export default function CertsTab({
       valid_days: 365,
       email: ''
     });
+    setShowIssuePassword(false);
     setIssueModalOpen(true);
   };
 
@@ -538,91 +552,178 @@ export default function CertsTab({
       {/* ---------------------------------------------------- */}
       {/* ISSUE CERTIFICATE MODAL */}
       {/* ---------------------------------------------------- */}
-      {issueModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-purple-500/30 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl relative overflow-hidden">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <KeyRound className="w-5 h-5 text-purple-400" />
-                <span>Issue EAP-TLS Client Certificate</span>
-              </h3>
-              <button onClick={() => setIssueModalOpen(false)} className="text-slate-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
+      {issueModalOpen && (() => {
+        const cleanUsername = (issueForm.username || '').trim();
+        const matchedUser = users.find(u => u.username?.toLowerCase() === cleanUsername.toLowerCase());
+        const isExistingUser = Boolean(matchedUser);
+        const existingUserGroup = matchedUser?.group || 'user';
+        const isSignerCentral = Boolean(signerStatus?.reachable && (signerStatus?.key_valid || signerStatus?.mode === 'remote' || signerStatus?.mode === 'central'));
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="bg-slate-900 border border-purple-500/30 rounded-3xl max-w-lg w-full p-6 space-y-4 shadow-2xl relative overflow-hidden">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <KeyRound className="w-5 h-5 text-purple-400" />
+                  <span>Issue EAP-TLS Client Certificate</span>
+                </h3>
+                <button onClick={() => setIssueModalOpen(false)} className="text-slate-400 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Real-time Signing CA Authority Indicator */}
+              <div className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 text-xs ${
+                isSignerCentral
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+              }`}>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isSignerCentral ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                  <div className="min-w-0">
+                    <div className="font-bold flex items-center gap-1.5 truncate">
+                      <span>Signing Authority: {isSignerCentral ? 'Central Rajlabs-CA PKI' : 'Local FreeRADIUS Root CA'}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-950/70 border border-slate-700/50 font-mono">
+                        {isSignerCentral ? 'External REST API' : 'Internal Appliance CA'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] opacity-80 truncate font-mono mt-0.5">
+                      {isSignerCentral 
+                        ? `${signerStatus?.host || 'ca.rajlabs.in'} · Latency: ${signerStatus?.latency_ms ? `${signerStatus.latency_ms}ms` : 'Active'}`
+                        : '/etc/freeradius/certs/ca.pem (Local Fallback)'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <form onSubmit={handleSubmitIssue} className="space-y-3.5 text-xs">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-slate-300 font-medium">Username / Common Name (CN)</label>
+                    {isExistingUser && (
+                      <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1 bg-emerald-500/10 px-1.5 py-0.5 rounded-md border border-emerald-500/20">
+                        <CheckCircle2 className="w-3 h-3" /> Existing User (Group: {existingUserGroup})
+                      </span>
+                    )}
+                    {!isExistingUser && cleanUsername && (
+                      <span className="text-[10px] text-indigo-300 font-medium flex items-center gap-1 bg-indigo-500/10 px-1.5 py-0.5 rounded-md border border-indigo-500/20">
+                        <Sparkles className="w-3 h-3" /> New User (Will Auto-Register)
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    list="radius-users-list"
+                    value={issueForm.username}
+                    onChange={(e) => setIssueForm({ ...issueForm, username: e.target.value })}
+                    required
+                    placeholder="e.g. raj or member1 or pick existing user..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-purple-500 outline-none font-mono"
+                  />
+                  <datalist id="radius-users-list">
+                    {users.map(u => (
+                      <option key={u.username} value={u.username}>{u.group ? `Group: ${u.group}` : 'User'}</option>
+                    ))}
+                  </datalist>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    The certificate Common Name (CN) is strictly bound to this username for 802.1X EAP-TLS authentication.
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-slate-300 font-medium">
+                      PKCS#12 Bundle Password
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleGeneratePassword}
+                      className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-mono transition"
+                    >
+                      <Sparkles className="w-3 h-3" /> Auto-Generate
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={showIssuePassword ? "text" : "password"}
+                      value={issueForm.cert_password}
+                      onChange={(e) => setIssueForm({ ...issueForm, cert_password: e.target.value })}
+                      placeholder="Leave blank to auto-generate random secure password"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 pr-20 text-white focus:border-purple-500 outline-none font-mono"
+                    />
+                    <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                      {issueForm.cert_password && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard?.writeText(issueForm.cert_password);
+                            onNotify?.('Password copied to clipboard!', 'info');
+                          }}
+                          title="Copy Password"
+                          className="p-1 text-slate-400 hover:text-white"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowIssuePassword(!showIssuePassword)}
+                        className="p-1 text-slate-400 hover:text-white"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 mb-1 font-medium">Validity Period</label>
+                  <select
+                    value={issueForm.valid_days}
+                    onChange={(e) => setIssueForm({ ...issueForm, valid_days: Number(e.target.value) })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-purple-500 outline-none"
+                  >
+                    <option value={30}>30 Days (Guest / Short-lived)</option>
+                    <option value={90}>90 Days (Quarterly — Recommended)</option>
+                    <option value={180}>180 Days (Semi-Annual)</option>
+                    <option value={365}>365 Days (1 Year — Enterprise)</option>
+                    <option value={730}>730 Days (2 Years)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 mb-1 font-medium">Subject Alternative Name (SAN) Email (Optional)</label>
+                  <input
+                    type="email"
+                    value={issueForm.email}
+                    onChange={(e) => setIssueForm({ ...issueForm, email: e.target.value })}
+                    placeholder="e.g. user@rajlabs.in"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-purple-500 outline-none font-mono"
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setIssueModalOpen(false)}
+                    className="px-4 py-2 text-slate-400 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={issuing}
+                    className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold shadow-lg shadow-purple-600/25 disabled:opacity-50 flex items-center gap-2 transition"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>{issuing ? 'Signing with CA...' : 'Sign & Issue Certificate'}</span>
+                  </button>
+                </div>
+              </form>
             </div>
-
-            <form onSubmit={handleSubmitIssue} className="space-y-3.5 text-xs">
-              <div>
-                <label className="block text-slate-300 mb-1 font-medium">Username / Common Name (CN)</label>
-                <input
-                  type="text"
-                  value={issueForm.username}
-                  onChange={(e) => setIssueForm({ ...issueForm, username: e.target.value })}
-                  required
-                  placeholder="e.g. member1 or raj"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-purple-500 outline-none font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-300 mb-1 font-medium">
-                  PKCS#12 Export Password <span className="text-slate-500 font-normal">(leave blank for auto-generated)</span>
-                </label>
-                <input
-                  type="password"
-                  value={issueForm.cert_password}
-                  onChange={(e) => setIssueForm({ ...issueForm, cert_password: e.target.value })}
-                  placeholder="••••••••••••"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-purple-500 outline-none font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="block text-slate-300 mb-1 font-medium">Validity Period</label>
-                <select
-                  value={issueForm.valid_days}
-                  onChange={(e) => setIssueForm({ ...issueForm, valid_days: Number(e.target.value) })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-purple-500 outline-none"
-                >
-                  <option value={30}>30 Days (Short-lived)</option>
-                  <option value={90}>90 Days (Quarterly)</option>
-                  <option value={365}>365 Days (1 Year — Default)</option>
-                  <option value={730}>730 Days (2 Years)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-slate-300 mb-1 font-medium">SAN Email Address (Optional)</label>
-                <input
-                  type="email"
-                  value={issueForm.email}
-                  onChange={(e) => setIssueForm({ ...issueForm, email: e.target.value })}
-                  placeholder="e.g. user@rajlabs.in"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-purple-500 outline-none font-mono"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIssueModalOpen(false)}
-                  className="px-4 py-2 text-slate-400 hover:text-white"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={issuing}
-                  className="px-5 py-2.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold shadow-lg shadow-purple-600/25 disabled:opacity-50 flex items-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>{issuing ? 'Signing with CA...' : 'Sign & Issue Certificate'}</span>
-                </button>
-              </div>
-            </form>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
     </div>
   );

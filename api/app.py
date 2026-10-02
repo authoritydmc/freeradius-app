@@ -3651,6 +3651,28 @@ def issue_client_certificate(payload: IssueCertRequest, request: Request, admin_
     user_crt = safe_client_path(uname, ".crt")
     user_p12 = safe_client_path(uname, ".p12")
 
+    # 0. Ensure user exists in RADIUS database so EAP-TLS authentication and policy enforcement work
+    user_auto_created = False
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (uname,))
+            if not cur.fetchone():
+                auto_pass = generate_session_secret(24)
+                cur.execute("""
+                    INSERT INTO radcheck (username, attribute, op, value)
+                    VALUES (%s, 'Cleartext-Password', ':=', %s)
+                """, (uname, auto_pass))
+                cur.execute("""
+                    INSERT INTO radusergroup (username, groupname, priority)
+                    VALUES (%s, 'user', 1)
+                    ON CONFLICT DO NOTHING
+                """, (uname,))
+                user_auto_created = True
+        conn.close()
+    except Exception as e:
+        logger.warning("Failed to check/provision user in radcheck: %s", e)
+
     try:
         # 1. Generate client private key
         subprocess.run(["openssl", "genrsa", "-out", user_key, "2048"], check=True, capture_output=True)
@@ -3683,13 +3705,14 @@ def issue_client_certificate(payload: IssueCertRequest, request: Request, admin_
             except OSError:
                 pass
 
-        log_audit(admin_user, "cert_issue", uname, f"authority={authority}, valid_days={days}, email={email}")
-        logger.info("Client certificate issued username=%s by=%s via=%s", uname, admin_user, authority)
+        log_audit(admin_user, "cert_issue", uname, f"authority={authority}, valid_days={days}, email={email}, auto_provisioned={user_auto_created}")
+        logger.info("Client certificate issued username=%s by=%s via=%s auto_created=%s", uname, admin_user, authority, user_auto_created)
         return {
             "status": "success",
             "message": f"EAP-TLS Client certificate issued for user '{uname}' (Signed via {authority})",
             "username": uname,
             "authority": authority,
+            "auto_provisioned": user_auto_created,
             "p12_password": p12_pass,
             "download_url": f"/radius/api/certs/{uname}/download",
             "mobileconfig_url": f"/radius/api/certs/{uname}/mobileconfig"
