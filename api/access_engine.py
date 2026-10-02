@@ -290,6 +290,30 @@ def sync_user_radius_attributes(username: str, conn=None):
                     VALUES (%s, 'Session-Timeout', '=', %s)
                 """, (username, str(decision["session_timeout"])))
 
+                # Keep RADIUS wall-clock Expiration in step with the entitlement.
+                # Recharges move expires_at forward but never touched this row,
+                # so paid users were hard-rejected after their original guest
+                # Expiration passed. Subscription-driven → stamp expires_at;
+                # exempt (no subscription) → drop any stale guest Expiration
+                # that would reject an allowed user. Format matches the guest
+                # creation path ("%d %b %Y %H:%M:%S", UTC).
+                sub = decision.get("subscription")
+                exp_ts = (sub or {}).get("expires_at") if isinstance(sub, dict) else None
+                if exp_ts:
+                    if isinstance(exp_ts, str):
+                        exp_ts = datetime.datetime.fromisoformat(exp_ts.replace("Z", "+00:00"))
+                    if isinstance(exp_ts, datetime.datetime):
+                        if exp_ts.tzinfo is None:
+                            exp_ts = exp_ts.replace(tzinfo=datetime.timezone.utc)
+                        exp_str = exp_ts.astimezone(datetime.timezone.utc).strftime("%d %b %Y %H:%M:%S")
+                        cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute = 'Expiration'", (username,))
+                        cur.execute("""
+                            INSERT INTO radcheck (username, attribute, op, value)
+                            VALUES (%s, 'Expiration', ':=', %s)
+                        """, (username, exp_str))
+                else:
+                    cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute = 'Expiration'", (username,))
+
             else:
                 # DENY - Set Auth-Type := Reject with helpful message
                 cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (username,))

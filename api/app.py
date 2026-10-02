@@ -4639,6 +4639,11 @@ def delete_group(groupname: str, admin_user: str = Depends(authenticate_admin)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT DISTINCT username FROM radusergroup WHERE groupname = %s", (groupname,))
+                members = [r["username"] for r in (cur.fetchall() or []) if r.get("username")]
+            except Exception:
+                members = []
             cur.execute("DELETE FROM radgroupreply WHERE groupname = %s", (groupname,))
             cur.execute("DELETE FROM radgroupcheck WHERE groupname = %s", (groupname,))
             cur.execute("DELETE FROM radusergroup WHERE groupname = %s", (groupname,))
@@ -4647,10 +4652,17 @@ def delete_group(groupname: str, admin_user: str = Depends(authenticate_admin)):
             except Exception as e:
                 logger.debug("central groups cleanup skipped for %s: %s", groupname, e)
             conn.commit()
-            log_audit(admin_user, "group_delete", groupname, None)
-            return {"status": "success", "message": f"Policy Group '{groupname}' and associated user assignments removed successfully."}
+            log_audit(admin_user, "group_delete", groupname, f"members={len(members)}")
     finally:
         conn.close()
+    # Realtime: members otherwise keep stale ALLOW rows (password + no
+    # Reject) and stay online after their policy is gone.
+    resynced = 0
+    for uname in members:
+        if _resync_user(uname):
+            resynced += 1
+    return {"status": "success", "message": f"Policy Group '{groupname}' and associated user assignments removed successfully."
+            + (f" ({resynced}/{len(members)} member(s) re-synced)" if members else "")}
 
 # NAS Clients
 @app.get("/radius/api/nas", tags=["NAS"])
@@ -6066,8 +6078,6 @@ def portal_create_guest_pass(request: Request):
     is later auto-deleted by the expiry worker (see cleanup_expired_guests).
     """
     check_rate_limit(request, "guest-pass", 10)
-    guest_id = "guest_" + "".join(secrets.choice(string.digits) for _ in range(6))
-    guest_pass = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
     # UTC wall-time Expiration (container runs TZ=UTC; parsed back the same way)
     expires_epoch = int(time.time()) + 86400
     expiration_str = time.strftime("%d %b %Y %H:%M:%S", time.gmtime(expires_epoch))
@@ -6075,6 +6085,17 @@ def portal_create_guest_pass(request: Request):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
+            # Collision-safe id: 6 digits can theoretically repeat, and a
+            # duplicate username would create ambiguous multi-password rows.
+            guest_id = ""
+            for _ in range(5):
+                guest_id = "guest_" + "".join(secrets.choice(string.digits) for _ in range(6))
+                cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (guest_id,))
+                if not cur.fetchone():
+                    break
+            else:
+                raise HTTPException(status_code=500, detail="Could not allocate a guest id. Try again.")
+            guest_pass = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
             # Insert radcheck Cleartext-Password
             cur.execute(
                 "INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, 'Cleartext-Password', ':=', %s)",
@@ -6091,9 +6112,10 @@ def portal_create_guest_pass(request: Request):
                 "ON CONFLICT DO NOTHING",
                 (guest_id,)
             )
-            # Add Max-Daily-Session or 24-hr session-timeout
+            # 24-hr session cap: Session-Timeout is a REPLY attribute —
+            # a radcheck row is inert and was silently never enforced.
             cur.execute(
-                "INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, 'Session-Timeout', ':=', '86400')",
+                "INSERT INTO radreply (username, attribute, op, value) VALUES (%s, 'Session-Timeout', '=', '86400')",
                 (guest_id,)
             )
             conn.commit()

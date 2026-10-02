@@ -290,3 +290,68 @@ def test_single_host_omits_failover_kwarg(monkeypatch):
     with pytest.raises(RuntimeError):
         app.get_db_connection()
     assert "target_session_attrs" not in calls[-1]
+
+
+def test_sync_allow_stamps_expiration_from_subscription():
+    """ALLOW with a subscription upserts wall-clock Expiration (#25)."""
+    import datetime
+
+    exp = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3)
+    exp_utc = exp.astimezone(datetime.timezone.utc)
+
+    def handler(q, p):
+        if "FROM users u" in q:
+            return [_user_row(group_recharge_required=True)]
+        if "FROM subscriptions s" in q:
+            return [{"subscription_id": 1, "user_id": 7, "plan_id": 2,
+                     "starts_at": exp_utc, "expires_at": exp_utc, "status": "ACTIVE",
+                     "plan_name": "P", "plan_price": 10.0, "validity_seconds": 86400,
+                     "plan_max_session_seconds": 86400}]
+        if "attribute LIKE" in q and "SELECT 1 FROM radcheck" in q:
+            return [{"1": 1}]
+        return []
+
+    conn = FakeConn(handler)
+    access_engine.sync_user_radius_attributes("ram", conn=conn)
+    exp_inserts = [(s, p) for s, p in conn.log
+                   if s.startswith("INSERT INTO radcheck") and "Expiration" in s]
+    assert len(exp_inserts) == 1
+    assert exp_inserts[0][1][1] == exp_utc.strftime("%d %b %Y %H:%M:%S")
+
+
+def test_sync_allow_exempt_drops_stale_expiration():
+    """ALLOW without subscription deletes lingering guest Expiration (#25)."""
+
+    def handler(q, p):
+        if "FROM users u" in q:
+            return [_user_row(group_recharge_required=False)]
+        if "FROM subscriptions s" in q:
+            return []
+        if "attribute LIKE" in q and "SELECT 1 FROM radcheck" in q:
+            return [{"1": 1}]
+        return []
+
+    conn = FakeConn(handler)
+    access_engine.sync_user_radius_attributes("ram", conn=conn)
+    stmts = [s for s, _ in conn.log]
+    assert any(s.startswith("DELETE FROM radcheck") and "Expiration" in s for s in stmts)
+    assert not any(s.startswith("INSERT INTO radcheck") and "Expiration" in s for s in stmts)
+
+
+def test_delete_group_resyncs_members(monkeypatch):
+    """Group delete re-derives former members immediately (#25)."""
+    synced = []
+
+    def handler(q, p):
+        if "SELECT DISTINCT username FROM radusergroup" in q:
+            return [{"username": "u1"}, {"username": "u2"}]
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(access_engine, "sync_user_radius_attributes",
+                        lambda uname, conn=None: (synced.append(uname), {"decision": "ALLOW"})[1])
+    res = app.delete_group("vip", "admin")
+    assert res["status"] == "success"
+    assert "re-synced" in res["message"]
+    assert sorted(synced) == ["u1", "u2"]
