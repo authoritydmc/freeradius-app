@@ -159,6 +159,12 @@ chown -R freerad:freerad "${RAD_DIR}"
 chmod 640 "${RAD_DIR}/clients.conf" "${RAD_DIR}/mods-available/sql" "${RAD_DIR}/sites-available/default"
 [ -f "${RAD_DIR}/policy.d/rajlabs" ] && chmod 640 "${RAD_DIR}/policy.d/rajlabs" || true
 
+# Ensure FreeRADIUS authentication accepts/rejects log to container stdout
+sed -i 's/^[[:space:]]*destination = .*/\tdestination = stdout/' "${RAD_DIR}/radiusd.conf"
+sed -i 's/^[[:space:]]*auth = .*/\tauth = yes/' "${RAD_DIR}/radiusd.conf"
+sed -i 's/^[[:space:]]*#\?[[:space:]]*auth_badpass = .*/\tauth_badpass = yes/' "${RAD_DIR}/radiusd.conf"
+sed -i 's/^[[:space:]]*#\?[[:space:]]*auth_goodpass = .*/\tauth_goodpass = yes/' "${RAD_DIR}/radiusd.conf"
+
 echo "Validating FreeRADIUS configuration syntax..."
 freeradius -C -l stdout || {
   echo "FreeRADIUS configuration syntax check failed!"
@@ -176,8 +182,13 @@ cleanup() {
 }
 trap cleanup SIGINT SIGTERM
 
-echo "Starting FreeRADIUS daemon..."
-freeradius -f -l stdout &
+if [ "${RADIUS_DEBUG:-0}" = "1" ] || [ "${DEBUG:-false}" = "true" ]; then
+  echo "Starting FreeRADIUS in verbose DEBUG mode (-X)..."
+  freeradius -X -l stdout &
+else
+  echo "Starting FreeRADIUS daemon (auth logging enabled)..."
+  freeradius -f -l stdout &
+fi
 RADIUSD_PID=$!
 
 echo "Starting FreeRADIUS API & Dashboard on port 8090..."
