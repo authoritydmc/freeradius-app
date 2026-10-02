@@ -108,3 +108,15 @@ def test_local_time_display_with_tz_label():
     src = Path("frontend/src/utils/api.js").read_text()
     assert "timeZoneName" in src
     assert "1e12" in src  # epoch-ms / epoch-seconds support
+
+
+def test_exempt_users_shown_as_exempt():
+    import inspect
+    from api.app import list_users, get_user_overview
+    assert "recharge_required" in inspect.getsource(list_users)
+    assert "recharge_required" in inspect.getsource(get_user_overview)
+    users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
+    assert "Exempt" in users_tab
+    assert "recharge_required === false" in users_tab
+    dossier = Path("frontend/src/components/UserDetailModal.jsx").read_text(encoding="utf-8")
+    assert "Exempt from recharge" in dossier

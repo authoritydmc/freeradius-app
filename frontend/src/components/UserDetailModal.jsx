@@ -114,10 +114,14 @@ export default function UserDetailModal({ username, onClose, onNotify }) {
                   <div className="text-xs">
                     <div className="font-bold text-emerald-300">{sub.plan_name} — ACTIVE</div>
                     <div className="text-emerald-200/70 font-mono mt-0.5">
-                      Expires {formatDateTime(sub.expires_at)}
+                      Expires {formatDateTime(sub.expires_at_epoch_ms || sub.expires_at)}
                       {sub.payment_amount != null && ` • ₹${Number(sub.payment_amount).toFixed(2)} via ${sub.payment_gateway || '—'}`}
                     </div>
                   </div>
+                </div>
+              ) : data?.recharge_required === false ? (
+                <div className="bg-slate-800/60 border border-slate-700 rounded-2xl p-3.5 text-xs text-slate-300">
+                  Exempt from recharge{data?.recharge_policy ? ` (${data.recharge_policy})` : ''} — no subscription needed for Wi-Fi access.
                 </div>
               ) : (
                 <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-3.5 text-xs text-amber-200">

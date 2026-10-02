@@ -528,8 +528,16 @@ export default function UsersTab({
                         {user.subscription.plan_name}
                       </span>
                       <span className="block text-[10px] text-slate-500 font-mono mt-1">
-                        till {user.subscription.expires_at ? new Date(user.subscription.expires_at).toLocaleDateString() : '—'}
+                        till {user.subscription.expires_at ? formatDateTime(user.subscription.expires_at) : '—'}
                       </span>
+                    </button>
+                  ) : user.recharge_required === false ? (
+                    <button
+                      onClick={() => setDetailUser(user.username)}
+                      title={`Exempt from recharge (${user.recharge_policy || 'policy'}) — no subscription needed. Click for dossier.`}
+                      className="px-2.5 py-1 rounded-xl text-[10px] font-mono border font-semibold bg-slate-800 text-slate-300 border-slate-700 hover:border-indigo-500"
+                    >
+                      Exempt
                     </button>
                   ) : (
                     <button

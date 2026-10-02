@@ -1588,6 +1588,31 @@ def list_users(_: str = Depends(authenticate_admin)):
                 for u, data in users_map.items():
                     data.setdefault("subscription", None)
 
+            # Recharge policy per user (same rule as the access engine: user
+            # override wins, else the central group policy; unknown → required).
+            # Lets the table show "Exempt" instead of a misleading "No subscription".
+            try:
+                cur.execute("SELECT name, recharge_required FROM groups")
+                group_policy = {str(r.get("name", "")).upper(): bool(r.get("recharge_required", True))
+                                for r in cur.fetchall()}
+                cur.execute("SELECT username, recharge_required_override FROM users")
+                overrides = {r.get("username"): r.get("recharge_required_override")
+                             for r in cur.fetchall()}
+                for u, data in users_map.items():
+                    ov = overrides.get(u, None)
+                    if ov is not None:
+                        data["recharge_required"] = bool(ov)
+                        data["recharge_policy"] = "user override"
+                    else:
+                        g = (data.get("group") or "").upper()
+                        data["recharge_required"] = group_policy.get(g, True)
+                        data["recharge_policy"] = f"group:{data.get('group')}" if data.get("group") else "default"
+            except Exception as e:
+                logger.debug("list_users recharge-policy enrichment skipped: %s", e)
+                for u, data in users_map.items():
+                    data.setdefault("recharge_required", True)
+                    data.setdefault("recharge_policy", "default")
+
             return list(users_map.values())
     finally:
         conn.close()
@@ -1856,10 +1881,27 @@ def get_user_overview(username: str, _: str = Depends(authenticate_admin)):
                 pass
 
             cert_path = os.path.join(CLIENT_CERTS_DIR, f"{uname}.p12")
+            # Recharge policy for this user (mirrors list_users rule).
+            recharge_required, recharge_policy = True, "default"
+            try:
+                ov = (u_row.get("recharge_required_override")
+                      if isinstance(u_row, dict) else None)
+                if ov is not None:
+                    recharge_required, recharge_policy = bool(ov), "user override"
+                else:
+                    cur.execute("SELECT recharge_required FROM groups WHERE UPPER(name) = UPPER(%s) LIMIT 1", (group or "",))
+                    gr = cur.fetchone()
+                    if gr is not None:
+                        recharge_required = bool(gr.get("recharge_required", True))
+                        recharge_policy = f"group:{group}"
+            except Exception:
+                pass
             return {
                 "username": uname,
                 "group": group,
                 "status": (u_row.get("status") if u_row else "ACTIVE"),
+                "recharge_required": recharge_required,
+                "recharge_policy": recharge_policy,
                 "has_certificate": os.path.exists(cert_path),
                 "active_subscription": active_sub,
                 "subscriptions": subscriptions,
