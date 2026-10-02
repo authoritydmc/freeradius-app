@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Server, 
   Database, 
@@ -12,18 +12,68 @@ import {
   Network, 
   Clock 
 } from 'lucide-react';
+import { fetchJson } from '../utils/api';
 
 export default function StatusTab({ 
-  health, 
-  stats, 
-  publicConfig, 
-  signerStatus, 
-  auditLogs, 
-  statusCheckedAt, 
-  onRefreshAll, 
-  onJumpTab 
+  health: propHealth, 
+  stats: propStats, 
+  publicConfig: propPublicConfig, 
+  signerStatus: propSignerStatus, 
+  auditLogs: propAuditLogs, 
+  statusCheckedAt: propStatusCheckedAt, 
+  onRefreshAll: propOnRefreshAll, 
+  onJumpTab,
+  onNotify
 }) {
-  const isHealthy = health?.status === 'healthy';
+  const [internalHealth, setInternalHealth] = useState(null);
+  const [internalStats, setInternalStats] = useState(null);
+  const [internalPublicConfig, setInternalPublicConfig] = useState(null);
+  const [internalSignerStatus, setInternalSignerStatus] = useState(null);
+  const [internalAuditLogs, setInternalAuditLogs] = useState([]);
+  const [internalCheckedAt, setInternalCheckedAt] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadData = async () => {
+    setRefreshing(true);
+    try {
+      const [h, st, pc, ss, logs] = await Promise.allSettled([
+        fetchJson('health'),
+        fetchJson('stats'),
+        fetchJson('public-config'),
+        fetchJson('signer/status'),
+        fetchJson('audit-logs?limit=5')
+      ]);
+
+      if (h.status === 'fulfilled') setInternalHealth(h.value);
+      if (st.status === 'fulfilled') setInternalStats(st.value);
+      if (pc.status === 'fulfilled') setInternalPublicConfig(pc.value);
+      if (ss.status === 'fulfilled') setInternalSignerStatus(ss.value);
+      if (logs.status === 'fulfilled') setInternalAuditLogs(logs.value || []);
+      setInternalCheckedAt(new Date().toLocaleTimeString());
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to refresh status data', 'error');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!propHealth) {
+      loadData();
+      const interval = setInterval(loadData, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [propHealth]);
+
+  const health = propHealth || internalHealth;
+  const stats = propStats || internalStats;
+  const publicConfig = propPublicConfig || internalPublicConfig;
+  const signerStatus = propSignerStatus || internalSignerStatus;
+  const auditLogs = propAuditLogs || internalAuditLogs;
+  const statusCheckedAt = propStatusCheckedAt || internalCheckedAt;
+  const onRefreshAll = propOnRefreshAll || loadData;
+
+  const isHealthy = health?.status === 'healthy' || (health?.api_ok && health?.db_ok);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
