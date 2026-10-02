@@ -2393,14 +2393,17 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
     # user with no subscription gets Reject now, not after some later reset).
     decision = _resync_user(payload.username)
     needs_recharge = bool(decision and decision.get("decision") == "DENY")
+    resync_failed = bool(decision and decision.get("decision") == "ERROR")
     base_msg = f"User '{payload.username}' {'created' if not existed else 'updated'} successfully"
     return {"status": "success", "created": not existed,
             "message": base_msg
                        + (" (password = phone number)" if pw_source == "phone" else "")
-                       + (" — no active subscription: recharge to activate Wi-Fi" if needs_recharge else ""),
+                       + (" — no active subscription: recharge to activate Wi-Fi" if needs_recharge else "")
+                       + (" — WARNING: live access re-sync failed, verify in Auth Logs" if resync_failed else ""),
             "password": raw_pw,
             "password_source": pw_source,
             "needs_recharge": needs_recharge,
+            "resync_failed": resync_failed,
             "warnings": warnings}
 
 @app.put("/radius/api/users/{username}", tags=["Users"])
@@ -2476,10 +2479,12 @@ def update_user_profile(username: str, payload: UserUpdateRequest, admin_user: s
     # Realtime: group/attribute edits re-derive access immediately.
     decision = _resync_user(uname)
     needs_recharge = bool(decision and decision.get("decision") == "DENY")
+    resync_failed = bool(decision and decision.get("decision") == "ERROR")
     return {"status": "success",
             "message": f"User '{uname}' updated successfully"
-                       + (" — no active subscription: recharge to activate Wi-Fi" if needs_recharge else ""),
-            "needs_recharge": needs_recharge, "warnings": warnings}
+                       + (" — no active subscription: recharge to activate Wi-Fi" if needs_recharge else "")
+                       + (" — WARNING: live access re-sync failed, verify in Auth Logs" if resync_failed else ""),
+            "needs_recharge": needs_recharge, "resync_failed": resync_failed, "warnings": warnings}
 
 GUEST_DURATION_MAP = {
     "1h": (3600, "1 Hour"),
@@ -2699,7 +2704,10 @@ def _resync_user(uname: str) -> Optional[Dict[str, Any]]:
 
     Called after every mutation that affects access (create, group change,
     unban, ...) so changes take effect on the NEXT auth attempt — never
-    waiting on a password reset or user action. Never raises.
+    waiting on a password reset or user action. Returns the decision dict,
+    None when the central user is unknown, or an ERROR marker when the
+    resync itself failed (callers must surface that instead of reporting
+    success on stale state). Never raises.
     """
     try:
         try:
@@ -2708,8 +2716,8 @@ def _resync_user(uname: str) -> Optional[Dict[str, Any]]:
             from api.access_engine import sync_user_radius_attributes  # type: ignore
         return sync_user_radius_attributes(uname)
     except Exception as e:
-        logger.debug("realtime resync skipped for %s: %s", uname, e)
-        return None
+        logger.warning("realtime resync FAILED for %s: %s", uname, e, exc_info=True)
+        return {"decision": "ERROR", "reason": f"resync failed: {e}", "resync_failed": True}
 
 def _disconnect_user_sessions(uname: str) -> int:
     """Best-effort CoA disconnect of all live sessions. Returns NAS count hit."""
@@ -3692,11 +3700,15 @@ def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: s
             cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1", (uname,))
             u_row = cur.fetchone()
             if not u_row:
+                # One secret for both tables: the sync seeds a missing live
+                # credential from the central mirror, so divergent values
+                # would lock the user out with an unknown password.
+                auto_pass = generate_session_secret(24)
                 cur.execute("""
                     INSERT INTO users (username, password_cleartext, status)
                     VALUES (%s, %s, 'ACTIVE')
                     RETURNING id
-                """, (uname, generate_session_secret(24)))
+                """, (uname, auto_pass))
                 user_id = cur.fetchone()["id"]
             else:
                 user_id = u_row["id"]
@@ -3704,10 +3716,17 @@ def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: s
             # Also ensure user has at least a default radcheck record
             cur.execute("SELECT id FROM radcheck WHERE username = %s LIMIT 1", (uname,))
             if not cur.fetchone():
+                if not u_row:
+                    live_pass = auto_pass
+                else:
+                    cur.execute("SELECT password_cleartext FROM users WHERE username = %s", (uname,))
+                    mirror = cur.fetchone()
+                    live_pass = (mirror.get("password_cleartext") if mirror else None) or generate_session_secret(24)
+                    sync_central_password(cur, uname, live_pass)
                 cur.execute("""
                     INSERT INTO radcheck (username, attribute, op, value)
                     VALUES (%s, 'Cleartext-Password', ':=', %s)
-                """, (uname, generate_session_secret(16)))
+                """, (uname, live_pass))
 
             # Group-restriction check: admins may override, but the override
             # is surfaced (not silent) so VIP-only plans don't leak quietly.

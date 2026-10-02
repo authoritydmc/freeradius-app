@@ -337,7 +337,6 @@ def test_sync_allow_exempt_drops_stale_expiration():
     assert any(s.startswith("DELETE FROM radcheck") and "Expiration" in s for s in stmts)
     assert not any(s.startswith("INSERT INTO radcheck") and "Expiration" in s for s in stmts)
 
-
 def test_delete_group_resyncs_members(monkeypatch):
     """Group delete re-derives former members immediately (#25)."""
     synced = []
@@ -355,3 +354,62 @@ def test_delete_group_resyncs_members(monkeypatch):
     assert res["status"] == "success"
     assert "re-synced" in res["message"]
     assert sorted(synced) == ["u1", "u2"]
+
+
+def test_sync_deny_preserves_password_rows():
+    """DENY blocks via Auth-Type Reject only — credentials survive (#28)."""
+
+    def handler(q, p):
+        if "FROM users u" in q:
+            return [_user_row(group_recharge_required=True)]
+        if "FROM subscriptions s" in q:
+            return []  # no sub -> DENY
+        if "attribute LIKE" in q and "SELECT 1 FROM radcheck" in q:
+            return [{"1": 1}]
+        return []
+
+    conn = FakeConn(handler)
+    decision = access_engine.sync_user_radius_attributes("ram", conn=conn)
+    assert decision["decision"] == "DENY"
+    stmts = [s for s, _ in conn.log]
+    assert not any("Password" in s and s.startswith("DELETE") for s in stmts), \
+        "DENY must not wipe credentials"
+    assert any(s.startswith("INSERT INTO radcheck") and "Reject" in s for s in stmts)
+
+
+def test_bulk_reset_on_deny_user_keeps_password(monkeypatch):
+    """Bulk-issued passwords survive the trailing resync on DENY users (#28)."""
+
+    def main_handler(q, p):
+        if "SELECT 1 FROM radcheck" in q:
+            return [{"1": 1}]
+        return []
+
+    def sync_handler(q, p):
+        if "FROM users u" in q:
+            return [_user_row(group_recharge_required=True)]
+        if "FROM subscriptions s" in q:
+            return []
+        if "attribute LIKE" in q and "SELECT 1 FROM radcheck" in q:
+            return [{"1": 1}]
+        return []
+
+    main_conn = FakeConn(main_handler)
+    sync_conn = FakeConn(sync_handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: main_conn)
+    monkeypatch.setattr(access_engine, "get_db_connection", lambda: sync_conn)
+    payload = app.BulkPasswordResetRequest(usernames=["ram"], mode="random", length=14)
+    res = app.bulk_reset_passwords(payload, "admin")
+    assert res["reset"] == 1
+    new_pw = res["results"][0]["password"]
+    assert new_pw and len(new_pw) == 14
+    # Password written (exactly one pre-write delete + one insert)...
+    writes = [(s, p) for s, p in main_conn.log
+              if s.startswith("INSERT INTO radcheck") and "Cleartext-Password" in s]
+    assert writes and writes[0][1][1] == new_pw
+    pre_deletes = [s for s, _ in main_conn.log
+                   if "Password" in s and s.startswith("DELETE")]
+    assert len(pre_deletes) == 1
+    # ...and never deleted afterwards by the DENY resync.
+    assert not any("Password" in s and s.startswith("DELETE")
+                   for s, _ in sync_conn.log)

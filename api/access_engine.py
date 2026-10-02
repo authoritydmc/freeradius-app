@@ -315,8 +315,12 @@ def sync_user_radius_attributes(username: str, conn=None):
                     cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute = 'Expiration'", (username,))
 
             else:
-                # DENY - Set Auth-Type := Reject with helpful message
-                cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (username,))
+                # DENY - Set Auth-Type := Reject with helpful message.
+                # Credentials are deliberately PRESERVED (not wiped): the
+                # Reject row alone blocks auth, while deleting passwords
+                # destroyed freshly-issued credentials (bulk reset returned
+                # passwords that no longer existed) and forced needless
+                # re-seeding. Re-ALLOW keeps working with the same password.
                 cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute = 'Auth-Type'", (username,))
                 cur.execute("""
                     INSERT INTO radcheck (username, attribute, op, value)
