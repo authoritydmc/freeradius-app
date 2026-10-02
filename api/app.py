@@ -1123,7 +1123,8 @@ class GroupCreateRequest(BaseModel):
     bandwidth_down_kbps: Optional[int] = None # WISPr-Bandwidth-Max-Down (in Kbps, e.g. 50000 = 50 Mbps)
     bandwidth_up_kbps: Optional[int] = None # WISPr-Bandwidth-Max-Up (in Kbps, e.g. 25000 = 25 Mbps)
     mikrotik_rate_limit: Optional[str] = None # e.g. "25M/50M"
-    vlan_id: Optional[int] = None # 802.1Q VLAN Tag (e.g. 10, 20, 30)
+    rate_limit: Optional[str] = None # Alias for mikrotik_rate_limit
+    vlan_id: Optional[Union[int, str]] = None # 802.1Q VLAN Tag (e.g. 10, 20, 30 or "")
     framed_pool: Optional[str] = None # NAS DHCP Pool Name
     is_admin: Optional[bool] = False # Administrative-User role
     recharge_required: Optional[bool] = True # Whether users in this group need an active paid plan
@@ -2853,14 +2854,21 @@ def create_or_update_group(payload: GroupCreateRequest, _: str = Depends(authent
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'WISPr-Bandwidth-Max-Up', '=', %s)", (payload.groupname, str(payload.bandwidth_up_kbps * 1000)))
 
             # 6. MikroTik Rate Limit
-            if payload.mikrotik_rate_limit and payload.mikrotik_rate_limit.strip():
-                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Mikrotik-Rate-Limit', '=', %s)", (payload.groupname, payload.mikrotik_rate_limit.strip()))
+            eff_rate_limit = payload.mikrotik_rate_limit or payload.rate_limit
+            if eff_rate_limit and eff_rate_limit.strip():
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Mikrotik-Rate-Limit', '=', %s)", (payload.groupname, eff_rate_limit.strip()))
 
             # 7. 802.1Q VLAN Dynamic Tagging
-            if payload.vlan_id is not None and payload.vlan_id > 0:
+            vlan_num = None
+            if payload.vlan_id is not None and str(payload.vlan_id).strip():
+                try:
+                    vlan_num = int(str(payload.vlan_id).strip())
+                except ValueError:
+                    pass
+            if vlan_num is not None and vlan_num > 0:
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Tunnel-Type', '=', '13')", (payload.groupname,))
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Tunnel-Medium-Type', '=', '6')", (payload.groupname,))
-                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Tunnel-Private-Group-ID', '=', %s)", (payload.groupname, str(payload.vlan_id)))
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Tunnel-Private-Group-ID', '=', %s)", (payload.groupname, str(vlan_num)))
 
             # 8. DHCP Framed Pool
             if payload.framed_pool and payload.framed_pool.strip():
@@ -3554,6 +3562,65 @@ def list_orphaned_certificates(_: str = Depends(authenticate_admin)):
         conn.close()
     return sorted(disk_users - db_users)
 
+
+@app.post("/radius/api/certs/{username}/revoke", tags=["Certificates"])
+@app.post("/api/certs/{username}/revoke", tags=["Certificates"])
+def revoke_client_certificate(username: str, admin_user: str = Depends(authenticate_admin)):
+    uname = validate_username(username)
+    signer_url, signer_key = get_cert_signer_config()
+    remote_revoked = False
+    if signer_url:
+        try:
+            req_headers = {"Content-Type": "application/json", "User-Agent": "RajLabs-FreeRADIUS/2.5"}
+            if signer_key:
+                req_headers["x-api-key"] = signer_key
+                req_headers["X-API-KEY"] = signer_key
+                req_headers["Authorization"] = f"Bearer {signer_key}"
+            req_data = json.dumps({"username": uname, "reason": "keyCompromise"}).encode("utf-8")
+            req = urllib.request.Request(f"{signer_url}/api/v1/revoke", data=req_data, headers=req_headers, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status in (200, 201):
+                    remote_revoked = True
+        except Exception as e:
+            logger.warning("Remote revocation on %s failed (%s)", signer_url, e)
+
+    # Remove the local cert and p12 bundle
+    removed = 0
+    for suffix in (".key", ".csr", ".crt", ".p12", "-chain.crt"):
+        p = safe_client_path(uname, suffix)
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+                removed += 1
+        except OSError:
+            pass
+
+    log_audit(admin_user, "cert_revoke", uname, f"files_removed={removed}, remote={remote_revoked}")
+    return {
+        "status": "success",
+        "message": f"Certificate for '{uname}' has been revoked and client bundle removed.",
+        "remote_revoked": remote_revoked
+    }
+
+@app.delete("/radius/api/certs/{username}", tags=["Certificates"])
+@app.delete("/api/certs/{username}", tags=["Certificates"])
+def delete_client_certificate(username: str, admin_user: str = Depends(authenticate_admin)):
+    uname = validate_username(username)
+    removed = 0
+    for suffix in (".key", ".csr", ".crt", ".p12", "-chain.crt"):
+        p = safe_client_path(uname, suffix)
+        try:
+            if os.path.exists(p):
+                os.remove(p)
+                removed += 1
+        except OSError:
+            pass
+
+    log_audit(admin_user, "cert_delete", uname, f"files_removed={removed}")
+    return {
+        "status": "success",
+        "message": f"Certificate bundle for '{uname}' deleted successfully."
+    }
 
 @app.delete("/radius/api/certs/orphans/{username}", tags=["Certificates"])
 @app.delete("/api/certs/orphans/{username}", tags=["Certificates"])

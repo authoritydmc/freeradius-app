@@ -104,9 +104,22 @@ export default function GroupsTab({ onNotify }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      const payload = {
+        groupname: form.groupname.trim(),
+        description: form.description || '',
+        mikrotik_rate_limit: form.rate_limit || '',
+        rate_limit: form.rate_limit || '',
+        session_timeout: parseInt(form.session_timeout) || 0,
+        idle_timeout: parseInt(form.idle_timeout) || 600,
+        simultaneous_use: parseInt(form.simultaneous_use) || 1,
+        vlan_id: form.vlan_id && form.vlan_id.toString().trim() ? parseInt(form.vlan_id) : null,
+        is_admin: form.is_admin || form.groupname === 'admins' || form.groupname === 'admin',
+        recharge_required: form.recharge_required
+      };
+
       await fetchJson('groups', {
         method: 'POST',
-        body: JSON.stringify(form)
+        body: JSON.stringify(payload)
       });
       onNotify?.(`Policy group '${form.groupname}' ${isEditing ? 'updated' : 'created'} successfully!`, 'success');
       setShowModal(false);

@@ -12,7 +12,9 @@ import {
   Radio, 
   Sparkles, 
   RotateCw,
-  AlertCircle
+  AlertCircle,
+  ShieldAlert,
+  Ban
 } from 'lucide-react';
 import { formatDateTime, fetchJson } from '../utils/api';
 
@@ -109,6 +111,32 @@ export default function CertsTab({
       onNotify?.('Signer connection probed', 'info');
     } catch (err) {
       onNotify?.(err.message || 'Probe failed', 'error');
+    }
+  };
+
+  const handleRevokeCert = async (username) => {
+    if (!window.confirm(`Are you sure you want to REVOKE the certificate for user '${username}'? This immediately invalidates their 802.1X EAP-TLS network access.`)) return;
+    try {
+      const res = await fetchJson(`certs/${encodeURIComponent(username)}/revoke`, {
+        method: 'POST'
+      });
+      onNotify?.(res.message || `Certificate for '${username}' revoked successfully!`, 'success');
+      loadData();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to revoke certificate', 'error');
+    }
+  };
+
+  const handleDeleteCert = async (username) => {
+    if (!window.confirm(`Are you sure you want to permanently DELETE the certificate bundle files for '${username}'?`)) return;
+    try {
+      const res = await fetchJson(`certs/${encodeURIComponent(username)}`, {
+        method: 'DELETE'
+      });
+      onNotify?.(res.message || `Certificate files for '${username}' deleted`, 'success');
+      loadData();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to delete certificate', 'error');
     }
   };
 
@@ -215,24 +243,42 @@ export default function CertsTab({
                   {c.created_at ? new Date(c.created_at * 1000).toLocaleString() : '—'}
                 </td>
 
-                <td className="px-6 py-4 text-right space-x-2 whitespace-nowrap">
+                <td className="px-6 py-4 text-right space-x-1.5 whitespace-nowrap">
                   <a
                     href={`/radius/api/certs/${c.username}/download`}
                     download
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                    title="Download PKCS#12 bundle (.p12)"
+                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
                   >
                     <Download className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>.p12 Bundle</span>
+                    <span>.p12</span>
                   </a>
                   
                   <a
                     href={`/radius/api/certs/${c.username}/mobileconfig`}
                     download
-                    className="px-3 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/60 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                    title="Download Apple iOS/macOS profile"
+                    className="px-2.5 py-1.5 bg-cyan-950/60 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/60 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
                   >
                     <Apple className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Apple Profile</span>
+                    <span>Profile</span>
                   </a>
+
+                  <button
+                    onClick={() => handleRevokeCert(c.username)}
+                    title="Revoke Certificate (Invalidates EAP-TLS access)"
+                    className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 rounded-lg transition-colors border border-amber-500/20"
+                  >
+                    <Ban className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    onClick={() => handleDeleteCert(c.username)}
+                    title="Delete Certificate Bundle Files"
+                    className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors border border-rose-500/20"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </td>
               </tr>
             ))}
