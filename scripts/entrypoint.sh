@@ -124,6 +124,18 @@ elif [ -f "${RAD_DIR}/certs/acme/server.pem" ] && [ -f "${RAD_DIR}/certs/acme/se
   chmod 644 "${RAD_DIR}/certs/server.pem"
   chmod 600 "${RAD_DIR}/certs/server.key"
   ACME_IMPORTED=1
+else
+  # Auto-discover acme.json from Traefik / standalone mounts
+  for ACME_CANDIDATE in "/traefik-certs/acme.json" "/etc/traefik/certs/acme.json" "/data/coolify/proxy/acme.json" "/traefik/acme.json" "/app/data/certs/acme.json"; do
+    if [ -f "${ACME_CANDIDATE}" ]; then
+      echo "Discovered ACME certificate storage at ${ACME_CANDIDATE} — extracting certificate for ${EAP_SERVER_CN}..."
+      if python3 /app/scripts/sync-acme-certs.py --acme-json "${ACME_CANDIDATE}" --target-dir "${RAD_DIR}/certs" --domain "${EAP_SERVER_CN}" 2>/dev/null; then
+        echo "ACME certificate extracted successfully from ${ACME_CANDIDATE}."
+        ACME_IMPORTED=1
+        break
+      fi
+    fi
+  done
 fi
 
 if [ "${ACME_IMPORTED}" = "1" ]; then
