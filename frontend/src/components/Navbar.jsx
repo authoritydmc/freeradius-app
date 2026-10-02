@@ -16,7 +16,8 @@ import {
   X, 
   Wifi, 
   UserCheck,
-  CreditCard
+  CreditCard,
+  Download
 } from 'lucide-react';
 
 export default function Navbar({ 
