@@ -220,6 +220,9 @@ export default function PortalView() {
     }
   };
 
+  // Manual-review UTR handoff (NOT an auto-activation): there is no
+  // portal claim API — the IMAP reconciliation engine or an admin activates
+  // separately. The copy below must never imply otherwise (#35).
   const handleVerifyUtr = (e) => {
     e.preventDefault();
     if (!utrRef.trim()) return;
@@ -230,10 +233,10 @@ export default function PortalView() {
       const who = payerUsername || authSession?.username || 'Guest';
       const inv = selectedPlanForUpi ? getUpiNote(selectedPlanForUpi, who) : '';
       setPaymentStatus({
-        status: 'submitted',
-        message: `Recharge request with Ref #${utrRef.trim()} recorded for user '${who}'${inv ? ` (invoice ${inv})` : ''}. If your account isn't auto-activated in 2 minutes, WhatsApp your screenshot to support desk.`
+        status: 'manual-review',
+        message: `UTR #${utrRef.trim()} noted on this device for '${who}'${inv ? ` (invoice ${inv})` : ''} — this does NOT auto-activate. WhatsApp your payment screenshot with your username to the support desk for manual activation.`
       });
-    }, 1200);
+    }, 600);
   };
 
   // Machine-readable payment note for automated reconciliation.
@@ -779,10 +782,10 @@ export default function PortalView() {
                   </ul>
                 </div>
 
-                {/* UTR Verification / Claim Form */}
+                {/* UTR Manual-Review Handoff */}
                 <form onSubmit={handleVerifyUtr} className="space-y-2 pt-1 border-t border-slate-800/80">
                   <label className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider block">
-                    Already Paid? Submit UTR / Reference No.
+                    Already Paid? Submit UTR for manual review
                   </label>
                   <div className="flex gap-2">
                     <input
@@ -798,14 +801,15 @@ export default function PortalView() {
                       className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition cursor-pointer flex items-center gap-1"
                     >
                       {verifyingPayment ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                      <span>Verify</span>
+                      <span>Submit</span>
                     </button>
                   </div>
+                  <p className="text-[11px] text-slate-500">Submitting notifies nobody automatically — activation is manual (support desk) or via bank-alert reconciliation.</p>
                 </form>
 
                 {paymentStatus && (
-                  <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-start gap-2 animate-fade-in">
-                    <CheckCircle className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-200 text-xs flex items-start gap-2 animate-fade-in">
+                    <CheckCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
                     <span>{paymentStatus.message}</span>
                   </div>
                 )}

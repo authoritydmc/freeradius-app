@@ -241,6 +241,14 @@ def test_phone_onboarding():
     assert "wa.me" in modal and "sms:" in modal
     users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
     assert "OnboardModal" in users_tab and "phone" in users_tab
+
+
+def test_utr_handoff_is_honest():
+    """The portal UTR form must never imply auto-activation (#35)."""
+    portal = Path("frontend/src/components/PortalView.jsx").read_text(encoding="utf-8")
+    assert "does NOT auto-activate" in portal
+    assert "recorded for user" not in portal
+    assert "auto-activated in 2 minutes" not in portal
     cred = Path("frontend/src/components/CredResultModal.jsx").read_text(encoding="utf-8")
     assert "wa.me/${phoneDigits}" in cred
 
