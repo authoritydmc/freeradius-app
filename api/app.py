@@ -2496,7 +2496,6 @@ def delete_user(username: str, admin_user: str = Depends(authenticate_admin)):
 
 class BanActionRequest(BaseModel):
     disconnect: Optional[bool] = False
-
 class BulkUserActionRequest(BaseModel):
     usernames: List[str] = Field(..., min_length=1, max_length=100)
     action: str = Field(..., description="ban | unban | revoke_certs | delete")
@@ -3242,6 +3241,27 @@ def delete_plan(plan_id: int, admin_user: str = Depends(authenticate_admin)):
             return {"status": "success", "message": f"Plan '{row['name']}' deleted successfully"}
     finally:
         conn.close()
+
+class SubscriptionRevokeRequest(BaseModel):
+    reason: Optional[str] = None
+    disconnect: Optional[bool] = True
+
+@app.post("/radius/api/subscriptions/{subscription_id}/revoke", tags=["Payments"])
+@app.post("/api/subscriptions/{subscription_id}/revoke", tags=["Payments"])
+def revoke_subscription_endpoint(subscription_id: int, payload: Optional[SubscriptionRevokeRequest] = None, admin_user: str = Depends(authenticate_admin)):
+    """Admin revoke: cancel an ACTIVE subscription immediately (RADIUS re-synced, sessions kicked)."""
+    from api.entitlements import revoke_subscription
+    try:
+        res = revoke_subscription(
+            subscription_id,
+            actor=admin_user,
+            reason=(payload.reason.strip()[:200] if payload and payload.reason else ""),
+            disconnect=bool(payload.disconnect) if payload else True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    log_audit(admin_user, "SUBSCRIPTION_REVOKED", res.get("username"), f"sub_id={subscription_id} reason={(payload.reason if payload else '') or '-'}")
+    return res
 
 
 # ============================================================================

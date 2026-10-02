@@ -260,6 +260,25 @@ def test_log_dossiers_and_users_redesign():
     assert "timeLeft" in api_js
 
 
+def test_subscription_revoke_and_narrow_user_column():
+    import inspect
+    from api.app import revoke_subscription_endpoint
+    from api.entitlements import revoke_subscription
+    from api.app import app
+    paths = {r.path for r in app.routes if hasattr(r, "path")}
+    assert "/radius/api/subscriptions/{subscription_id}/revoke" in paths
+    # Engine cancels, re-syncs RADIUS and kicks sessions with audit
+    src = inspect.getsource(revoke_subscription)
+    assert "CANCELLED" in src and "sync_user_radius_attributes" in src
+    assert "SUBSCRIPTION_REVOKED" in src
+    # Dossier exposes per-subscription revoke for ACTIVE rows
+    dossier = Path("frontend/src/components/UserDetailModal.jsx").read_text(encoding="utf-8")
+    assert "handleRevoke" in dossier and "subscriptions/${sub.id}/revoke" in dossier
+    # Narrow sticky identity column keeps other columns reachable on phones
+    users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
+    assert "max-w-[104px]" in users_tab
+
+
 def test_ban_bulk_and_inline_feedback():
     import inspect
     from api.app import ban_user, unban_user, bulk_user_action, list_users

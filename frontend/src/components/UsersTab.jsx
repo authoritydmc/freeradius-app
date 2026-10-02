@@ -23,7 +23,6 @@ import {
   Unlock,
   ShieldAlert,
   MessageCircle,
-  Phone,
   Ban,
   CheckCircle2,
   AlertCircle
@@ -710,23 +709,22 @@ export default function UsersTab({
                   />
                 </td>
                 {/* User + single-line presence */}
-                <td className="px-3 py-3 whitespace-nowrap sticky left-10 bg-slate-900 z-10 border-r border-slate-800/70">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-7 h-7 rounded-lg border flex items-center justify-center text-[11px] font-mono font-bold shrink-0 ${user.banned ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' : 'bg-slate-800 border-slate-700/80 text-slate-300'}`}>
+                <td className="px-2 sm:px-3 py-3 whitespace-nowrap sticky left-10 bg-slate-900 z-10 border-r border-slate-800/70">
+                  <div className="flex items-center gap-1.5 sm:gap-2">
+                    <div className={`w-6 h-6 sm:w-7 sm:h-7 rounded-lg border flex items-center justify-center text-[10px] sm:text-[11px] font-mono font-bold shrink-0 ${user.banned ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' : 'bg-slate-800 border-slate-700/80 text-slate-300'}`}>
                       {user.username.charAt(0).toUpperCase()}
                     </div>
                     <div className="min-w-0">
                       <button
                         onClick={() => setDetailUser(user.username)}
                         title="Open subscriber dossier (subscription, stats, devices, history)"
-                        className="font-bold text-[13px] text-slate-100 hover:text-indigo-300 hover:underline text-left truncate block max-w-[160px]"
+                        className="font-bold text-[12px] sm:text-[13px] text-slate-100 hover:text-indigo-300 hover:underline text-left truncate block max-w-[104px] sm:max-w-[160px]"
                       >
                         {user.username}
                       </button>
-                      <div className={`flex items-center gap-1.5 mt-0.5 text-[10px] font-mono ${presence.cls}`} title={presence.title}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${presence.dot}`} />
-                        <span className="truncate">{presence.text}</span>
-                        {user.phone && <span className="text-slate-600 truncate" title={user.phone}>• {user.phone}</span>}
+                      <div className={`flex items-center gap-1 mt-0.5 text-[10px] font-mono ${presence.cls}`} title={presence.title}>
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${presence.dot}`} />
+                        <span className="truncate max-w-[104px] sm:max-w-[160px]">{presence.text}</span>
                       </div>
                     </div>
                   </div>

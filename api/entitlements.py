@@ -590,3 +590,85 @@ def run_periodic_expiry_worker():
             return len(expired_rows)
     finally:
         conn.close()
+
+def revoke_subscription(subscription_id: int, actor: str = "ADMIN",
+                        reason: Optional[str] = None,
+                        disconnect: bool = True) -> Dict[str, Any]:
+    """Admin revoke: cancel an ACTIVE subscription immediately.
+
+    Marks CANCELLED, re-syncs FreeRADIUS attributes (access flips to reject
+    when no other active entitlement remains) and optionally CoA-kicks live
+    sessions. Revoking the last active subscription cuts access at once.
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT s.id, s.user_id, s.status, s.expires_at,
+                       u.username, p.name AS plan_name
+                FROM subscriptions s
+                JOIN users u ON s.user_id = u.id
+                LEFT JOIN plans p ON s.plan_id = p.id
+                WHERE s.id = %s
+            """, (subscription_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"Subscription #{subscription_id} not found.")
+            if row["status"] != "ACTIVE":
+                return {
+                    "status": "already_inactive",
+                    "subscription_id": row["id"],
+                    "username": row["username"],
+                    "previous_status": row["status"],
+                    "message": f"Subscription #{row['id']} is already {row['status']}."
+                }
+            uname = row["username"]
+            cur.execute("""
+                UPDATE subscriptions
+                SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (subscription_id,))
+            conn.commit()
+
+            sync_user_radius_attributes(uname, conn=conn)
+
+            kicked = 0
+            if disconnect:
+                cur.execute("""
+                    SELECT acctsessionid, nasipaddress::text AS nas_ip
+                    FROM radacct
+                    WHERE username = %s AND acctstoptime IS NULL
+                """, (uname,))
+                for sess in cur.fetchall():
+                    try:
+                        if disconnect_active_radius_session(uname, sess["nas_ip"], sess["acctsessionid"]):
+                            kicked += 1
+                    except Exception:
+                        continue
+
+            log_audit_event(
+                actor_type="ADMIN",
+                actor_id=actor,
+                event="SUBSCRIPTION_REVOKED",
+                target_type="USER",
+                target_id=str(row["user_id"]),
+                metadata={
+                    "username": uname,
+                    "subscription_id": subscription_id,
+                    "plan_name": row.get("plan_name"),
+                    "reason": reason or "",
+                    "disconnected_sessions": kicked,
+                },
+                conn=conn,
+            )
+            return {
+                "status": "success",
+                "subscription_id": subscription_id,
+                "username": uname,
+                "plan_name": row.get("plan_name") or "Custom Pass",
+                "disconnected_sessions": kicked,
+                "message": f"Subscription #{subscription_id} revoked for '{uname}'."
+                            + (f" ({kicked} live session(s) kicked)" if kicked else "")
+            }
+    finally:
+        conn.close()

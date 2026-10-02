@@ -24,6 +24,7 @@ function Section({ icon: Icon, title, count, children }) {
 export default function UserDetailModal({ username, onClose, onNotify }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [revoking, setRevoking] = useState(null); // subscription id being revoked
 
   const load = async () => {
     if (!username) return;
@@ -39,6 +40,23 @@ export default function UserDetailModal({ username, onClose, onNotify }) {
   };
 
   useEffect(() => { load(); }, [username]);
+
+  const handleRevoke = async (sub) => {
+    if (!window.confirm(`Revoke '${sub.plan_name}' for '${username}'? Access stops at once and live sessions are kicked.`)) return;
+    setRevoking(sub.id);
+    try {
+      const res = await fetchJson(`subscriptions/${sub.id}/revoke`, {
+        method: 'POST',
+        body: JSON.stringify({ disconnect: true })
+      });
+      onNotify?.(res.message || 'Subscription revoked', 'success');
+      await load();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to revoke subscription', 'error');
+    } finally {
+      setRevoking(null);
+    }
+  };
 
   if (!username) return null;
 
@@ -162,6 +180,7 @@ export default function UserDetailModal({ username, onClose, onNotify }) {
                           <th className="px-3 py-2 whitespace-nowrap">Status</th>
                           <th className="px-3 py-2 whitespace-nowrap">Expires</th>
                           <th className="px-3 py-2 whitespace-nowrap text-right">Paid</th>
+                          <th className="px-3 py-2 whitespace-nowrap text-right">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800">
@@ -169,13 +188,27 @@ export default function UserDetailModal({ username, onClose, onNotify }) {
                           <tr key={s.id}>
                             <td className="px-3 py-2 text-slate-200 font-medium whitespace-nowrap">{s.plan_name}</td>
                             <td className="px-3 py-2 whitespace-nowrap">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${s.status === 'ACTIVE' ? 'bg-emerald-500/10 text-emerald-300' : 'bg-slate-800 text-slate-400'}`}>
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${s.status === 'ACTIVE' ? 'bg-emerald-500/10 text-emerald-300' : s.status === 'CANCELLED' ? 'bg-rose-500/10 text-rose-300' : 'bg-slate-800 text-slate-400'}`}>
                                 {s.status}
                               </span>
                             </td>
-                            <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap">{formatDateTime(s.expires_at)}</td>
+                            <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap">{formatDateTime(s.expires_at_epoch_ms || s.expires_at)}</td>
                             <td className="px-3 py-2 text-right font-mono text-emerald-300 whitespace-nowrap">
                               {s.payment_amount != null ? `₹${Number(s.payment_amount).toFixed(2)}` : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right whitespace-nowrap">
+                              {s.status === 'ACTIVE' ? (
+                                <button
+                                  onClick={() => handleRevoke(s)}
+                                  disabled={revoking === s.id}
+                                  title="Revoke this subscription now"
+                                  className="px-2 py-1 rounded-lg text-[10px] font-bold bg-rose-500/10 text-rose-300 border border-rose-500/20 hover:bg-rose-500/20 disabled:opacity-50"
+                                >
+                                  {revoking === s.id ? 'Revoking…' : 'Revoke'}
+                                </button>
+                              ) : (
+                                <span className="text-slate-600 text-[10px]">—</span>
+                              )}
                             </td>
                           </tr>
                         ))}
