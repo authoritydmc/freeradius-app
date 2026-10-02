@@ -1156,6 +1156,9 @@ class SystemSettingsUpdateRequest(BaseModel):
     currency: Optional[str] = None
     cert_signer_api_url: Optional[str] = None
     cert_signer_api_key: Optional[str] = None
+    wifi_ssid: Optional[str] = None
+    wifi_auth_type: Optional[str] = None
+
 
 
 class IssueCertRequest(BaseModel):
@@ -2000,11 +2003,13 @@ def get_public_config(request: Request):
     upi_vpa = "wifi@rajlabs"
     upi_merchant = "RajLabs Enterprise WiFi"
     currency = "INR"
+    wifi_ssid = "RajLabs-Enterprise"
+    wifi_auth_type = "WPA2-Enterprise / EAP-TLS"
 
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
-            cur.execute("SELECT key, value FROM system_settings WHERE key IN ('admin_contact_phone', 'admin_contact_name', 'upi_vpa', 'upi_merchant_name', 'currency')")
+            cur.execute("SELECT key, value FROM system_settings WHERE key IN ('admin_contact_phone', 'admin_contact_name', 'upi_vpa', 'upi_merchant_name', 'currency', 'wifi_ssid', 'wifi_auth_type')")
             rows = cur.fetchall()
             settings_dict = {r["key"]: r["value"] for r in rows}
             phone = settings_dict.get("admin_contact_phone") or phone
@@ -2012,6 +2017,8 @@ def get_public_config(request: Request):
             upi_vpa = settings_dict.get("upi_vpa") or upi_vpa
             upi_merchant = settings_dict.get("upi_merchant_name") or upi_merchant
             currency = settings_dict.get("currency") or currency
+            wifi_ssid = settings_dict.get("wifi_ssid") or wifi_ssid
+            wifi_auth_type = settings_dict.get("wifi_auth_type") or wifi_auth_type
         conn.close()
     except Exception:
         pass
@@ -2020,6 +2027,8 @@ def get_public_config(request: Request):
         "radius_host": host,
         "radius_ports": {"auth": 1812, "acct": 1813, "coa": 3799},
         "portal_path": "/radius/portal",
+        "wifi_ssid": wifi_ssid,
+        "wifi_auth_type": wifi_auth_type,
         "signer_configured": bool(CERT_SIGNER_API_URL),
         "admin_contact": {
             "phone": phone,
@@ -2033,7 +2042,7 @@ def get_public_config(request: Request):
     }
 
 # ============================================================================
-# Dynamic System Settings (Admin Configurable Contact, UPI, Currency)
+# Dynamic System Settings (Admin Configurable Contact, UPI, Currency, WiFi)
 # ============================================================================
 @app.get("/radius/api/settings", tags=["Settings"])
 @app.get("/api/settings", tags=["Settings"])
@@ -2054,6 +2063,10 @@ def get_all_settings(_: str = Depends(authenticate_admin)):
                 settings_map["cert_signer_api_url"] = CERT_SIGNER_API_URL
             if "cert_signer_api_key" not in settings_map:
                 settings_map["cert_signer_api_key"] = CERT_SIGNER_API_KEY
+            if "wifi_ssid" not in settings_map:
+                settings_map["wifi_ssid"] = "RajLabs-Enterprise"
+            if "wifi_auth_type" not in settings_map:
+                settings_map["wifi_auth_type"] = "WPA2-Enterprise / EAP-TLS"
 
             return {
                 "settings": settings_map,
@@ -2109,14 +2122,27 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
                     INSERT INTO system_settings (key, value, description, updated_at)
                     VALUES ('cert_signer_api_url', %s, 'Central Rajlabs-CA Cert-Signer API Base URL', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
-                """, (payload.cert_signer_api_url.strip().rstrip("/"),))
+                    """, (payload.cert_signer_api_url.strip().rstrip("/"),))
             if payload.cert_signer_api_key is not None:
                 cur.execute("""
                     INSERT INTO system_settings (key, value, description, updated_at)
                     VALUES ('cert_signer_api_key', %s, 'Central Rajlabs-CA Cert-Signer API Key / Token', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                 """, (payload.cert_signer_api_key.strip(),))
+            if payload.wifi_ssid is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('wifi_ssid', %s, 'Broadcast Wi-Fi SSID Network Name', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.wifi_ssid.strip(),))
+            if payload.wifi_auth_type is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('wifi_auth_type', %s, 'Default Wi-Fi Authentication Security Type', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.wifi_auth_type.strip(),))
             conn.commit()
+
 
         # Invalidate signer probe cache on settings update
         _SIGNER_STATUS_CACHE.update({"at": 0.0, "data": None})

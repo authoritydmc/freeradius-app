@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { 
   Settings, Save, Key, Shield, Phone, CreditCard, RefreshCw, 
-  CheckCircle2, AlertCircle, ExternalLink, Globe, Wifi, QrCode
+  CheckCircle2, AlertCircle, ExternalLink, Globe, Wifi, QrCode,
+  Printer, Copy, Check
 } from 'lucide-react';
 import { fetchJson } from '../utils/api';
 
@@ -10,6 +12,7 @@ export default function SettingsTab({ onNotify }) {
   const [saving, setSaving] = useState(false);
   const [testingSigner, setTestingSigner] = useState(false);
   const [signerStatus, setSignerStatus] = useState(null);
+  const [copiedQrString, setCopiedQrString] = useState(false);
 
   const [form, setForm] = useState({
     admin_contact_name: '',
@@ -19,7 +22,9 @@ export default function SettingsTab({ onNotify }) {
     default_voucher_code: '',
     currency: 'INR',
     cert_signer_api_url: '',
-    cert_signer_api_key: ''
+    cert_signer_api_key: '',
+    wifi_ssid: 'RajLabs-Enterprise',
+    wifi_auth_type: 'WPA2-Enterprise / EAP-TLS'
   });
 
   const loadSettings = async () => {
@@ -35,7 +40,9 @@ export default function SettingsTab({ onNotify }) {
           default_voucher_code: data.settings.default_voucher_code || '',
           currency: data.settings.currency || 'INR',
           cert_signer_api_url: data.settings.cert_signer_api_url || '',
-          cert_signer_api_key: data.settings.cert_signer_api_key || ''
+          cert_signer_api_key: data.settings.cert_signer_api_key || '',
+          wifi_ssid: data.settings.wifi_ssid || 'RajLabs-Enterprise',
+          wifi_auth_type: data.settings.wifi_auth_type || 'WPA2-Enterprise / EAP-TLS'
         });
       }
       checkSignerStatus(false);
@@ -89,6 +96,15 @@ export default function SettingsTab({ onNotify }) {
     }
   };
 
+  const qrWifiString = `WIFI:T:WPA;S:${form.wifi_ssid || 'RajLabs-Enterprise'};;`;
+
+  const handleCopyQr = () => {
+    navigator.clipboard.writeText(qrWifiString);
+    setCopiedQrString(true);
+    onNotify?.('Copied Wi-Fi connection string to clipboard', 'info');
+    setTimeout(() => setCopiedQrString(false), 2000);
+  };
+
   return (
     <div className="space-y-6">
       {/* Header Controls */}
@@ -99,7 +115,7 @@ export default function SettingsTab({ onNotify }) {
           </div>
           <div>
             <h2 className="text-lg font-bold text-white">System Settings & Gateway Integrations</h2>
-            <p className="text-xs text-slate-400">Configure central PKI Cert-Signer API, UPI payments, and support contacts</p>
+            <p className="text-xs text-slate-400">Configure Wi-Fi SSID, Direct Connect QR, central PKI Signer, and UPI payments</p>
           </div>
         </div>
 
@@ -107,7 +123,7 @@ export default function SettingsTab({ onNotify }) {
           type="button"
           onClick={handleSave}
           disabled={saving}
-          className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white rounded-xl text-sm font-semibold shadow-md shadow-amber-500/20 transition disabled:opacity-50"
+          className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white rounded-xl text-sm font-semibold shadow-md shadow-amber-500/20 transition disabled:opacity-50 cursor-pointer"
         >
           {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
           <span>Save Changes</span>
@@ -115,6 +131,83 @@ export default function SettingsTab({ onNotify }) {
       </div>
 
       <form onSubmit={handleSave} className="space-y-6">
+        {/* Wi-Fi SSID & Direct Connect QR Settings Card */}
+        <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+          <div className="flex items-center gap-2.5 border-b border-slate-800 pb-3">
+            <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-xl border border-indigo-500/20">
+              <Wifi className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-white text-base">Broadcast Wi-Fi & Direct Connect QR Code</h3>
+              <p className="text-xs text-slate-400">Set the default network name (SSID) encoded into connection QR codes and Apple profiles</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+            <div className="lg:col-span-7 space-y-4">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Wi-Fi Network Name (SSID) *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. RajLabs-Enterprise or RajLabs-Guest"
+                  value={form.wifi_ssid}
+                  onChange={e => setForm({ ...form, wifi_ssid: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500 font-mono font-bold"
+                />
+                <p className="text-[11px] text-slate-500">Matches the broadcast SSID configured on your MikroTik, UniFi, or Cisco APs.</p>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Security / Authentication Type</label>
+                <select
+                  value={form.wifi_auth_type}
+                  onChange={e => setForm({ ...form, wifi_auth_type: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="WPA2-Enterprise / EAP-TLS">WPA2/WPA3-Enterprise (802.1X EAP-TLS / PEAP)</option>
+                  <option value="WPA2-Personal (PSK)">WPA2-Personal (Pre-Shared Key)</option>
+                  <option value="Open / Captive Web Auth">Open Network + Captive Portal Splash</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Live QR Badge Preview */}
+            <div className="lg:col-span-5 bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col items-center text-center space-y-3">
+              <div className="p-3 bg-white rounded-xl shadow-lg border border-indigo-500/20">
+                <QRCodeSVG
+                  value={qrWifiString}
+                  size={140}
+                  level="H"
+                  includeMargin={false}
+                />
+              </div>
+              <div>
+                <span className="font-mono text-xs font-bold text-indigo-300 block">{form.wifi_ssid || 'RajLabs-Enterprise'}</span>
+                <span className="text-[10px] text-slate-400">Direct Connect Wi-Fi QR Preview</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleCopyQr}
+                  className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs flex items-center gap-1 border border-slate-700"
+                >
+                  {copiedQrString ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>Copy String</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="px-2.5 py-1 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 rounded-lg text-xs flex items-center gap-1 border border-indigo-500/30"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Print Badge</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* PKI & Cert-Signer Integration Card */}
         <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
           <div className="flex items-center justify-between border-b border-slate-800 pb-3">

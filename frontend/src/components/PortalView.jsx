@@ -1,23 +1,28 @@
 import React, { useState, useEffect } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { 
   Wifi, Shield, Smartphone, Key, Download, CheckCircle2, 
   AlertCircle, RefreshCw, Apple, Globe, CreditCard, Phone, 
-  HelpCircle, ExternalLink, ArrowRight, Copy, Check, Lock, Sparkles
+  HelpCircle, ExternalLink, ArrowRight, Copy, Check, Lock, Sparkles, QrCode, Printer
 } from 'lucide-react';
 import { fetchJson, apiRequest } from '../utils/api';
 
 export default function PortalView() {
   const [config, setConfig] = useState(null);
-  const [activeTab, setActiveTab] = useState('enroll'); // 'enroll', 'setup', 'voucher', 'help'
+  const [activeTab, setActiveTab] = useState('qr'); // 'qr', 'enroll', 'setup', 'help'
   const [enrollForm, setEnrollForm] = useState({ username: '', password: '', cert_password: '' });
   const [enrolling, setEnrolling] = useState(false);
   const [enrollResult, setEnrollResult] = useState(null);
   const [enrollError, setEnrollError] = useState('');
   const [copiedPass, setCopiedPass] = useState(false);
+  const [copiedQrString, setCopiedQrString] = useState(false);
 
   useEffect(() => {
     fetchJson('public-config').then(setConfig).catch(() => {});
   }, []);
+
+  const ssid = config?.wifi_ssid || 'RajLabs-Enterprise';
+  const wifiString = `WIFI:T:WPA;S:${ssid};;`;
 
   const handleEnroll = async (e) => {
     e.preventDefault();
@@ -41,6 +46,12 @@ export default function PortalView() {
     navigator.clipboard.writeText(text);
     setCopiedPass(true);
     setTimeout(() => setCopiedPass(false), 2000);
+  };
+
+  const handleCopyQr = () => {
+    navigator.clipboard.writeText(wifiString);
+    setCopiedQrString(true);
+    setTimeout(() => setCopiedQrString(false), 2000);
   };
 
   return (
@@ -77,27 +88,86 @@ export default function PortalView() {
         {/* Navigation Tabs */}
         <div className="flex bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 max-w-xl mx-auto mb-8 shadow-xl">
           <button
+            onClick={() => setActiveTab('qr')}
+            className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'qr' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            <QrCode className="w-3.5 h-3.5" />
+            <span>Direct Wi-Fi QR</span>
+          </button>
+          <button
             onClick={() => setActiveTab('enroll')}
             className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'enroll' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>1-Click Cert Enroll</span>
+            <span>Cert Enrollment</span>
           </button>
           <button
             onClick={() => setActiveTab('setup')}
             className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'setup' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Root CA & Profiles</span>
+            <span>Root CA</span>
           </button>
           <button
             onClick={() => setActiveTab('help')}
             className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'help' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Phone className="w-3.5 h-3.5" />
-            <span>Support & Pay</span>
+            <span>Support</span>
           </button>
         </div>
+
+        {/* Tab: Direct Wi-Fi QR Code */}
+        {activeTab === 'qr' && (
+          <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl max-w-md mx-auto w-full text-center space-y-5 animate-fade-in">
+            <div className="text-center">
+              <div className="inline-flex p-3 bg-indigo-500/10 text-indigo-400 rounded-2xl mb-2 border border-indigo-500/20">
+                <Wifi className="w-6 h-6" />
+              </div>
+              <h2 className="text-xl font-bold text-white">Scan to Connect Wi-Fi</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Point your phone or tablet camera at the QR code below to connect to the network automatically.
+              </p>
+            </div>
+
+            <div className="inline-block p-4 bg-white rounded-3xl shadow-xl border-4 border-indigo-500/30">
+              <QRCodeSVG
+                value={wifiString}
+                size={200}
+                level="H"
+                includeMargin={false}
+              />
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-left space-y-2 text-xs font-mono">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400 font-sans">SSID:</span>
+                <span className="font-bold text-white">{ssid}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400 font-sans">Security:</span>
+                <span className="text-indigo-300 font-semibold">{config?.wifi_auth_type || 'WPA2-Enterprise / EAP-TLS'}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <button
+                onClick={handleCopyQr}
+                className="flex items-center justify-center gap-2 py-2.5 px-3 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition"
+              >
+                {copiedQrString ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                <span>{copiedQrString ? 'Copied' : 'Copy String'}</span>
+              </button>
+              <button
+                onClick={() => window.print()}
+                className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Print QR Badge</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Tab 1: Certificate Enrollment */}
         {activeTab === 'enroll' && (
