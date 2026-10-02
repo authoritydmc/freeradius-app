@@ -1961,6 +1961,8 @@ def list_users(_: str = Depends(authenticate_admin)):
                         "group": row["groupname"],
                         "has_certificate": os.path.exists(cert_path),
                         "password_type": None,
+                        "password": None,
+                        "cleartext_password": None,
                         "expiration": None,
                         "active_sessions": 0,
                         "last_auth": None,
@@ -1968,15 +1970,20 @@ def list_users(_: str = Depends(authenticate_admin)):
                         "check_attributes": [],
                         "reply_attributes": []
                     }
-                if "Password" in row["attribute"] and not users_map[u]["password_type"]:
-                    users_map[u]["password_type"] = row["attribute"]
+                if "Password" in row["attribute"]:
+                    if not users_map[u]["password_type"]:
+                        users_map[u]["password_type"] = row["attribute"]
+                    if row["attribute"] in ("Cleartext-Password", "User-Password") and not users_map[u].get("password"):
+                        users_map[u]["password"] = row["value"]
+                        users_map[u]["cleartext_password"] = row["value"]
                 if row["attribute"].lower() == "expiration":
                     users_map[u]["expiration"] = row["value"]
                 users_map[u]["check_attributes"].append({
                     "id": row["id"],
                     "attribute": row["attribute"],
                     "op": row["op"],
-                    "value": "********" if "Password" in row["attribute"] else row["value"]
+                    "value": "********" if "Password" in row["attribute"] else row["value"],
+                    "raw_value": row["value"] if "Password" in row["attribute"] else None
                 })
 
             for row in replies:
@@ -2059,7 +2066,7 @@ def get_user_detail(username: str, _: str = Depends(authenticate_admin)):
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT rc.id, rc.username, rc.attribute, rc.op, rug.groupname
+                SELECT rc.id, rc.username, rc.attribute, rc.op, rc.value, rug.groupname
                 FROM radcheck rc
                 LEFT JOIN radusergroup rug ON rc.username = rug.username
                 WHERE rc.username = %s
@@ -2084,6 +2091,7 @@ def get_user_detail(username: str, _: str = Depends(authenticate_admin)):
                 pass
             cert_path = os.path.join(CLIENT_CERTS_DIR, f"{username}.p12")
             password_type = next((r["attribute"] for r in checks if "Password" in r["attribute"]), None)
+            cleartext_pass = next((r["value"] for r in checks if r.get("attribute") in ("Cleartext-Password", "User-Password")), None)
             phone = None
             try:
                 cur.execute("SELECT phone FROM users WHERE username = %s LIMIT 1", (username,))
@@ -2096,12 +2104,15 @@ def get_user_detail(username: str, _: str = Depends(authenticate_admin)):
                 "group": checks[0]["groupname"],
                 "has_certificate": os.path.exists(cert_path),
                 "password_type": password_type,
+                "password": cleartext_pass,
+                "cleartext_password": cleartext_pass,
                 "phone": phone,
                 "active_sessions": active_sessions,
                 "last_auth": last_auth,
                 "check_attributes": [
                     {"id": r["id"], "attribute": r["attribute"], "op": r["op"],
-                     "value": "********" if "Password" in r["attribute"] else None}
+                     "value": "********" if "Password" in r["attribute"] else r.get("value"),
+                     "raw_value": r.get("value") if "Password" in r["attribute"] else None}
                     for r in checks
                 ],
                 "reply_attributes": [
@@ -2343,11 +2354,20 @@ def get_user_overview(username: str, _: str = Depends(authenticate_admin)):
                 has_reject_row = bool(cur.fetchone())
             except Exception:
                 has_reject_row = False
+            cleartext_pass = None
+            try:
+                cur.execute("SELECT value FROM radcheck WHERE username = %s AND attribute IN ('Cleartext-Password', 'User-Password') ORDER BY id ASC LIMIT 1", (uname,))
+                cp_row = cur.fetchone()
+                cleartext_pass = cp_row["value"] if cp_row else None
+            except Exception:
+                pass
             return {
                 "username": uname,
                 "group": group,
                 "status": (u_row.get("status") if u_row else "ACTIVE"),
                 "banned": bool((u_row.get("status") if u_row else "") == "DISABLED" or has_reject_row),
+                "password": cleartext_pass,
+                "cleartext_password": cleartext_pass,
                 "phone": (u_row.get("phone") if u_row else None),
                 "recharge_required": recharge_required,
                 "recharge_policy": recharge_policy,

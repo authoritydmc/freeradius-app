@@ -209,11 +209,10 @@ def test_password_qr_auth_and_compact_groups():
     users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
     assert "users/${encodeURIComponent(resetUsername)}/password" in users_tab
     assert "reset-password" not in users_tab
-    # Reset modal: copy button + new-password labeling + Save & QR.
-    # Passwords are cleartext (MS-CHAP needs it), so the modal says the
-    # current one can't be shown and offers blank = phone-number reset.
+    # Reset modal: copy button + active password reveal + Save & QR.
     assert "Copy new password" in users_tab
-    assert "can't be shown" in users_tab
+    assert "Active Password" in users_tab
+    assert "Copy current password" in users_tab
     assert "Blank = reset to phone number" in users_tab
     assert "Save & QR" in users_tab
     # Table test-auth prompts for the secret and runs a real verdict

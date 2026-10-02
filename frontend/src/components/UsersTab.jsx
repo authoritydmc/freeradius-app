@@ -93,6 +93,9 @@ export default function UsersTab({
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [resetUsername, setResetUsername] = useState('');
   const [resetPassword, setResetPassword] = useState('');
+  const [resetUserObj, setResetUserObj] = useState(null);
+  const [resetCurrentPass, setResetCurrentPass] = useState('');
+  const [showCurrentPass, setShowCurrentPass] = useState(false);
   const [resetDisconnect, setResetDisconnect] = useState(false);
   const [resetSaving, setResetSaving] = useState(false);
   const [resetResult, setResetResult] = useState(null); // {ok, msg} inline confirmation
@@ -315,11 +318,21 @@ export default function UsersTab({
     }
   };
 
-  const handleOpenReset = (username) => {
-    setResetUsername(username);
+  const handleOpenReset = (userOrUsername) => {
+    const uObj = typeof userOrUsername === 'object' && userOrUsername !== null
+      ? userOrUsername
+      : (users.find(u => u.username === userOrUsername) || null);
+    const uname = typeof userOrUsername === 'object' && userOrUsername !== null
+      ? userOrUsername.username
+      : userOrUsername;
+    const currentPass = uObj?.cleartext_password || uObj?.password || '';
+    setResetUsername(uname);
+    setResetUserObj(uObj);
+    setResetCurrentPass(currentPass);
     setResetPassword(generateRandomPass());
     setResetDisconnect(false);
     setShowResetPass(true);
+    setShowCurrentPass(false);
     setResetResult(null);
     setResetModalOpen(true);
   };
@@ -838,8 +851,8 @@ export default function UsersTab({
                 <td className="px-3 py-3 text-right whitespace-nowrap">
                   <span className="inline-flex items-center gap-0.5">
                     <button
-                      onClick={() => handleOpenReset(user.username)}
-                      title="Reset password"
+                      onClick={() => handleOpenReset(user)}
+                      title="Reset / View password"
                       className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 rounded-lg transition-colors"
                     >
                       <Key className="w-4 h-4" />
@@ -855,7 +868,7 @@ export default function UsersTab({
                       title={`More actions for ${user.username}`}
                       items={[
                         { icon: <MessageCircle className="w-4 h-4 text-emerald-400" />, label: 'Onboarding invite', onSelect: async () => { setOnboardUser(user); } },
-                        { icon: <QrCode className="w-4 h-4 text-indigo-400" />, label: 'Wi-Fi QR pass', onSelect: async () => { setQrModalUser(user); } },
+                        { icon: <QrCode className="w-4 h-4 text-indigo-400" />, label: 'Wi-Fi QR pass', onSelect: async () => { setQrModalUser({ ...user, password: user.cleartext_password || user.password }); } },
                         { icon: <Smartphone className="w-4 h-4 text-sky-400" />, label: 'Device MAC lock', onSelect: async () => { handleOpenDevicePolicy(user.username); } },
                         { icon: <Play className="w-4 h-4 text-indigo-400" />, label: 'Open in tester', onSelect: async () => { handleTestAuth(user.username); } },
                         user.banned
@@ -1196,12 +1209,60 @@ export default function UsersTab({
             )}
 
             <div className="space-y-3.5 text-xs">
-              <p className="-mb-1 text-[11px] text-slate-500">
-                The current password can't be shown — enter
-                <span className="text-amber-300 font-semibold"> a new one below (blank = use the user's phone number)</span>.
-              </p>
+              {/* Current Active Password Card */}
+              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-3 space-y-2">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400 font-medium flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5 text-amber-400" /> Active Password
+                  </span>
+                  {resetCurrentPass && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResetModalOpen(false);
+                        setQrModalUser({ ...(resetUserObj || { username: resetUsername }), password: resetCurrentPass });
+                      }}
+                      className="text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 hover:underline text-[11px]"
+                    >
+                      <QrCode className="w-3.5 h-3.5" /> Wi-Fi QR pass
+                    </button>
+                  )}
+                </div>
+                {resetCurrentPass ? (
+                  <div className="flex items-center justify-between bg-slate-900 border border-slate-800/80 rounded-xl px-3 py-2">
+                    <span className="font-mono text-amber-300 text-xs tracking-wider select-all">
+                      {showCurrentPass ? resetCurrentPass : '••••••••••••'}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <CopyButton
+                        text={resetCurrentPass}
+                        title="Copy current password"
+                        className="text-slate-400 hover:text-white p-1"
+                        iconClassName="w-3.5 h-3.5"
+                        onCopied={() => onNotify?.('Current password copied!', 'success')}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCurrentPass(!showCurrentPass)}
+                        className="text-slate-400 hover:text-white p-1"
+                        title={showCurrentPass ? 'Hide password' : 'Show password'}
+                      >
+                        {showCurrentPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-slate-500 italic text-[11px]">
+                    No cleartext password on file (EAP-TLS certificate identity or hashed).
+                  </p>
+                )}
+              </div>
+
+              {/* Set New Password */}
               <div>
-                <label className="block text-slate-300 mb-1 font-medium">New auto-generated password</label>
+                <label className="block text-slate-300 mb-1 font-medium">
+                  Set New Password <span className="text-slate-500 font-normal">(leave blank = user phone number)</span>
+                </label>
                 <div className="flex gap-1.5">
                   <div className="relative flex-1">
                     <input

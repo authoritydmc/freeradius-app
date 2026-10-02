@@ -36,8 +36,8 @@ export default function WifiQrModal({
   const effectiveHasCert = Boolean(user?.has_certificate);
   const effectiveExpiry = user?.expiration || '';
   // Password may arrive via prop or via the user object (e.g. right after a
-  // password reset, when the fresh secret is still known). Sync on open/user.
-  const incomingPass = password || user?.password || '';
+  // password reset, or from cleartext_password on file). Sync on open/user.
+  const incomingPass = password || user?.password || user?.cleartext_password || '';
 
   const [activeTab, setActiveTab] = useState('portal'); // 'portal' | 'wifi' | 'cert'
   const [customSsid, setCustomSsid] = useState(ssid);
@@ -247,6 +247,12 @@ ${customPass ? `🔑 Password: ${customPass}\n` : ''}${effectiveExpiry ? `⏳ Ex
                 <div className="flex justify-between items-center text-slate-300 print:text-black">
                   <span className="text-slate-400 print:text-gray-600 font-sans">Expiry:</span>
                   <span className="text-amber-400 font-bold">{effectiveExpiry}</span>
+                </div>
+              )}
+              {customPass && (
+                <div className="flex justify-between items-center text-slate-300 print:text-black">
+                  <span className="text-slate-400 print:text-gray-600 font-sans">Password:</span>
+                  <span className="text-amber-300 font-bold font-mono">{customPass}</span>
                 </div>
               )}
               {activeTab === 'wifi' && (
