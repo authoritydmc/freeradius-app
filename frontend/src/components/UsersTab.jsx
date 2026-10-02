@@ -24,12 +24,16 @@ import {
   QrCode,
   Lock,
   Unlock,
-  ShieldAlert
+  ShieldAlert,
+  MessageCircle,
+  Phone
 } from 'lucide-react';
 import { calculatePasswordStrength, fetchJson, formatDateTime } from '../utils/api';
 import WifiQrModal from './WifiQrModal';
 import ResponsiveTable from './ResponsiveTable';
 import UserDetailModal from './UserDetailModal';
+import CertIssuedModal from './CertIssuedModal';
+import OnboardModal from './OnboardModal';
 
 export default function UsersTab({
   users: propUsers,
@@ -62,7 +66,7 @@ export default function UsersTab({
   // User Add/Edit Modal
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [userForm, setUserForm] = useState({ username: '', password: '', group: 'staff', static_ip: '' });
+  const [userForm, setUserForm] = useState({ username: '', password: '', group: 'staff', static_ip: '', phone: '' });
   const [showPass, setShowPass] = useState(false);
   const [userModalSaving, setUserModalSaving] = useState(false);
 
@@ -85,8 +89,14 @@ export default function UsersTab({
   // Wi-Fi QR Access Pass Modal
   const [qrModalUser, setQrModalUser] = useState(null);
 
+  // Onboarding invite (WhatsApp/SMS)
+  const [onboardUser, setOnboardUser] = useState(null);
+
   // Subscriber dossier popup (subscription + stats + devices + history)
   const [detailUser, setDetailUser] = useState(null);
+
+  // Issued-certificate handoff (password shown once, close gated on save)
+  const [certIssued, setCertIssued] = useState(null);
 
   const loadData = async () => {
     try {
@@ -132,7 +142,8 @@ export default function UsersTab({
       username: '',
       password: generateRandomPass(),
       group: groups[0]?.groupname || 'staff',
-      static_ip: ''
+      static_ip: '',
+      phone: ''
     });
     setShowPass(false);
     setUserModalOpen(true);
@@ -145,7 +156,8 @@ export default function UsersTab({
       username: user.username,
       password: '',
       group: user.group || (groups[0]?.groupname || 'staff'),
-      static_ip: framed ? framed.value : ''
+      static_ip: framed ? framed.value : '',
+      phone: user.phone || ''
     });
     setShowPass(false);
     setUserModalOpen(true);
@@ -160,7 +172,8 @@ export default function UsersTab({
           username: userForm.username,
           password: userForm.password,
           group: userForm.group,
-          framed_ip: userForm.static_ip
+          framed_ip: userForm.static_ip,
+          phone: userForm.phone?.trim() || undefined
         }, isEditing);
       } else {
         const endpoint = isEditing ? `users/${userForm.username}` : 'users';
@@ -171,7 +184,8 @@ export default function UsersTab({
             username: userForm.username,
             password: userForm.password,
             group: userForm.group,
-            framed_ip: userForm.static_ip
+            framed_ip: userForm.static_ip,
+            phone: userForm.phone?.trim() || undefined
           })
         });
         onNotify?.(res.message || `User '${userForm.username}' saved successfully!`, 'success');
@@ -180,7 +194,8 @@ export default function UsersTab({
             username: userForm.username,
             password: userForm.password,
             group: userForm.group,
-            static_ip: userForm.static_ip
+            static_ip: userForm.static_ip,
+            phone: userForm.phone?.trim() || ''
           });
         }
         loadData();
@@ -272,6 +287,16 @@ export default function UsersTab({
     }
   };
 
+  const handleSaveOnboardPhone = async (phone) => {
+    if (!onboardUser) return;
+    await fetchJson(`users/${encodeURIComponent(onboardUser.username)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ phone })
+    });
+    setOnboardUser(prev => (prev ? { ...prev, phone } : prev));
+    loadData();
+  };
+
   const handleIssueCert = async (username) => {
     try {
       if (propOnIssueCert) {
@@ -281,7 +306,8 @@ export default function UsersTab({
           method: 'POST',
           body: JSON.stringify({ username, valid_days: 365 })
         });
-        onNotify?.(`Certificate generated for '${username}'! Password: ${res.p12_password}`, 'success');
+        // Password exists only in this response — hand it over via the gated popup
+        setCertIssued({ username: res.username || username, p12_password: res.p12_password, authority: res.authority });
         loadData();
       }
     } catch (err) {
@@ -511,6 +537,12 @@ export default function UsersTab({
                             last: {formatDateTime(user.last_auth)}
                           </span>
                         )}
+                        {user.phone && (
+                          <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1" title={`Onboarding phone: ${user.phone}`}>
+                            <Phone className="w-2.5 h-2.5" />
+                            <span>{user.phone}</span>
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -616,6 +648,13 @@ export default function UsersTab({
 
                 {/* Action Buttons */}
                 <td className="px-3 sm:px-6 py-3 sm:py-4 text-right space-x-1 whitespace-nowrap">
+                  <button
+                    onClick={() => setOnboardUser(user)}
+                    title="Send WhatsApp/SMS onboarding invite"
+                    className="p-1.5 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 rounded-lg transition-colors"
+                  >
+                    <MessageCircle className="w-4 h-4" />
+                  </button>
                   <button
                     onClick={() => setQrModalUser(user)}
                     title="Show / Send Wi-Fi QR Access Pass"
@@ -863,6 +902,19 @@ export default function UsersTab({
                   value={userForm.static_ip} 
                   onChange={(e) => setUserForm({ ...userForm, static_ip: e.target.value })}
                   placeholder="e.g. 192.168.1.50 (blank = DHCP)" 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 mb-1 font-medium">
+                  Phone Number <span className="text-slate-500 font-normal">(for WhatsApp/SMS onboarding)</span>
+                </label>
+                <input
+                  type="tel"
+                  value={userForm.phone || ''}
+                  onChange={(e) => setUserForm({ ...userForm, phone: e.target.value })}
+                  placeholder="e.g. +919876543210"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono"
                 />
               </div>
@@ -1182,6 +1234,25 @@ export default function UsersTab({
         <UserDetailModal
           username={detailUser}
           onClose={() => setDetailUser(null)}
+          onNotify={onNotify}
+        />
+      )}
+
+      {/* 7. ISSUED-CERT HANDOFF (gated on copy/download) */}
+      {certIssued && (
+        <CertIssuedModal
+          data={certIssued}
+          onClose={() => setCertIssued(null)}
+          onNotify={onNotify}
+        />
+      )}
+
+      {/* 8. ONBOARDING INVITE (WhatsApp/SMS) */}
+      {onboardUser && (
+        <OnboardModal
+          user={onboardUser}
+          onClose={() => setOnboardUser(null)}
+          onSavePhone={handleSaveOnboardPhone}
           onNotify={onNotify}
         />
       )}

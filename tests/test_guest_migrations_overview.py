@@ -146,3 +146,41 @@ def test_group_restricted_plans():
     assert "visiblePlans" in portal
     dash = Path("frontend/src/components/UserDashboard.jsx").read_text(encoding="utf-8")
     assert "visiblePlans" in dash
+
+
+def test_cert_handoff_popup_and_upstream_revoke():
+    import inspect
+    from api.app import (
+        revoke_client_certificate, delete_client_certificate,
+        delete_orphaned_certificate, revoke_upstream_certificate,
+    )
+    # Delete/revoke go upstream (signer delete API + CRL) with local ledger
+    assert Path("api/migrations/004_revoked_certificates.sql").exists()
+    assert "/api/v1/certificates/" in inspect.getsource(revoke_upstream_certificate)
+    assert "revoke_upstream_certificate" in inspect.getsource(delete_client_certificate)
+    assert "record_cert_revocation" in inspect.getsource(delete_client_certificate)
+    assert "record_cert_revocation" in inspect.getsource(revoke_client_certificate)
+    assert "record_cert_revocation" in inspect.getsource(delete_orphaned_certificate)
+    # Fresh issue clears the revocation record
+    from api.app import issue_client_certificate
+    assert "clear_cert_revocation" in inspect.getsource(issue_client_certificate)
+    # Gated handoff popup: password shown once, close requires copy/download
+    modal = Path("frontend/src/components/CertIssuedModal.jsx").read_text(encoding="utf-8")
+    assert "shown once" in modal and "attemptClose" in modal
+    for f in ("UsersTab.jsx", "CertsTab.jsx", "UserDashboard.jsx"):
+        src = Path(f"frontend/src/components/{f}").read_text(encoding="utf-8")
+        assert "CertIssuedModal" in src, f
+
+
+def test_phone_onboarding():
+    import inspect
+    from api.app import create_or_update_user, update_user_profile, list_users
+    assert "phone" in inspect.getsource(create_or_update_user)
+    assert "phone" in inspect.getsource(update_user_profile)
+    assert "phone" in inspect.getsource(list_users)
+    modal = Path("frontend/src/components/OnboardModal.jsx").read_text(encoding="utf-8")
+    assert "wa.me" in modal and "sms:" in modal
+    users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
+    assert "OnboardModal" in users_tab and "phone" in users_tab
+    cred = Path("frontend/src/components/CredResultModal.jsx").read_text(encoding="utf-8")
+    assert "wa.me/${phoneDigits}" in cred

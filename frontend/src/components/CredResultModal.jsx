@@ -25,6 +25,7 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
   const username = activeCred.username || '';
   const password = activeCred.password || '';
   const validity = activeCred.validity || '';
+  const phoneDigits = String(activeCred.phone || '').replace(/\D/g, '');
   const portalUrl = typeof window !== 'undefined' ? `${window.location.origin}/radius/portal` : '/radius/portal';
 
   // Standard Wi-Fi direct connect string (scannable by iOS and Android cameras)
@@ -164,13 +165,14 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
           </button>
 
           <a 
-            href={`https://wa.me/?text=${encodeURIComponent(shareText)}`}
+            href={phoneDigits ? `https://wa.me/${phoneDigits}?text=${encodeURIComponent(shareText)}` : `https://wa.me/?text=${encodeURIComponent(shareText)}`}
             target="_blank" 
             rel="noopener noreferrer"
+            title={phoneDigits ? `Send to ${activeCred.phone} on WhatsApp` : 'Share via WhatsApp'}
             className="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl flex items-center justify-center gap-1.5 transition font-medium text-center"
           >
             <i className="fa-brands fa-whatsapp text-sm" />
-            <span>WhatsApp</span>
+            <span>{phoneDigits ? 'WhatsApp user' : 'WhatsApp'}</span>
           </a>
 
           <a 

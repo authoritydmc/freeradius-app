@@ -17,6 +17,7 @@ import string
 import datetime
 import urllib.request
 import urllib.error
+import urllib.parse
 from xml.sax.saxutils import escape as _xml_escape
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -1130,6 +1131,8 @@ class UserCreateRequest(BaseModel):
     attributes: Optional[Dict[str, str]] = None
     # Static client IP: None = leave existing pinning untouched, "" = remove it (DHCP), value = pin it.
     framed_ip: Optional[str] = None
+    # Contact for onboarding (WhatsApp/SMS invites). Stored in central users table.
+    phone: Optional[str] = None
 
 class UserUpdateRequest(BaseModel):
     password: Optional[str] = None
@@ -1137,6 +1140,52 @@ class UserUpdateRequest(BaseModel):
     group: Optional[str] = None
     attributes: Optional[Dict[str, str]] = None
     framed_ip: Optional[str] = None
+    phone: Optional[str] = None
+
+
+def normalize_phone(value: Optional[str]) -> Optional[str]:
+    """Validate + normalize an onboarding phone number (None/"" clears it)."""
+    if value is None:
+        return None
+    digits = re.sub(r"\D", "", value or "")
+    # Allow leading country code: 7-15 digits total (E.164 range)
+    if value and value.strip():
+        if not (7 <= len(digits) <= 15):
+            raise HTTPException(status_code=422, detail="Invalid phone number. Use 7-15 digits, e.g. +919876543210.")
+        return "+" + digits if str(value).strip().startswith("+") else digits
+    return None
+
+
+def upsert_user_contact(cur, username: str, phone: Optional[str] = None,
+                      set_phone: bool = False, group_name: Optional[str] = None):
+    """Best-effort central-users contact write (never fails user CRUD).
+
+    set_phone=False only ensures the row exists; set_phone=True writes/clears
+    the phone number ("" clears it to NULL).
+    """
+    try:
+        gid = None
+        if group_name:
+            cur.execute("SELECT id FROM groups WHERE UPPER(name) = UPPER(%s) LIMIT 1", (group_name.strip(),))
+            grow = cur.fetchone()
+            gid = grow["id"] if grow else None
+        if set_phone:
+            cur.execute("""
+                INSERT INTO users (username, password_hash, phone, group_id, status)
+                VALUES (%s, %s, %s, %s, 'ACTIVE')
+                ON CONFLICT (username) DO UPDATE SET
+                    phone = EXCLUDED.phone,
+                    group_id = COALESCE(EXCLUDED.group_id, users.group_id)
+            """, (username, generate_session_secret(24), phone, gid))
+        else:
+            cur.execute("""
+                INSERT INTO users (username, password_hash, group_id, status)
+                VALUES (%s, %s, %s, 'ACTIVE')
+                ON CONFLICT (username) DO UPDATE SET
+                    group_id = COALESCE(EXCLUDED.group_id, users.group_id)
+            """, (username, generate_session_secret(24), gid))
+    except Exception as e:
+        logger.debug("central user contact upsert skipped for %s: %s", username, e)
 
 class GuestUserGenerateRequest(BaseModel):
     duration: Optional[str] = "24h" # "1h", "6h", "12h", "24h" (default), "3d", "7d", "30d"
@@ -1522,6 +1571,16 @@ def list_users(_: str = Depends(authenticate_admin)):
             except Exception:
                 pass
 
+            # Onboarding contact numbers (central users table)
+            phones: Dict[str, str] = {}
+            try:
+                cur.execute("SELECT username, phone FROM users WHERE phone IS NOT NULL AND phone <> ''")
+                for r in cur.fetchall():
+                    if r.get("phone"):
+                        phones[r["username"]] = r["phone"]
+            except Exception:
+                pass
+
             users_map = {}
             for row in checks:
                 u = row["username"]
@@ -1536,6 +1595,7 @@ def list_users(_: str = Depends(authenticate_admin)):
                         "expiration": None,
                         "active_sessions": 0,
                         "last_auth": None,
+                        "phone": None,
                         "check_attributes": [],
                         "reply_attributes": []
                     }
@@ -1563,6 +1623,7 @@ def list_users(_: str = Depends(authenticate_admin)):
             for u, data in users_map.items():
                 data["active_sessions"] = active_counts.get(u, 0)
                 data["last_auth"] = last_auth.get(u)
+                data["phone"] = phones.get(u)
 
             # Active subscription per user (for Users-table subscription column).
             # Best-effort: central `users`/`subscriptions` may lag radcheck-only rows.
@@ -1653,11 +1714,19 @@ def get_user_detail(username: str, _: str = Depends(authenticate_admin)):
                 pass
             cert_path = os.path.join(CLIENT_CERTS_DIR, f"{username}.p12")
             password_type = next((r["attribute"] for r in checks if "Password" in r["attribute"]), None)
+            phone = None
+            try:
+                cur.execute("SELECT phone FROM users WHERE username = %s LIMIT 1", (username,))
+                prow = cur.fetchone()
+                phone = prow["phone"] if prow else None
+            except Exception:
+                pass
             return {
                 "username": username,
                 "group": checks[0]["groupname"],
                 "has_certificate": os.path.exists(cert_path),
                 "password_type": password_type,
+                "phone": phone,
                 "active_sessions": active_sessions,
                 "last_auth": last_auth,
                 "check_attributes": [
@@ -1701,7 +1770,7 @@ def get_user_overview(username: str, _: str = Depends(authenticate_admin)):
             # Central user id (may be missing for legacy radcheck-only users)
             user_id = None
             try:
-                cur.execute("SELECT id, status FROM users WHERE username = %s LIMIT 1", (uname,))
+                cur.execute("SELECT id, status, phone FROM users WHERE username = %s LIMIT 1", (uname,))
                 u_row = cur.fetchone()
                 if u_row:
                     user_id = u_row["id"]
@@ -1903,6 +1972,7 @@ def get_user_overview(username: str, _: str = Depends(authenticate_admin)):
                 "username": uname,
                 "group": group,
                 "status": (u_row.get("status") if u_row else "ACTIVE"),
+                "phone": (u_row.get("phone") if u_row else None),
                 "recharge_required": recharge_required,
                 "recharge_policy": recharge_policy,
                 "has_certificate": os.path.exists(cert_path),
@@ -2076,6 +2146,7 @@ def get_ip_coverage(ip: str = Query(...), _: str = Depends(authenticate_admin)):
 @app.post("/api/users", tags=["Users"])
 def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(authenticate_admin)):
     validate_password_policy(payload.password, payload.username)
+    phone = normalize_phone(payload.phone) if payload.phone is not None else None
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -2128,6 +2199,11 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
                 else:
                     cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Framed-IP-Address'", (payload.username,))
 
+            # Onboarding contact (central users table; never fails the CRUD)
+            upsert_user_contact(cur, payload.username, phone=phone,
+                                set_phone=payload.phone is not None,
+                                group_name=payload.group)
+
             conn.commit()
             merged = dict(payload.attributes or {})
             merged.update(ip_attrs)
@@ -2144,6 +2220,7 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
 @app.put("/api/users/{username}", tags=["Users"])
 def update_user_profile(username: str, payload: UserUpdateRequest, admin_user: str = Depends(authenticate_admin)):
     uname = validate_username(username)
+    phone = normalize_phone(payload.phone) if payload.phone is not None else None
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -2193,6 +2270,12 @@ def update_user_profile(username: str, payload: UserUpdateRequest, admin_user: s
                     ip_attrs = {"Framed-IP-Address": payload.framed_ip.strip()}
                 else:
                     cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Framed-IP-Address'", (uname,))
+
+            # Onboarding contact ("" clears; None leaves unchanged)
+            if payload.phone is not None or (payload.group is not None and payload.group.strip()):
+                upsert_user_contact(cur, uname, phone=phone,
+                                    set_phone=payload.phone is not None,
+                                    group_name=(payload.group or "").strip() or None)
 
             conn.commit()
             merged = dict(payload.attributes or {})
@@ -4696,6 +4779,15 @@ def issue_client_certificate(payload: IssueCertRequest, request: Request, admin_
 
         log_audit(admin_user, "cert_issue", uname, f"authority={authority}, valid_days={days}, email={email}, auto_provisioned={user_auto_created}")
         logger.info("Client certificate issued username=%s by=%s via=%s auto_created=%s", uname, admin_user, authority, user_auto_created)
+        # A fresh issue supersedes any prior revocation record for this user.
+        try:
+            c = get_db_connection()
+            with c.cursor() as cur:
+                clear_cert_revocation(cur, uname)
+                c.commit()
+            c.close()
+        except Exception as e:
+            logger.debug("revocation clear skipped for %s: %s", uname, e)
         return {
             "status": "success",
             "message": f"EAP-TLS Client certificate issued for user '{uname}' (Signed via {authority})",
@@ -4730,26 +4822,118 @@ def list_orphaned_certificates(_: str = Depends(authenticate_admin)):
     return sorted(disk_users - db_users)
 
 
+def _signer_api_root(signer_url: str) -> str:
+    """Normalize any configured signer base to the API root (…/api/v1)."""
+    base = (signer_url or "").rstrip("/")
+    for suffix in ("/api/v1/sign", "/api/v1/revoke", "/api/v1"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)] + "/api/v1"
+    return base + "/api/v1"
+
+
+def _signer_headers(signer_key: str) -> dict:
+    headers = {"Content-Type": "application/json", "User-Agent": "RajLabs-FreeRADIUS/2.5"}
+    if signer_key:
+        headers["x-api-key"] = signer_key
+        headers["X-API-KEY"] = signer_key
+        headers["Authorization"] = f"Bearer {signer_key}"
+    return headers
+
+
+def revoke_upstream_certificate(uname: str, reason: str = "keyCompromise") -> Dict[str, Any]:
+    """Revoke/delete a certificate at the central signer (upstream of us).
+
+    Tries the RESTful delete API first (DELETE /api/v1/certificates/{user} —
+    the signer internally revokes, publishes CRL and deletes the record),
+    falling back to the legacy POST /api/v1/revoke. A 404 counts as success
+    (nothing left upstream). Local-only mode returns ok=False so callers can
+    still proceed with file removal + ledger record.
+    """
+    signer_url, signer_key = get_cert_signer_config()
+    if not signer_url:
+        return {"ok": False, "method": "local-only", "detail": "No central signer configured."}
+    root = _signer_api_root(signer_url)
+    headers = _signer_headers(signer_key)
+    # 1. Delete API (revoke + CRL + delete, handled inside the signer)
+    try:
+        req = urllib.request.Request(
+            f"{root}/certificates/{urllib.parse.quote(uname, safe='')}",
+            headers=headers, method="DELETE",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status in (200, 201, 202, 204, 404):
+                return {"ok": True, "method": "signer-delete",
+                        "detail": f"Upstream delete returned HTTP {resp.status}."}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {"ok": True, "method": "signer-delete",
+                    "detail": "Already absent upstream (HTTP 404)."}
+        logger.debug("Signer delete API failed for %s: HTTP %s", uname, e.code)
+    except Exception as e:
+        logger.debug("Signer delete API failed for %s: %s", uname, e)
+    # 2. Legacy revoke API fallback
+    try:
+        req = urllib.request.Request(
+            f"{root}/revoke",
+            data=json.dumps({"username": uname, "reason": reason}).encode("utf-8"),
+            headers=headers, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if resp.status in (200, 201):
+                return {"ok": True, "method": "signer-revoke",
+                        "detail": f"Upstream revoke returned HTTP {resp.status}."}
+            return {"ok": False, "method": "signer-revoke",
+                    "detail": f"Upstream revoke returned HTTP {resp.status}."}
+    except Exception as e:
+        logger.warning("Remote revocation on %s failed (%s)", signer_url, e)
+        return {"ok": False, "method": "signer-revoke", "detail": f"Upstream unreachable: {e}"}
+
+
+def record_cert_revocation(cur, uname: str, serial: Optional[str], reason: str,
+                           upstream: Dict[str, Any], revoked_by: Optional[str]):
+    """Best-effort ledger write (table comes from migration 004)."""
+    try:
+        cur.execute("""
+            INSERT INTO revoked_certificates (username, serial, reason, upstream_ok, upstream_detail, revoked_by)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (username) DO UPDATE SET
+                serial = EXCLUDED.serial, reason = EXCLUDED.reason,
+                upstream_ok = EXCLUDED.upstream_ok, upstream_detail = EXCLUDED.upstream_detail,
+                revoked_at = CURRENT_TIMESTAMP, revoked_by = EXCLUDED.revoked_by
+        """, (uname, serial, reason, bool(upstream.get("ok")),
+              f"{upstream.get('method')}: {upstream.get('detail')}"[:500], revoked_by))
+    except Exception as e:
+        logger.debug("revoked_certificates write skipped for %s: %s", uname, e)
+
+
+def clear_cert_revocation(cur, uname: str):
+    """A fresh (re)issue supersedes any prior revocation record."""
+    try:
+        cur.execute("DELETE FROM revoked_certificates WHERE username = %s", (uname,))
+    except Exception as e:
+        logger.debug("revoked_certificates clear skipped for %s: %s", uname, e)
+
+
+def _read_cert_serial(crt_path: str) -> Optional[str]:
+    try:
+        if not os.path.exists(crt_path):
+            return None
+        res = subprocess.run(["openssl", "x509", "-in", crt_path, "-noout", "-serial"],
+                             capture_output=True, text=True, timeout=10)
+        if res.returncode == 0 and "=" in (res.stdout or ""):
+            return res.stdout.strip().split("=")[-1].strip() or None
+    except Exception:
+        pass
+    return None
+
+
 @app.post("/radius/api/certs/{username}/revoke", tags=["Certificates"])
 @app.post("/api/certs/{username}/revoke", tags=["Certificates"])
 def revoke_client_certificate(username: str, admin_user: str = Depends(authenticate_admin)):
     uname = validate_username(username)
-    signer_url, signer_key = get_cert_signer_config()
-    remote_revoked = False
-    if signer_url:
-        try:
-            req_headers = {"Content-Type": "application/json", "User-Agent": "RajLabs-FreeRADIUS/2.5"}
-            if signer_key:
-                req_headers["x-api-key"] = signer_key
-                req_headers["X-API-KEY"] = signer_key
-                req_headers["Authorization"] = f"Bearer {signer_key}"
-            req_data = json.dumps({"username": uname, "reason": "keyCompromise"}).encode("utf-8")
-            req = urllib.request.Request(f"{signer_url}/api/v1/revoke", data=req_data, headers=req_headers, method="POST")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                if resp.status in (200, 201):
-                    remote_revoked = True
-        except Exception as e:
-            logger.warning("Remote revocation on %s failed (%s)", signer_url, e)
+    # Upstream first: signer delete API (revokes internally + CRL), revoke fallback
+    upstream = revoke_upstream_certificate(uname, reason="keyCompromise")
+    serial = _read_cert_serial(safe_client_path(uname, ".crt"))
 
     # Remove the local cert and p12 bundle
     removed = 0
@@ -4762,17 +4946,35 @@ def revoke_client_certificate(username: str, admin_user: str = Depends(authentic
         except OSError:
             pass
 
-    log_audit(admin_user, "cert_revoke", uname, f"files_removed={removed}, remote={remote_revoked}")
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            record_cert_revocation(cur, uname, serial, "keyCompromise", upstream, admin_user)
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("revocation ledger unavailable: %s", e)
+
+    log_audit(admin_user, "cert_revoke", uname, f"files_removed={removed}, upstream={upstream.get('method')}:{upstream.get('ok')}")
     return {
         "status": "success",
         "message": f"Certificate for '{uname}' has been revoked and client bundle removed.",
-        "remote_revoked": remote_revoked
+        "remote_revoked": bool(upstream.get("ok")),
+        "upstream": upstream
     }
 
 @app.delete("/radius/api/certs/{username}", tags=["Certificates"])
 @app.delete("/api/certs/{username}", tags=["Certificates"])
 def delete_client_certificate(username: str, admin_user: str = Depends(authenticate_admin)):
+    """Delete a certificate bundle AND revoke it upstream first.
+
+    Deletion is not just file cleanup: the signer delete API is called so the
+    certificate is revoked (CRL) and removed centrally, then local material
+    is removed and the revocation is recorded in the ledger.
+    """
     uname = validate_username(username)
+    upstream = revoke_upstream_certificate(uname, reason="cessationOfOperation")
+    serial = _read_cert_serial(safe_client_path(uname, ".crt"))
     removed = 0
     for suffix in (".key", ".csr", ".crt", ".p12", "-chain.crt"):
         p = safe_client_path(uname, suffix)
@@ -4783,17 +4985,29 @@ def delete_client_certificate(username: str, admin_user: str = Depends(authentic
         except OSError:
             pass
 
-    log_audit(admin_user, "cert_delete", uname, f"files_removed={removed}")
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            record_cert_revocation(cur, uname, serial, "cessationOfOperation", upstream, admin_user)
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("revocation ledger unavailable: %s", e)
+
+    log_audit(admin_user, "cert_delete", uname, f"files_removed={removed}, upstream={upstream.get('method')}:{upstream.get('ok')}")
     return {
         "status": "success",
-        "message": f"Certificate bundle for '{uname}' deleted successfully."
+        "message": f"Certificate for '{uname}' revoked upstream and bundle deleted successfully.",
+        "remote_revoked": bool(upstream.get("ok")),
+        "upstream": upstream
     }
-
 @app.delete("/radius/api/certs/orphans/{username}", tags=["Certificates"])
 @app.delete("/api/certs/orphans/{username}", tags=["Certificates"])
 def delete_orphaned_certificate(username: str, admin_user: str = Depends(authenticate_admin)):
-    """Remove cert material for an already-deleted user."""
+    """Remove cert material for an already-deleted user (revoking upstream too)."""
     username = validate_username(username)
+    upstream = revoke_upstream_certificate(username, reason="cessationOfOperation")
+    serial = _read_cert_serial(safe_client_path(username, ".crt"))
     removed = 0
     for suffix in (".key", ".csr", ".crt", ".p12", "-chain.crt"):
         p = safe_client_path(username, suffix)
@@ -4805,7 +5019,15 @@ def delete_orphaned_certificate(username: str, admin_user: str = Depends(authent
             pass
     if not removed:
         raise HTTPException(status_code=404, detail=f"No certificate material found for '{username}'.")
-    log_audit(admin_user, "orphan_cert_cleanup", username, f"cert_files_removed={removed}")
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            record_cert_revocation(cur, username, serial, "cessationOfOperation", upstream, admin_user)
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("revocation ledger unavailable: %s", e)
+    log_audit(admin_user, "orphan_cert_cleanup", username, f"cert_files_removed={removed}, upstream={upstream.get('method')}:{upstream.get('ok')}")
     return {"status": "success", "message": f"Removed {removed} orphaned file(s) for '{username}'."}
 
 
@@ -4974,6 +5196,14 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest, request: Request
 
         log_audit(uname, "portal_enroll_cert", uname, f"authority={authority}, email={email}")
         logger.info("Portal enrolled client certificate for %s via %s", uname, authority)
+        try:
+            _c = get_db_connection()
+            with _c.cursor() as _cur:
+                clear_cert_revocation(_cur, uname)
+                _c.commit()
+            _c.close()
+        except Exception as e:
+            logger.debug("revocation clear skipped for %s: %s", uname, e)
 
         return {
             "status": "success",

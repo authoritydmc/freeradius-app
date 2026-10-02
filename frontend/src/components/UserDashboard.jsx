@@ -4,6 +4,7 @@ import {
   Activity, RefreshCw, LogOut, Phone, MessageCircle, Eye, EyeOff
 } from 'lucide-react';
 import { fetchJson, apiRequest, formatDateTime, formatBytes } from '../utils/api';
+import CertIssuedModal from './CertIssuedModal';
 
 function Card({ icon: Icon, title, action, children }) {
   return (
@@ -36,6 +37,7 @@ export default function UserDashboard({ user, onLogout, onNotify }) {
   const [enrollPw, setEnrollPw] = useState('');
   const [enrolling, setEnrolling] = useState(false);
   const [enrollResult, setEnrollResult] = useState(null);
+  const [certIssued, setCertIssued] = useState(null);
   const [downloading, setDownloading] = useState('');
 
   const loadAll = async () => {
@@ -89,7 +91,9 @@ export default function UserDashboard({ user, onLogout, onNotify }) {
         body: JSON.stringify({ username, password: enrollPw })
       });
       setEnrollResult(res);
-      onNotify?.('Certificate generated! Download it below.', 'success');
+      // Gated handoff: the bundle password only exists in this response
+      setCertIssued({ username, p12_password: res.p12_password, authority: res.authority });
+      onNotify?.('Certificate generated! Save the password shown.', 'success');
       loadAll();
     } catch (err) {
       onNotify?.(err.message || 'Certificate enrollment failed', 'error');
@@ -289,9 +293,9 @@ export default function UserDashboard({ user, onLogout, onNotify }) {
               </button>
             </form>
           )}
-          {enrollResult?.p12_password && (
-            <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 font-mono text-[11px] text-amber-200">
-              Certificate password: <span className="font-bold">{enrollResult.p12_password}</span> — save it, downloads need no password re-entry.
+          {enrollResult && !certIssued && (
+            <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-3 text-[11px] text-emerald-200">
+              Certificate ready — use the download buttons above. Your bundle password was shown once at generation time.
             </div>
           )}
           <p className="text-[11px] text-slate-500">
@@ -351,6 +355,14 @@ export default function UserDashboard({ user, onLogout, onNotify }) {
         <p className="text-center text-[11px] text-slate-500 font-mono flex items-center justify-center gap-2">
           <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Loading your account…
         </p>
+      )}
+
+      {certIssued && (
+        <CertIssuedModal
+          data={certIssued}
+          onClose={() => setCertIssued(null)}
+          onNotify={onNotify}
+        />
       )}
     </div>
   );

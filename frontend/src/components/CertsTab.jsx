@@ -21,6 +21,7 @@ import {
   FileText
 } from 'lucide-react';
 import { formatDateTime, fetchJson } from '../utils/api';
+import CertIssuedModal from './CertIssuedModal';
 
 export default function CertsTab({
   certs: propCerts,
@@ -73,6 +74,8 @@ export default function CertsTab({
 
   const [internalUsers, setInternalUsers] = useState([]);
   const [showIssuePassword, setShowIssuePassword] = useState(false);
+  // Gated handoff when the server generated the bundle password
+  const [certIssued, setCertIssued] = useState(null);
 
   const loadData = async () => {
     try {
@@ -129,11 +132,16 @@ export default function CertsTab({
       if (propOnIssueCert) {
         await propOnIssueCert(issueForm);
       } else {
-        await fetchJson('certs/issue', {
+        const res = await fetchJson('certs/issue', {
           method: 'POST',
           body: JSON.stringify(issueForm)
         });
-        onNotify?.(`Certificate issued for '${issueForm.username}'!`, 'success');
+        // Blank password field => server generated it: hand over via gated popup
+        if (!issueForm.cert_password?.trim() && res.p12_password) {
+          setCertIssued({ username: res.username || issueForm.username, p12_password: res.p12_password, authority: res.authority });
+        } else {
+          onNotify?.(`Certificate issued for '${issueForm.username}'!`, 'success');
+        }
         loadData();
       }
       setIssueModalOpen(false);
@@ -185,7 +193,7 @@ export default function CertsTab({
   const onCleanupOrphan = propOnCleanupOrphan || handleCleanupOrphan;
 
   const handleDeleteCert = async (username) => {
-    if (!window.confirm(`Are you sure you want to permanently DELETE the certificate bundle files for '${username}'?`)) return;
+    if (!window.confirm(`DELETE the certificate for '${username}'? It will be revoked upstream (signer CRL) and the local bundle removed. This cannot be undone.`)) return;
     try {
       const res = await fetchJson(`certs/${encodeURIComponent(username)}`, {
         method: 'DELETE'
@@ -739,6 +747,15 @@ export default function CertsTab({
           </div>
         );
       })()}
+
+      {/* Issued-cert handoff (gated on copy/download) */}
+      {certIssued && (
+        <CertIssuedModal
+          data={certIssued}
+          onClose={() => setCertIssued(null)}
+          onNotify={onNotify}
+        />
+      )}
 
     </div>
   );
