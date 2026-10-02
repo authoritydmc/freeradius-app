@@ -5,14 +5,12 @@ import {
   Bolt, 
   ChevronDown, 
   Search, 
-  ShieldCheck, 
-  Key, 
-  Edit, 
-  Play, 
-  Trash2, 
-  Clock, 
-  Hourglass, 
-  Check, 
+  ShieldCheck,
+  Key,
+  Edit,
+  Play,
+  Check,
+  Trash2,
   Plus, 
   X, 
   Dice5, 
@@ -30,13 +28,23 @@ import {
   CheckCircle2,
   AlertCircle
 } from 'lucide-react';
-import { calculatePasswordStrength, fetchJson, formatDateTime } from '../utils/api';
+import { calculatePasswordStrength, fetchJson, formatDateTime, timeLeft } from '../utils/api';
 import WifiQrModal from './WifiQrModal';
 import ResponsiveTable from './ResponsiveTable';
 import UserDetailModal from './UserDetailModal';
 import CertIssuedModal from './CertIssuedModal';
 import OnboardModal from './OnboardModal';
+import RowMenu from './RowMenu';
 import { AsyncButton, CopyButton } from './ActionButton';
+
+/** Single-line presence: banned > online > expiring > last seen > idle. */
+function presenceOf(u) {
+  if (u.banned) return { dot: 'bg-rose-400', text: 'Banned', cls: 'text-rose-300 font-bold', title: 'Account banned — RADIUS rejects immediately' };
+  if (u.active_sessions > 0) return { dot: 'bg-emerald-400 animate-pulse', text: `${u.active_sessions} online`, cls: 'text-emerald-300', title: `${u.active_sessions} live session(s)` };
+  if (u.expiration) return { dot: 'bg-amber-400', text: `Exp ${formatDateTime(u.expiration)}`, cls: 'text-amber-300', title: `FreeRADIUS Expiration (server UTC): ${u.expiration}` };
+  if (u.last_auth) return { dot: 'bg-slate-500', text: `last ${formatDateTime(u.last_auth)}`, cls: 'text-slate-500', title: `Last attempt: ${u.last_auth}` };
+  return { dot: 'bg-slate-600', text: 'idle', cls: 'text-slate-600', title: 'No recent activity' };
+}
 
 export default function UsersTab({
   users: propUsers,
@@ -401,6 +409,33 @@ export default function UsersTab({
     loadData();
   };
 
+  const quickBan = async (username, toBan) => {
+    if (toBan && !window.confirm(`Ban '${username}'? They will be rejected immediately (password kept).`)) return false;
+    try {
+      const res = await fetchJson(`users/${encodeURIComponent(username)}/${toBan ? 'ban' : 'unban'}`, {
+        method: 'POST',
+        body: JSON.stringify({ disconnect: true })
+      });
+      onNotify?.(res.message || (toBan ? 'User banned' : 'User unbanned'), toBan ? 'warning' : 'success');
+      loadData();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to update ban state', 'error');
+      throw err;
+    }
+  };
+
+  const quickRevoke = async (username) => {
+    if (!window.confirm(`Revoke the certificate for '${username}' (upstream CRL + local removal)?`)) return false;
+    try {
+      const res = await fetchJson(`certs/${encodeURIComponent(username)}/revoke`, { method: 'POST' });
+      onNotify?.(res.message || 'Certificate revoked', 'success');
+      loadData();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to revoke certificate', 'error');
+      throw err;
+    }
+  };
+
   const handleIssueCert = async (username) => {
     try {
       if (propOnIssueCert) {
@@ -642,7 +677,7 @@ export default function UsersTab({
         <table className="w-full min-w-[760px] text-left text-xs">
           <thead className="bg-slate-950/60 text-slate-400 uppercase border-b border-slate-800 text-[10px] tracking-wider">
             <tr>
-              <th className="pl-3 sm:pl-6 pr-1 py-3 sm:py-4 whitespace-nowrap w-8">
+              <th className="pl-3 sm:pl-4 pr-1 py-3 whitespace-nowrap w-10 sticky left-0 bg-slate-950/95 z-10">
                 <input
                   type="checkbox"
                   title="Select all"
@@ -651,18 +686,20 @@ export default function UsersTab({
                   className="w-4 h-4 rounded text-indigo-600 bg-slate-900 border-slate-700"
                 />
               </th>
-              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Username & Status</th>
-              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Subscription</th>
-              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Group Policy</th>
-              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">EAP-TLS Certificate</th>
-              <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Network Attributes</th>
-              <th className="px-3 sm:px-6 py-3 sm:py-4 text-right whitespace-nowrap">Actions</th>
+              <th className="px-3 py-3 whitespace-nowrap sticky left-10 bg-slate-950/95 z-10">User</th>
+              <th className="px-3 py-3 whitespace-nowrap">Plan</th>
+              <th className="px-3 py-3 whitespace-nowrap">Group</th>
+              <th className="px-3 py-3 whitespace-nowrap">Cert</th>
+              <th className="px-3 py-3 whitespace-nowrap">Network</th>
+              <th className="px-3 py-3 text-right whitespace-nowrap">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/80">
-            {filteredUsers.map((user) => (
+            {filteredUsers.map((user) => {
+              const presence = presenceOf(user);
+              return (
               <tr key={user.username} className={`hover:bg-slate-800/40 transition-colors ${selected.includes(user.username) ? 'bg-indigo-500/5' : ''}`}>
-                <td className="pl-3 sm:pl-6 pr-1 py-3 sm:py-4 whitespace-nowrap">
+                <td className="pl-3 sm:pl-4 pr-1 py-3 whitespace-nowrap sticky left-0 bg-slate-900 z-10">
                   <input
                     type="checkbox"
                     checked={selected.includes(user.username)}
@@ -672,74 +709,49 @@ export default function UsersTab({
                     className="w-4 h-4 rounded text-indigo-600 bg-slate-900 border-slate-700"
                   />
                 </td>
-                {/* Username + Expiry + Online Status */}
-                <td className="px-3 sm:px-6 py-3 sm:py-4 font-semibold text-white whitespace-nowrap">
-                  <div className="flex items-center gap-2.5">
-                    <div className={`w-8 h-8 rounded-xl border flex items-center justify-center text-xs font-mono font-bold shrink-0 ${user.banned ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' : 'bg-slate-800 border-slate-700/80 text-slate-300'}`}>
+                {/* User + single-line presence */}
+                <td className="px-3 py-3 whitespace-nowrap sticky left-10 bg-slate-900 z-10 border-r border-slate-800/70">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-7 h-7 rounded-lg border flex items-center justify-center text-[11px] font-mono font-bold shrink-0 ${user.banned ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' : 'bg-slate-800 border-slate-700/80 text-slate-300'}`}>
                       {user.username.charAt(0).toUpperCase()}
                     </div>
                     <div className="min-w-0">
                       <button
                         onClick={() => setDetailUser(user.username)}
                         title="Open subscriber dossier (subscription, stats, devices, history)"
-                        className="font-bold text-slate-100 hover:text-indigo-300 hover:underline text-left truncate"
+                        className="font-bold text-[13px] text-slate-100 hover:text-indigo-300 hover:underline text-left truncate block max-w-[160px]"
                       >
                         {user.username}
                       </button>
-                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                        {user.banned && (
-                          <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 text-[9px] font-bold border border-rose-500/30">
-                            BANNED
-                          </span>
-                        )}
-                        {user.active_sessions > 0 && (
-                          <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 text-[9px] font-mono border border-emerald-500/20 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                            {user.active_sessions} online
-                          </span>
-                        )}
-                        {user.expiration && (
-                          <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 text-[9px] font-mono border border-amber-500/20 flex items-center gap-1" title={`FreeRADIUS Expiration (server UTC): ${user.expiration} — shown in your local time`}>
-                            <Hourglass className="w-2.5 h-2.5 text-amber-400" />
-                            <span>Exp: {formatDateTime(user.expiration)}</span>
-                          </span>
-                        )}
-                        {user.last_auth && (
-                          <span className="text-[10px] text-slate-500 font-mono" title={`Last attempt (server time): ${user.last_auth} — shown in your local time`}>
-                            last: {formatDateTime(user.last_auth)}
-                          </span>
-                        )}
-                        {user.phone && (
-                          <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1" title={`Onboarding phone: ${user.phone}`}>
-                            <Phone className="w-2.5 h-2.5" />
-                            <span>{user.phone}</span>
-                          </span>
-                        )}
+                      <div className={`flex items-center gap-1.5 mt-0.5 text-[10px] font-mono ${presence.cls}`} title={presence.title}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${presence.dot}`} />
+                        <span className="truncate">{presence.text}</span>
+                        {user.phone && <span className="text-slate-600 truncate" title={user.phone}>• {user.phone}</span>}
                       </div>
                     </div>
                   </div>
                 </td>
 
                 {/* Subscription */}
-                <td className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">
+                <td className="px-3 py-3 whitespace-nowrap">
                   {user.subscription ? (
                     <button
                       onClick={() => setDetailUser(user.username)}
-                      title="Open dossier — click for full subscription details"
+                      title={`Open dossier — expires ${user.subscription.expires_at ? formatDateTime(user.subscription.expires_at) : '—'}`}
                       className="text-left group"
                     >
-                      <span className="px-2.5 py-1 rounded-xl text-[10px] font-mono border font-semibold bg-emerald-500/10 text-emerald-300 border-emerald-500/20 group-hover:bg-emerald-500/20">
+                      <span className="px-2 py-1 rounded-lg text-[10px] font-mono border font-semibold bg-emerald-500/10 text-emerald-300 border-emerald-500/20 group-hover:bg-emerald-500/20">
                         {user.subscription.plan_name}
                       </span>
-                      <span className="block text-[10px] text-slate-500 font-mono mt-1">
-                        till {user.subscription.expires_at ? formatDateTime(user.subscription.expires_at) : '—'}
+                      <span className="block text-[10px] text-slate-500 font-mono mt-0.5">
+                        {timeLeft(user.subscription.expires_at) || 'active'}
                       </span>
                     </button>
                   ) : user.recharge_required === false ? (
                     <button
                       onClick={() => setDetailUser(user.username)}
                       title={`Exempt from recharge (${user.recharge_policy || 'policy'}) — no subscription needed. Click for dossier.`}
-                      className="px-2.5 py-1 rounded-xl text-[10px] font-mono border font-semibold bg-slate-800 text-slate-300 border-slate-700 hover:border-indigo-500"
+                      className="px-2 py-1 rounded-lg text-[10px] font-mono border font-semibold bg-slate-800 text-slate-400 border-slate-700 hover:border-indigo-500"
                     >
                       Exempt
                     </button>
@@ -747,17 +759,17 @@ export default function UsersTab({
                     <button
                       onClick={() => setDetailUser(user.username)}
                       title="No active subscription — open dossier"
-                      className="px-2.5 py-1 rounded-xl text-[10px] font-mono border font-semibold bg-rose-500/10 text-rose-300 border-rose-500/20 hover:bg-rose-500/20"
+                      className="px-2 py-1 rounded-lg text-[10px] font-mono border font-semibold bg-rose-500/10 text-rose-300 border-rose-500/20 hover:bg-rose-500/20"
                     >
-                      No subscription
+                      No sub
                     </button>
                   )}
                 </td>
 
-                {/* Group Policy */}
-                <td className="px-3 sm:px-6 py-3 sm:py-4">
+                {/* Group */}
+                <td className="px-3 py-3 whitespace-nowrap">
                   {user.group ? (
-                    <span className={`px-2.5 py-1 rounded-xl text-[10px] font-mono border font-semibold ${
+                    <span className={`px-2 py-0.5 rounded-lg text-[10px] font-mono border font-semibold ${
                       user.group === 'admins' || user.group === 'admin'
                         ? 'bg-purple-500/10 text-purple-300 border-purple-500/20'
                         : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20'
@@ -765,114 +777,87 @@ export default function UsersTab({
                       {user.group}
                     </span>
                   ) : (
-                    <span className="text-slate-600 italic">No Group</span>
+                    <span className="text-slate-600 italic text-[11px]">—</span>
                   )}
                 </td>
 
-                {/* EAP-TLS Cert */}
-                <td className="px-3 sm:px-6 py-3 sm:py-4">
+                {/* Cert */}
+                <td className="px-3 py-3 whitespace-nowrap">
                   {user.has_certificate ? (
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-medium border border-emerald-500/20 flex items-center gap-1">
-                        <Check className="w-3 h-3 text-emerald-400" /> Issued
-                      </span>
-                      <a 
-                        href={`/radius/api/certs/${user.username}/download`} 
-                        download 
-                        className="text-indigo-400 hover:text-indigo-300 text-xs font-semibold underline"
-                      >
-                        .p12
-                      </a>
-                      <a 
-                        href={`/radius/api/certs/${user.username}/mobileconfig`} 
-                        download 
-                        className="text-cyan-400 hover:text-cyan-300 text-xs font-semibold underline"
-                      >
-                        Profile
-                      </a>
-                    </div>
+                    <span title="EAP-TLS certificate issued" className="inline-flex px-2 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-[10px] font-bold border border-emerald-500/20 items-center gap-1">
+                      <Check className="w-3 h-3 text-emerald-400" /> TLS
+                    </span>
                   ) : (
                     <AsyncButton
                       onClick={() => handleIssueCert(user.username)}
                       title="Issue certificate"
-                      className="text-slate-400 hover:text-indigo-300 text-[10px] border border-slate-700 px-2.5 py-1 rounded-lg hover:border-indigo-500 transition-colors flex items-center gap-1"
-                      idleContent={<><Plus className="w-3 h-3" /> Issue Cert</>}
-                      okText="Issued"
+                      className="text-slate-500 hover:text-indigo-300 text-[10px] border border-slate-800 px-2 py-0.5 rounded-lg hover:border-indigo-500 transition-colors flex items-center gap-1"
+                      idleContent={<><Plus className="w-3 h-3" /> TLS</>}
+                      okText="✓"
                     />
                   )}
                 </td>
 
-                {/* Reply Attributes */}
-                <td className="px-3 sm:px-6 py-3 sm:py-4">
-                  <div className="flex flex-wrap gap-1">
-                    {(user.reply_attributes || []).map((attr) => (
-                      <span 
-                        key={attr.id}
-                        className="px-2 py-0.5 rounded-md bg-cyan-950/60 text-cyan-300 text-[10px] font-mono border border-cyan-800/40"
-                      >
-                        {attr.attribute} {attr.op} {attr.value}
-                      </span>
-                    ))}
-                    {(!user.reply_attributes || user.reply_attributes.length === 0) && (
-                      <span className="text-slate-600 italic text-[11px]">Group Default</span>
-                    )}
-                  </div>
+                {/* Network */}
+                <td className="px-3 py-3 whitespace-nowrap">
+                  {(user.reply_attributes || []).length ? (
+                    <span className="flex items-center gap-1" title={(user.reply_attributes || []).map(a => `${a.attribute} ${a.op} ${a.value}`).join('\n')}>
+                      {(user.reply_attributes || []).slice(0, 2).map((attr) => (
+                        <span
+                          key={attr.id}
+                          className="px-1.5 py-0.5 rounded bg-cyan-950/60 text-cyan-300 text-[10px] font-mono border border-cyan-800/40"
+                        >
+                          {attr.attribute === 'Session-Timeout' ? `⏱ ${attr.value}s` : attr.attribute === 'Framed-IP-Address' ? `IP ${attr.value}` : `${attr.attribute} ${attr.value}`}
+                        </span>
+                      ))}
+                      {(user.reply_attributes || []).length > 2 && (
+                        <span className="text-[10px] text-slate-500 font-mono">+{user.reply_attributes.length - 2}</span>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="text-slate-600 italic text-[11px]">default</span>
+                  )}
                 </td>
 
-                {/* Action Buttons */}
-                <td className="px-3 sm:px-6 py-3 sm:py-4 text-right space-x-1 whitespace-nowrap">
-                  <button
-                    onClick={() => setOnboardUser(user)}
-                    title="Send WhatsApp/SMS onboarding invite"
-                    className="p-1.5 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 rounded-lg transition-colors"
-                  >
-                    <MessageCircle className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => setQrModalUser(user)}
-                    title="Show / Send Wi-Fi QR Access Pass"
-                    className="p-1.5 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 rounded-lg transition-colors"
-                  >
-                    <QrCode className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleOpenDevicePolicy(user.username)}
-                    title="Verified Device MAC Lock Policy"
-                    className="p-1.5 text-sky-400 hover:text-sky-300 hover:bg-sky-500/10 rounded-lg transition-colors"
-                  >
-                    <Smartphone className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleOpenReset(user.username)}
-                    title="Reset password (1-click secure regenerate)"
-                    className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 rounded-lg transition-colors"
-                  >
-                    <Key className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleOpenEdit(user)}
-                    title="Edit user settings"
-                    className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-700/50 rounded-lg transition-colors"
-                  >
-                    <Edit className="w-4 h-4" />
-                  </button>
-                  <button
-                    onClick={() => handleTestAuth(user.username)}
-                    title="Open in RADIUS tester"
-                    className="p-1.5 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 rounded-lg transition-colors"
-                  >
-                    <Play className="w-4 h-4" />
-                  </button>
-                  <AsyncButton
-                    onClick={() => handleDeleteUser(user.username)}
-                    title="Delete User"
-                    className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors"
-                    idleContent={<Trash2 className="w-4 h-4" />}
-                  />
+                {/* Actions: primary trio + overflow menu */}
+                <td className="px-3 py-3 text-right whitespace-nowrap">
+                  <span className="inline-flex items-center gap-0.5">
+                    <button
+                      onClick={() => handleOpenReset(user.username)}
+                      title="Reset password"
+                      className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 rounded-lg transition-colors"
+                    >
+                      <Key className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleOpenEdit(user)}
+                      title="Edit user"
+                      className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-700/50 rounded-lg transition-colors"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    <RowMenu
+                      title={`More actions for ${user.username}`}
+                      items={[
+                        { icon: <MessageCircle className="w-4 h-4 text-emerald-400" />, label: 'Onboarding invite', onSelect: async () => { setOnboardUser(user); } },
+                        { icon: <QrCode className="w-4 h-4 text-indigo-400" />, label: 'Wi-Fi QR pass', onSelect: async () => { setQrModalUser(user); } },
+                        { icon: <Smartphone className="w-4 h-4 text-sky-400" />, label: 'Device MAC lock', onSelect: async () => { handleOpenDevicePolicy(user.username); } },
+                        { icon: <Play className="w-4 h-4 text-indigo-400" />, label: 'Open in tester', onSelect: async () => { handleTestAuth(user.username); } },
+                        user.banned
+                          ? { icon: <Unlock className="w-4 h-4 text-emerald-400" />, label: 'Unban account', onSelect: () => quickBan(user.username, false) }
+                          : { icon: <Lock className="w-4 h-4 text-rose-400" />, label: 'Ban account', onSelect: () => quickBan(user.username, true) },
+                        ...(user.has_certificate
+                          ? [{ icon: <Ban className="w-4 h-4 text-purple-400" />, label: 'Revoke certificate', onSelect: () => quickRevoke(user.username) }]
+                          : []),
+                        { icon: <Trash2 className="w-4 h-4 text-rose-400" />, label: 'Delete user', danger: true, onSelect: () => handleDeleteUser(user.username) },
+                      ]}
+                    />
+                  </span>
                 </td>
 
               </tr>
-            ))}
+              );
+            })}
 
             {filteredUsers.length === 0 && (
               <tr>

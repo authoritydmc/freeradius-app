@@ -230,6 +230,36 @@ def test_onboarding_invite_with_password_and_wifi_url():
     assert "portalUrlFor" in qr
 
 
+def test_log_dossiers_and_users_redesign():
+    import inspect
+    from api.app import _redacted_settings
+    # Secrets never reach the audit trail in readable form
+    red = _redacted_settings({
+        "upi_vpa": "wifi@rajlabs",
+        "email_imap_password": "hunter2",
+        "razorpay_key_secret": "s3cr3t",
+        "cashfree_app_id": "public-id-1",
+    })
+    assert red["upi_vpa"] == "wifi@rajlabs"
+    assert red["email_imap_password"] == "***REDACTED***"
+    assert red["razorpay_key_secret"] == "***REDACTED***"
+    assert red["cashfree_app_id"] == "public-id-1"
+    # Log rows open a dossier modal with parsed pairs + copy
+    logs = Path("frontend/src/components/LogsTab.jsx").read_text(encoding="utf-8")
+    assert "LogDetailModal" in logs and "cursor-pointer" in logs
+    modal = Path("frontend/src/components/LogDetailModal.jsx").read_text(encoding="utf-8")
+    assert "parseDetailPairs" in modal and "Copy JSON" in modal
+    # Users table: sticky identity, relative countdowns, overflow menu
+    users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
+    assert "sticky left-10" in users_tab
+    assert "timeLeft(" in users_tab
+    assert "RowMenu" in users_tab
+    assert "quickBan" in users_tab and "quickRevoke" in users_tab
+    assert Path("frontend/src/components/RowMenu.jsx").exists()
+    api_js = Path("frontend/src/utils/api.js").read_text(encoding="utf-8")
+    assert "timeLeft" in api_js
+
+
 def test_ban_bulk_and_inline_feedback():
     import inspect
     from api.app import ban_user, unban_user, bulk_user_action, list_users

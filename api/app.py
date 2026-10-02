@@ -3075,10 +3075,24 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
 
         # Invalidate signer probe cache on settings update
         _SIGNER_STATUS_CACHE.update({"at": 0.0, "data": None})
-        log_audit(current_admin, "SETTINGS_UPDATED", "system", f"Updated system settings: {payload.dict(exclude_unset=True)}")
+        log_audit(current_admin, "SETTINGS_UPDATED", "system",
+                  f"Updated system settings: {_redacted_settings(payload.dict(exclude_unset=True))}")
         return {"status": "success", "message": "System settings updated successfully!"}
     finally:
         conn.close()
+
+_SENSITIVE_SETTING_KEYS = ("password", "secret", "salt", "api_key", "apikey", "token", "private")
+
+def _redacted_settings(data: dict) -> dict:
+    """Audit-safe settings snapshot: secret values replaced, key names kept."""
+    out = {}
+    for k, v in (data or {}).items():
+        kl = str(k).lower()
+        if any(s in kl for s in _SENSITIVE_SETTING_KEYS) and v not in (None, ""):
+            out[k] = "***REDACTED***"
+        else:
+            out[k] = v
+    return out
 
 # ============================================================================
 # Wi-Fi Plans & Pricing Management

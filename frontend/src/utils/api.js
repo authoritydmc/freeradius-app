@@ -105,6 +105,22 @@ export const WIFI_PORTAL_BASE_URL = 'https://wifi.rajlabs.in';
 export const portalUrlFor = (path = '/radius/portal') =>
   `${WIFI_PORTAL_BASE_URL}${path}`;
 
+/** Compact relative countdown: "12d 4h left" / "Expires today" / "Expired 2d ago". */
+export function timeLeft(input) {
+  try {
+    const ms = typeof input === 'number' ? (input < 1e12 ? input * 1000 : input) : Date.parse(input);
+    if (isNaN(ms)) return '';
+    const diff = ms - Date.now();
+    const abs = Math.abs(diff);
+    const d = Math.floor(abs / 86400000);
+    const h = Math.floor((abs % 86400000) / 3600000);
+    const core = d > 0 ? `${d}d${h ? ` ${h}h` : ''}` : h > 0 ? `${h}h` : 'under an hour';
+    return diff >= 0 ? (d === 0 && h === 0 ? 'Expires today' : `${core} left`) : `Expired ${core} ago`;
+  } catch {
+    return '';
+  }
+}
+
 export function formatDateTime(input, opts = {}) {
   if (input == null || input === '') return '—';
   try {

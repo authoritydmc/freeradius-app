@@ -4,11 +4,13 @@ import {
   Search, Filter, Clock, User, AlertCircle, Terminal, Layers
 } from 'lucide-react';
 import { fetchJson, formatDateTime } from '../utils/api';
+import LogDetailModal from './LogDetailModal';
 
 export default function LogsTab({ onNotify }) {
   const [activeSubTab, setActiveSubTab] = useState('auth'); // 'auth' or 'audit'
   const [authLogs, setAuthLogs] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
+  const [selected, setSelected] = useState(null); // {kind, ...row} for dossier modal
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterResult, setFilterResult] = useState('all'); // 'all', 'accept', 'reject'
@@ -146,7 +148,12 @@ export default function LogsTab({ onNotify }) {
                   filteredAuth.map((log, idx) => {
                     const isAccept = log.event === 'accept' || log.reply === 'Access-Accept';
                     return (
-                      <tr key={log.id || idx} className="hover:bg-slate-800/40 transition">
+                      <tr
+                        key={log.id || idx}
+                        onClick={() => setSelected({ kind: 'auth', ...log })}
+                        title="Click for full detail"
+                        className="hover:bg-slate-800/40 transition cursor-pointer"
+                      >
                         <td className="py-3 px-4 font-mono font-bold text-slate-200">
                           {log.username}
                         </td>
@@ -161,10 +168,10 @@ export default function LogsTab({ onNotify }) {
                             </span>
                           )}
                         </td>
-                        <td className="py-3 px-4 text-xs text-slate-300">
+                        <td className="py-3 px-4 text-xs text-slate-300 max-w-[280px] truncate" title="Click for full detail">
                           {log.reason || log.rule || '—'}
                         </td>
-                        <td className="py-3 px-4 text-xs font-mono text-slate-400">
+                        <td className="py-3 px-4 text-xs font-mono text-slate-400 whitespace-nowrap">
                           {formatDateTime(log.timestamp || log.authdate)}
                         </td>
                       </tr>
@@ -206,7 +213,12 @@ export default function LogsTab({ onNotify }) {
                   </tr>
                 ) : (
                   filteredAudit.map(a => (
-                    <tr key={a.id} className="hover:bg-slate-800/40 transition">
+                    <tr
+                      key={a.id}
+                      onClick={() => setSelected({ kind: 'audit', ...a })}
+                      title="Click for full detail"
+                      className="hover:bg-slate-800/40 transition cursor-pointer"
+                    >
                       <td className="py-3 px-4 font-bold text-slate-200 text-xs font-mono">
                         {a.admin_user}
                       </td>
@@ -221,7 +233,7 @@ export default function LogsTab({ onNotify }) {
                       <td className="py-3 px-4 text-xs text-slate-400 max-w-md truncate" title={a.detail}>
                         {a.detail || '—'}
                       </td>
-                      <td className="py-3 px-4 text-xs font-mono text-slate-400">
+                      <td className="py-3 px-4 text-xs font-mono text-slate-400 whitespace-nowrap">
                         {formatDateTime(a.ts)}
                       </td>
                     </tr>
@@ -231,6 +243,10 @@ export default function LogsTab({ onNotify }) {
             </table>
           </div>
         </div>
+      )}
+
+      {selected && (
+        <LogDetailModal entry={selected} onClose={() => setSelected(null)} onNotify={onNotify} />
       )}
     </div>
   );
