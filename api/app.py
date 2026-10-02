@@ -3411,11 +3411,11 @@ def authenticate_admin_or_owner(username: str, request: Request) -> str:
         detail=f"Unauthorized. Administrator credentials or session for '{u}' required."
     )
 
-def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365, san_list: Optional[List[str]] = None) -> tuple[str, str]:
+def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365, san_list: Optional[List[str]] = None) -> tuple[str, str, str]:
     """
     Signs a client CSR using the central Rajlabs-CA Cert-Signer API (if configured),
     or falls back to the local FreeRADIUS CA.
-    Returns: (issued_cert_pem, ca_chain_pem)
+    Returns: (issued_cert_pem, ca_chain_pem, authority_name)
     """
     signer_url, signer_key = get_cert_signer_config()
     if signer_url:
@@ -3423,9 +3423,15 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
             with open(user_csr_path, "r") as f:
                 csr_content = f.read()
             
-            headers = {"Content-Type": "application/json"}
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "RajLabs-FreeRADIUS/2.5",
+                "Accept": "application/json"
+            }
             if signer_key:
                 headers["x-api-key"] = signer_key
+                headers["X-API-KEY"] = signer_key
+                headers["Authorization"] = f"Bearer {signer_key}"
             
             sans = san_list or [f"{username}@rajlabs.in", f"{username}.local"]
             payload_data = {
@@ -3443,15 +3449,16 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
                 headers=headers,
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                if resp.status == 200:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status in (200, 201):
                     res_json = json.loads(resp.read().decode("utf-8"))
-                    if res_json.get("success"):
-                        logger.info("Certificate signed successfully via Rajlabs-CA Cert Signer for %s", username)
-                        return res_json["certificate"], res_json.get("fullChain") or res_json["certificate"]
+                    cert_out = res_json.get("certificate") or res_json.get("cert")
+                    chain_out = res_json.get("fullChain") or res_json.get("chain") or cert_out
+                    if cert_out:
+                        logger.info("Certificate signed successfully via Central Rajlabs-CA Cert Signer for %s", username)
+                        return cert_out, chain_out, "Central Rajlabs-CA PKI"
         except Exception as e:
             logger.warning("Cert-Signer microservice request to %s failed (%s), falling back to local CA.", signer_url, e)
-
 
     # Local FreeRADIUS CA Fallback
     ca_key = os.path.join(CERTS_DIR, "ca.key")
@@ -3460,9 +3467,6 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
         raise HTTPException(status_code=500, detail="No certificate authority available (Cert-Signer unreachable and local CA missing).")
 
     temp_crt_path = user_csr_path + ".crt"
-    # CA_KEY_PASSWORD unlocks the local CA private key created by `certs/bootstrap`
-    # (upstream default for that key). It is NOT a client certificate password:
-    # every client .p12 gets its own random password via generate_p12_password().
     ca_key_password = os.getenv("CA_KEY_PASSWORD", "") or None
     sign_cmd = [
         "openssl", "x509", "-req", "-in", user_csr_path,
@@ -3481,14 +3485,14 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
     if os.path.exists(temp_crt_path):
         os.remove(temp_crt_path)
 
-    return crt_pem, ca_pem_content
+    logger.info("Certificate signed locally via FreeRADIUS Root CA for %s", username)
+    return crt_pem, ca_pem_content, "Local FreeRADIUS CA"
 
 @app.post("/radius/api/certs/issue", tags=["Certificates"])
 @app.post("/api/certs/issue", tags=["Certificates"])
-def issue_client_certificate(payload: IssueCertRequest, request: Request, _: str = Depends(authenticate_admin)):
+def issue_client_certificate(payload: IssueCertRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
     check_rate_limit(request, "cert-issue", RL_CERT_ISSUE_PER_MIN)
     uname = validate_username(payload.username)
-    # Per-issuance random password (issue #3): never a well-known default.
     p12_pass = payload.cert_password or generate_p12_password()
     days = min(max(int(payload.valid_days or 365), 1), 825)
     email = payload.email or f"{uname}@rajlabs.in"
@@ -3507,7 +3511,7 @@ def issue_client_certificate(payload: IssueCertRequest, request: Request, _: str
         subprocess.run(["openssl", "req", "-new", "-key", user_key, "-out", user_csr, "-subj", subj], check=True, capture_output=True)
 
         # 3. Sign client cert (via Central Cert Signer or Local CA fallback)
-        cert_pem, ca_chain_pem = sign_certificate_with_ca(uname, user_csr, days=days, san_list=[email, f"{uname}.local"])
+        cert_pem, ca_chain_pem, authority = sign_certificate_with_ca(uname, user_csr, days=days, san_list=[email, f"{uname}.local"])
         with open(user_crt, "w") as f:
             f.write(cert_pem)
         
@@ -3530,11 +3534,13 @@ def issue_client_certificate(payload: IssueCertRequest, request: Request, _: str
             except OSError:
                 pass
 
-        logger.info("Client certificate issued username=%s by=%s via=%s", uname, _, 'Rajlabs-CA API' if CERT_SIGNER_API_URL else 'Local CA')
+        log_audit(admin_user, "cert_issue", uname, f"authority={authority}, valid_days={days}, email={email}")
+        logger.info("Client certificate issued username=%s by=%s via=%s", uname, admin_user, authority)
         return {
             "status": "success",
-            "message": f"EAP-TLS Client certificate issued for user '{uname}' (Signed via {'Rajlabs-CA API' if CERT_SIGNER_API_URL else 'Local CA'})",
+            "message": f"EAP-TLS Client certificate issued for user '{uname}' (Signed via {authority})",
             "username": uname,
+            "authority": authority,
             "p12_password": p12_pass,
             "download_url": f"/radius/api/certs/{uname}/download",
             "mobileconfig_url": f"/radius/api/certs/{uname}/mobileconfig"
@@ -3777,7 +3783,7 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest, request: Request
         subprocess.run(["openssl", "req", "-new", "-key", user_key, "-out", user_csr, "-subj", subj], check=True, capture_output=True)
 
         # 2. Sign certificate with central Cert Signer or Local CA
-        cert_pem, ca_chain_pem = sign_certificate_with_ca(uname, user_csr, days=days, san_list=[email, f"{uname}.local"])
+        cert_pem, ca_chain_pem, authority = sign_certificate_with_ca(uname, user_csr, days=days, san_list=[email, f"{uname}.local"])
         with open(user_crt, "w") as f:
             f.write(cert_pem)
 
@@ -3798,11 +3804,15 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest, request: Request
             except OSError:
                 pass
 
+        log_audit(uname, "portal_enroll_cert", uname, f"authority={authority}, email={email}")
+        logger.info("Portal enrolled client certificate for %s via %s", uname, authority)
+
         return {
             "status": "success",
             "success": True,
-            "message": f"Certificate enrolled successfully for {uname} (Signed by {'Rajlabs-CA PKI' if CERT_SIGNER_API_URL else 'Local CA'})",
+            "message": f"Certificate enrolled successfully for {uname} (Signed by {authority})",
             "username": uname,
+            "authority": authority,
             "mobileconfig_url": f"/radius/api/portal/download-mobileconfig?username={uname}",
             "p12_download_url": f"/radius/api/portal/download-cert?username={uname}",
             "p12_password": p12_pass

@@ -185,11 +185,11 @@ export default function CertsTab({
             <div className="font-bold text-white flex items-center gap-2">
               <span>Signer Authority:</span>
               <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono border ${
-                signerStatus?.mode === 'central'
+                signerStatus?.mode === 'central' || signerStatus?.mode === 'remote'
                   ? 'bg-purple-500/10 text-purple-300 border-purple-500/20'
                   : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20'
               }`}>
-                {signerStatus?.mode === 'central' ? 'Central Rajlabs-CA API' : 'Local FreeRADIUS CA'}
+                {signerStatus?.mode === 'central' || signerStatus?.mode === 'remote' ? 'Central Rajlabs-CA API' : 'Local FreeRADIUS CA'}
               </span>
             </div>
             <div className="text-slate-400 text-[11px] mt-0.5">

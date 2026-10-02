@@ -153,13 +153,17 @@ export default function StatusTab({
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl relative overflow-hidden">
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold text-slate-300">Rajlabs-CA Signer</span>
-              <span className={`w-2.5 h-2.5 rounded-full ${signerStatus?.reachable ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+              <span className={`w-2.5 h-2.5 rounded-full ${signerStatus?.reachable && signerStatus?.key_valid ? 'bg-emerald-400' : signerStatus?.reachable ? 'bg-amber-400' : 'bg-rose-400'}`} />
             </div>
-            <div className={`text-xl font-black mt-2 ${signerStatus?.reachable ? 'text-emerald-400' : 'text-amber-400'}`}>
-              {signerStatus?.mode === 'central' ? (signerStatus?.key_valid ? 'Connected (API)' : 'Token Missing') : 'Local CA Ready'}
+            <div className={`text-xl font-black mt-2 ${signerStatus?.reachable && signerStatus?.key_valid ? 'text-emerald-400' : signerStatus?.reachable ? 'text-amber-400' : 'text-rose-400'}`}>
+              {signerStatus?.configured && (signerStatus?.mode === 'remote' || signerStatus?.mode === 'central')
+                ? (signerStatus?.key_valid ? 'Connected (API)' : 'Token Missing')
+                : (signerStatus?.mode === 'local' ? 'Local CA Ready' : 'Local CA Fallback')}
             </div>
             <div className="text-[11px] text-slate-500 mt-1 font-mono truncate">
-              {signerStatus?.mode === 'central' ? 'Central Rajlabs PKI' : 'Local Root CA'}
+              {signerStatus?.configured && (signerStatus?.mode === 'remote' || signerStatus?.mode === 'central')
+                ? `Central Rajlabs PKI (${signerStatus?.latency_ms ? `${signerStatus.latency_ms}ms` : 'Active'})`
+                : 'Local FreeRADIUS Root CA'}
             </div>
           </div>
 
