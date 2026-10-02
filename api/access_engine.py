@@ -5,13 +5,38 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import logging
 
+from urllib.parse import urlparse
+
 def get_db_connection():
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = int(os.getenv("POSTGRES_PORT", "5432"))
+    dbname = os.getenv("POSTGRES_DB", "radius")
+    user = os.getenv("POSTGRES_USER", "postgres")
+    password = os.getenv("POSTGRES_PASSWORD", "postgres")
+
+    db_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("POSTGRESQL_URL")
+    if db_url:
+        try:
+            parsed = urlparse(db_url)
+            if parsed.hostname:
+                host = parsed.hostname
+            if parsed.port:
+                port = parsed.port
+            if parsed.path and len(parsed.path) > 1:
+                dbname = parsed.path.lstrip("/")
+            if parsed.username:
+                user = parsed.username
+            if parsed.password:
+                password = parsed.password
+        except Exception:
+            pass
+
     return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=int(os.getenv("POSTGRES_PORT", "5432")),
-        dbname=os.getenv("POSTGRES_DB", "radius"),
-        user=os.getenv("POSTGRES_USER", "postgres"),
-        password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+        host=host,
+        port=port,
+        dbname=dbname,
+        user=user,
+        password=password,
         cursor_factory=RealDictCursor,
         connect_timeout=5
     )

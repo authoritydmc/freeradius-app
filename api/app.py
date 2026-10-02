@@ -51,12 +51,31 @@ def redact(obj):
         return [redact(v) for v in obj]
     return obj
 
-# Database configuration from environment
+# Database configuration from environment (exclusively PostgreSQL)
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
 POSTGRES_DB = os.getenv("POSTGRES_DB", "radius")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
+
+_db_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or os.getenv("POSTGRESQL_URL")
+if _db_url:
+    try:
+        from urllib.parse import urlparse
+        _parsed = urlparse(_db_url)
+        if _parsed.hostname:
+            POSTGRES_HOST = _parsed.hostname
+        if _parsed.port:
+            POSTGRES_PORT = _parsed.port
+        if _parsed.path and len(_parsed.path) > 1:
+            POSTGRES_DB = _parsed.path.lstrip("/")
+        if _parsed.username:
+            POSTGRES_USER = _parsed.username
+        if _parsed.password:
+            POSTGRES_PASSWORD = _parsed.password
+    except Exception:
+        pass
+
 RADIUS_SECRET = os.getenv("RADIUS_SECRET", "testing123")
 
 # Central Rajlabs-CA Cert Signer API Integration (all env-based, no hardcoded URLs)
