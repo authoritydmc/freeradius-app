@@ -21,7 +21,7 @@ from xml.sax.saxutils import escape as _xml_escape
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from contextlib import asynccontextmanager
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from fastapi import FastAPI, HTTPException, Query, Request, status, Depends, Response
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles

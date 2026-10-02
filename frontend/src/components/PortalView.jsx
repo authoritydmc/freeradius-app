@@ -165,24 +165,55 @@ export default function PortalView() {
 
         {/* Tab: Direct Wi-Fi QR Code */}
         {activeTab === 'qr' && (
-          <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl max-w-md mx-auto w-full text-center space-y-5 animate-fade-in">
+          <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl max-w-md mx-auto w-full space-y-5 animate-fade-in">
             <div className="text-center">
               <div className="inline-flex p-3 bg-indigo-500/10 text-indigo-400 rounded-2xl mb-2 border border-indigo-500/20">
                 <Wifi className="w-6 h-6" />
               </div>
-              <h2 className="text-xl font-bold text-white">Scan to Connect Wi-Fi</h2>
+              <h2 className="text-xl font-bold text-white">Wi-Fi Connection QR</h2>
               <p className="text-xs text-slate-400 mt-1">
-                Point your phone or tablet camera at the QR code below to connect to the network automatically.
+                {enrollResult || payerUsername ? 'Personalized credentials embedded in your connection profile.' : 'Enterprise 802.1X / EAP authentication requires an active account or certificate.'}
               </p>
             </div>
 
-            <div className="inline-block p-4 bg-white rounded-3xl shadow-xl border-4 border-indigo-500/30">
-              <QRCodeSVG
-                value={wifiString}
-                size={200}
-                level="H"
-                includeMargin={false}
-              />
+            {/* If user has not enrolled or authenticated yet */}
+            {!(enrollResult || payerUsername) ? (
+              <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl text-left space-y-2.5">
+                <div className="flex items-center gap-2 text-amber-300 font-bold text-xs">
+                  <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Authentication Required</span>
+                </div>
+                <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                  This network is protected with <strong>{config?.wifi_auth_type || 'WPA2/WPA3 Enterprise (802.1X)'}</strong>. A standard Wi-Fi QR code alone without your password or certificate will not grant internet access.
+                </p>
+                <div className="pt-2 flex flex-col gap-2">
+                  <button
+                    onClick={() => setActiveTab('enroll')}
+                    className="w-full py-2 px-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition shadow"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Generate Device Certificate (EAP-TLS)</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('plans')}
+                    className="w-full py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-slate-700 transition"
+                  >
+                    <CreditCard className="w-3.5 h-3.5" />
+                    <span>Recharge / Get Access Plan</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            <div className="text-center">
+              <div className="inline-block p-4 bg-white rounded-3xl shadow-xl border-4 border-indigo-500/30">
+                <QRCodeSVG
+                  value={wifiString}
+                  size={190}
+                  level="H"
+                  includeMargin={false}
+                />
+              </div>
             </div>
 
             <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-left space-y-2 text-xs font-mono">
@@ -194,6 +225,12 @@ export default function PortalView() {
                 <span className="text-slate-400 font-sans">Security:</span>
                 <span className="text-indigo-300 font-semibold">{config?.wifi_auth_type || 'WPA2-Enterprise / EAP-TLS'}</span>
               </div>
+              {enrollResult?.username && (
+                <div className="flex justify-between items-center border-t border-slate-900 pt-1.5">
+                  <span className="text-slate-400 font-sans">Enrolled User:</span>
+                  <span className="text-emerald-400 font-bold">{enrollResult.username}</span>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3 pt-1">
@@ -202,14 +239,14 @@ export default function PortalView() {
                 className="flex items-center justify-center gap-2 py-2.5 px-3 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition cursor-pointer"
               >
                 {copiedQrString ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-                <span>{copiedQrString ? 'Copied' : 'Copy String'}</span>
+                <span>{copiedQrString ? 'Copied' : 'Copy SSID'}</span>
               </button>
               <button
                 onClick={() => window.print()}
                 className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition cursor-pointer"
               >
                 <Printer className="w-4 h-4" />
-                <span>Print QR Badge</span>
+                <span>Print Badge</span>
               </button>
             </div>
           </div>
