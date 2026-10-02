@@ -1585,6 +1585,18 @@ def list_users(_: str = Depends(authenticate_admin)):
             except Exception:
                 pass
 
+            # Ban state: central DISABLED or an Auth-Type Reject row present
+            banned: Dict[str, bool] = {}
+            try:
+                cur.execute("SELECT username FROM users WHERE status = 'DISABLED'")
+                for r in cur.fetchall():
+                    banned[r["username"]] = True
+                cur.execute("SELECT DISTINCT username FROM radcheck WHERE attribute = 'Auth-Type' AND value = 'Reject'")
+                for r in cur.fetchall():
+                    banned[r["username"]] = True
+            except Exception:
+                pass
+
             users_map = {}
             for row in checks:
                 u = row["username"]
@@ -1628,6 +1640,7 @@ def list_users(_: str = Depends(authenticate_admin)):
                 data["active_sessions"] = active_counts.get(u, 0)
                 data["last_auth"] = last_auth.get(u)
                 data["phone"] = phones.get(u)
+                data["banned"] = bool(banned.get(u, False))
 
             # Active subscription per user (for Users-table subscription column).
             # Best-effort: central `users`/`subscriptions` may lag radcheck-only rows.
@@ -1972,10 +1985,16 @@ def get_user_overview(username: str, _: str = Depends(authenticate_admin)):
                         recharge_policy = f"group:{group}"
             except Exception:
                 pass
+            try:
+                cur.execute("SELECT 1 FROM radcheck WHERE username = %s AND attribute = 'Auth-Type' AND value = 'Reject' LIMIT 1", (uname,))
+                has_reject_row = bool(cur.fetchone())
+            except Exception:
+                has_reject_row = False
             return {
                 "username": uname,
                 "group": group,
                 "status": (u_row.get("status") if u_row else "ACTIVE"),
+                "banned": bool((u_row.get("status") if u_row else "") == "DISABLED" or has_reject_row),
                 "phone": (u_row.get("phone") if u_row else None),
                 "recharge_required": recharge_required,
                 "recharge_policy": recharge_policy,
@@ -2474,6 +2493,168 @@ def delete_user(username: str, admin_user: str = Depends(authenticate_admin)):
             return {"status": "success", "message": msg, "cert_files_removed": removed_certs}
     finally:
         conn.close()
+
+class BanActionRequest(BaseModel):
+    disconnect: Optional[bool] = False
+
+class BulkUserActionRequest(BaseModel):
+    usernames: List[str] = Field(..., min_length=1, max_length=100)
+    action: str = Field(..., description="ban | unban | revoke_certs | delete")
+    disconnect: Optional[bool] = False
+
+BAN_MESSAGE = "Account banned by administrator. Contact support for reactivation."
+
+def _apply_user_ban(cur, uname: str, banned: bool, admin_user: str) -> None:
+    """Password-preserving ban/unban.
+
+    Ban = central status DISABLED + Auth-Type Reject + Reply-Message; all
+    credential and policy rows untouched. Unban removes exactly those rows.
+    """
+    cur.execute("""
+        INSERT INTO users (username, password_hash, status)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (username) DO UPDATE SET status = EXCLUDED.status
+    """, (uname, generate_session_secret(24), "DISABLED" if banned else "ACTIVE"))
+    if banned:
+        cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute = 'Auth-Type'", (uname,))
+        cur.execute("INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, 'Auth-Type', ':=', 'Reject')", (uname,))
+        cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Reply-Message'", (uname,))
+        cur.execute("INSERT INTO radreply (username, attribute, op, value) VALUES (%s, 'Reply-Message', '=', %s)", (uname, BAN_MESSAGE))
+    else:
+        cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute = 'Auth-Type'", (uname,))
+        cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Reply-Message' AND value = %s", (uname, BAN_MESSAGE))
+
+def _disconnect_user_sessions(uname: str) -> int:
+    """Best-effort CoA disconnect of all live sessions. Returns NAS count hit."""
+    hits = 0
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT nasipaddress::text AS nas_ip FROM radacct WHERE username = %s AND acctstoptime IS NULL AND nasipaddress IS NOT NULL", (uname,))
+            nas_ips = [r["nas_ip"] for r in cur.fetchall() if r["nas_ip"]]
+        conn.close()
+        for nas_ip in nas_ips:
+            try:
+                ok, _ = send_coa_disconnect(uname, nas_ip, RADIUS_SECRET)
+                if ok:
+                    hits += 1
+            except Exception:
+                continue
+    except Exception as e:
+        logger.warning("CoA disconnect sweep failed for %s: %s", uname, e)
+    return hits
+
+def _remove_local_cert_files(uname: str) -> tuple[int, Optional[str]]:
+    serial = _read_cert_serial(safe_client_path(uname, ".crt"))
+    removed = 0
+    for suffix in (".key", ".csr", ".crt", ".p12", "-chain.crt"):
+        try:
+            p = safe_client_path(uname, suffix)
+            if os.path.exists(p):
+                os.remove(p)
+                removed += 1
+        except OSError:
+            pass
+    return removed, serial
+
+@app.post("/radius/api/users/{username}/ban", tags=["Users"])
+@app.post("/api/users/{username}/ban", tags=["Users"])
+def ban_user(username: str, payload: Optional[BanActionRequest] = None, admin_user: str = Depends(authenticate_admin)):
+    """Ban an account: immediate RADIUS reject (password untouched)."""
+    uname = validate_username(username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (uname,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail=f"User '{uname}' not found.")
+            _apply_user_ban(cur, uname, True, admin_user)
+            conn.commit()
+    finally:
+        conn.close()
+    kicked = _disconnect_user_sessions(uname) if (payload and payload.disconnect) else 0
+    log_audit(admin_user, "user_ban", uname, f"disconnected_nas={kicked}")
+    return {"status": "success", "message": f"User '{uname}' banned." + (f" ({kicked} NAS kicked)" if kicked else ""), "banned": True}
+
+@app.post("/radius/api/users/{username}/unban", tags=["Users"])
+@app.post("/api/users/{username}/unban", tags=["Users"])
+def unban_user(username: str, admin_user: str = Depends(authenticate_admin)):
+    """Lift a ban: removes the reject, credentials work again immediately."""
+    uname = validate_username(username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (uname,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail=f"User '{uname}' not found.")
+            _apply_user_ban(cur, uname, False, admin_user)
+            conn.commit()
+    finally:
+        conn.close()
+    log_audit(admin_user, "user_unban", uname, None)
+    return {"status": "success", "message": f"User '{uname}' unbanned.", "banned": False}
+
+@app.post("/radius/api/users/bulk-action", tags=["Users"])
+@app.post("/api/users/bulk-action", tags=["Users"])
+def bulk_user_action(payload: BulkUserActionRequest, admin_user: str = Depends(authenticate_admin)):
+    """One-click action across many users: ban | unban | revoke_certs | delete."""
+    action = (payload.action or "").strip().lower()
+    if action not in ("ban", "unban", "revoke_certs", "delete"):
+        raise HTTPException(status_code=422, detail="action must be one of: ban, unban, revoke_certs, delete.")
+    results = []
+    for raw in payload.usernames:
+        try:
+            uname = validate_username(str(raw or "").strip())
+        except HTTPException:
+            results.append({"username": str(raw), "ok": False, "error": "Invalid username."})
+            continue
+        try:
+            if action in ("ban", "unban"):
+                conn = get_db_connection()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (uname,))
+                        if not cur.fetchone():
+                            raise ValueError(f"User '{uname}' not found.")
+                        _apply_user_ban(cur, uname, action == "ban", admin_user)
+                        conn.commit()
+                finally:
+                    conn.close()
+                kicked = _disconnect_user_sessions(uname) if payload.disconnect else 0
+                log_audit(admin_user, f"user_{action}", uname, f"bulk disconnected_nas={kicked}")
+                results.append({"username": uname, "ok": True, "message": f"{action} ok" + (f" ({kicked} NAS kicked)" if kicked else "")})
+            elif action == "revoke_certs":
+                upstream = revoke_upstream_certificate(uname, reason="cessationOfOperation")
+                removed, serial = _remove_local_cert_files(uname)
+                try:
+                    conn = get_db_connection()
+                    with conn.cursor() as cur:
+                        record_cert_revocation(cur, uname, serial, "cessationOfOperation", upstream, admin_user)
+                        conn.commit()
+                    conn.close()
+                except Exception as e:
+                    logger.debug("revocation ledger unavailable: %s", e)
+                log_audit(admin_user, "cert_revoke", uname, f"bulk files_removed={removed}, upstream={upstream.get('method')}:{upstream.get('ok')}")
+                results.append({"username": uname, "ok": True, "message": f"revoked upstream + removed {removed} file(s)"})
+            else:  # delete
+                conn = get_db_connection()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM radcheck WHERE username = %s", (uname,))
+                        cur.execute("DELETE FROM radreply WHERE username = %s", (uname,))
+                        cur.execute("DELETE FROM radusergroup WHERE username = %s", (uname,))
+                        conn.commit()
+                    removed, _serial = _remove_local_cert_files(uname)
+                    log_audit(admin_user, "user_delete", uname, f"bulk cert_files_removed={removed}")
+                    results.append({"username": uname, "ok": True, "message": "deleted"})
+                finally:
+                    conn.close()
+        except HTTPException as e:
+            results.append({"username": uname, "ok": False, "error": e.detail})
+        except Exception as e:
+            results.append({"username": uname, "ok": False, "error": str(e)})
+    ok_n = sum(1 for r in results if r["ok"])
+    return {"status": "success", "action": action, "succeeded": ok_n, "failed": len(results) - ok_n, "results": results}
 
 # Verified-device lockdown (per-user MAC allowlist, default OFF)
 @app.get("/radius/api/users/{username}/devices", tags=["Users"])

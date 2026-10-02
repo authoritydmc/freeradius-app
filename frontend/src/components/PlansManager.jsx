@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { CreditCard, Plus, Trash2, Edit3, RefreshCw, Tag } from 'lucide-react';
 import { fetchJson } from '../utils/api';
+import { AsyncButton } from './ActionButton';
 
 const EMPTY_FORM = {
   name: '',
@@ -97,7 +98,7 @@ export default function PlansManager({ onNotify, onPlansChanged }) {
   };
 
   const handleDelete = async (plan) => {
-    if (!window.confirm(`Delete plan '${plan.name}' (₹${plan.price}, ${plan.validity_days}d)? Existing subscriptions keep working; only future sales stop.`)) return;
+    if (!window.confirm(`Delete plan '${plan.name}' (₹${plan.price}, ${plan.validity_days}d)? Existing subscriptions keep working; only future sales stop.`)) return false;
     try {
       await fetchJson(`plans/${plan.id}`, { method: 'DELETE' });
       onNotify?.(`Plan '${plan.name}' deleted`, 'success');
@@ -105,6 +106,7 @@ export default function PlansManager({ onNotify, onPlansChanged }) {
       onPlansChanged?.();
     } catch (err) {
       onNotify?.(err.message || 'Failed to delete plan', 'error');
+      throw err;
     }
   };
 
@@ -169,9 +171,7 @@ export default function PlansManager({ onNotify, onPlansChanged }) {
                     <button onClick={() => openEdit(plan)} title="Edit plan" className="p-1 text-slate-400 hover:text-indigo-400 rounded transition">
                       <Edit3 className="w-3.5 h-3.5" />
                     </button>
-                    <button onClick={() => handleDelete(plan)} title="Delete plan" className="p-1 text-slate-400 hover:text-rose-400 rounded transition">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <AsyncButton onClick={() => handleDelete(plan)} title="Delete plan" className="p-1 text-slate-400 hover:text-rose-400 rounded transition" idleContent={<Trash2 className="w-3.5 h-3.5" />} />
                   </div>
                 </div>
 

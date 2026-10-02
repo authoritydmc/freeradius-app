@@ -4,6 +4,7 @@ import {
   Search, Layers, CreditCard, Smartphone
 } from 'lucide-react';
 import { fetchJson } from '../utils/api';
+import { AsyncButton } from './ActionButton';
 
 const PRESETS = [
   { id: 'enterprise', name: 'Enterprise Pro (100M / 100M)', rate: '104857600/104857600', session: 86400, simultaneous: 3, vlan: '10', recharge_required: true, require_device_verification: true },
@@ -148,7 +149,7 @@ export default function GroupsTab({ onNotify }) {
   };
 
   const handleDelete = async (groupname) => {
-    if (!window.confirm(`Are you sure you want to delete policy group '${groupname}'?`)) return;
+    if (!window.confirm(`Are you sure you want to delete policy group '${groupname}'?`)) return false;
     try {
       await fetchJson(`groups/${encodeURIComponent(groupname)}`, {
         method: 'DELETE'
@@ -157,6 +158,7 @@ export default function GroupsTab({ onNotify }) {
       loadGroups();
     } catch (err) {
       onNotify?.(err.message || 'Failed to delete group', 'error');
+      throw err;
     }
   };
 
@@ -276,13 +278,12 @@ export default function GroupsTab({ onNotify }) {
                       <button onClick={() => handleOpenEdit(group)} title="Edit Policy Group" className="p-1.5 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition">
                         <Edit3 className="w-4 h-4" />
                       </button>
-                      <button
+                      <AsyncButton
                         onClick={() => handleDelete(groupName)} disabled={groupName === 'admins'}
                         title={groupName === 'admins' ? "Default 'admins' system group cannot be deleted" : 'Delete Group'}
                         className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                        idleContent={<Trash2 className="w-4 h-4" />}
+                      />
                     </td>
                   </tr>
                 );

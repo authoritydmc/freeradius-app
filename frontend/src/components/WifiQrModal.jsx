@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { portalUrlFor } from '../utils/api';
+import { CopyButton } from './ActionButton';
 import { 
   Wifi, 
   Download, 
@@ -90,13 +91,6 @@ ${customPass ? `🔑 Password: ${customPass}\n` : ''}${effectiveExpiry ? `⏳ Ex
     setCopied(true);
     onNotify?.(label, 'success');
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(portalUrl);
-    setCopiedLink(true);
-    onNotify?.('Portal link copied to clipboard', 'success');
-    setTimeout(() => setCopiedLink(false), 2000);
   };
 
   const handleNativeShare = async () => {
@@ -335,13 +329,19 @@ ${customPass ? `🔑 Password: ${customPass}\n` : ''}${effectiveExpiry ? `⏳ Ex
 
             {/* Row 2: Utilities */}
             <div className="grid grid-cols-3 gap-1.5 text-xs pt-0.5">
-              <button
-                onClick={handleCopyLink}
+              <CopyButton
+                text={portalUrl}
+                title="Copy portal link"
                 className="flex items-center justify-center gap-1 py-1.5 px-2 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl border border-slate-700 transition text-[11px]"
+                iconClassName="w-3 h-3 shrink-0"
+                onCopied={() => {
+                  setCopiedLink(true);
+                  onNotify?.('Portal link copied to clipboard', 'success');
+                  setTimeout(() => setCopiedLink(false), 2000);
+                }}
               >
-                {copiedLink ? <Check className="w-3 h-3 text-emerald-400 shrink-0" /> : <Copy className="w-3 h-3 shrink-0" />}
                 <span>{copiedLink ? 'Copied' : 'Link'}</span>
-              </button>
+              </CopyButton>
 
               <button
                 onClick={handleDownloadQrSvg}

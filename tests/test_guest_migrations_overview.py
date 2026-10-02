@@ -211,6 +211,7 @@ def test_phone_onboarding():
 
 
 def test_onboarding_invite_with_password_and_wifi_url():
+
     api_js = Path("frontend/src/utils/api.js").read_text(encoding="utf-8")
     assert "WIFI_PORTAL_BASE_URL" in api_js
     assert "wifi.rajlabs.in" in api_js
@@ -227,6 +228,38 @@ def test_onboarding_invite_with_password_and_wifi_url():
     assert "portalUrlFor" in cred and "window.location.origin" not in cred
     qr = Path("frontend/src/components/WifiQrModal.jsx").read_text(encoding="utf-8")
     assert "portalUrlFor" in qr
+
+
+def test_ban_bulk_and_inline_feedback():
+    import inspect
+    from api.app import ban_user, unban_user, bulk_user_action, list_users
+    from api.app import BAN_MESSAGE, _apply_user_ban
+    # Ban is password-preserving: only toggles Reject rows, never touches secrets
+    helper = inspect.getsource(_apply_user_ban)
+    assert "Auth-Type" in helper and "LIKE '%%Password'" not in helper
+    assert "banned" in inspect.getsource(list_users)
+    # Bulk endpoint covers ban/unban/revoke/delete with per-user results
+    src = inspect.getsource(bulk_user_action)
+    assert "revoke_certs" in src and "succeeded" in src
+    # Shared inline-feedback buttons exist and are actually used
+    ab = Path("frontend/src/components/ActionButton.jsx").read_text(encoding="utf-8")
+    assert "AsyncButton" in ab and "CopyButton" in ab
+    for f, needle in (
+        ("UsersTab.jsx", "AsyncButton"),
+        ("UsersTab.jsx", "CopyButton"),
+        ("UsersTab.jsx", "runBulkAction"),
+        ("UsersTab.jsx", "BANNED"),
+        ("UsersTab.jsx", "resetResult"),
+        ("UsersTab.jsx", "saveResult"),
+        ("CertsTab.jsx", "AsyncButton"),
+        ("GroupsTab.jsx", "AsyncButton"),
+        ("SessionsTab.jsx", "AsyncButton"),
+        ("PlansManager.jsx", "AsyncButton"),
+        ("CredResultModal.jsx", "CopyButton"),
+        ("OnboardModal.jsx", "CopyButton"),
+        ("WifiQrModal.jsx", "CopyButton"),
+    ):
+        assert needle in Path(f"frontend/src/components/{f}").read_text(encoding="utf-8"), f"{f}:{needle}"
 
 
 def test_upi_invoice_note_and_guest_lifecycle():

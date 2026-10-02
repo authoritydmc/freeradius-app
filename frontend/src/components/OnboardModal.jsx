@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { MessageCircle, Copy, Check, X, Send, Phone, Save } from 'lucide-react';
+import { MessageCircle, X, Send, Phone, Save } from 'lucide-react';
 import { fetchJson, portalUrlFor } from '../utils/api';
+import { CopyButton } from './ActionButton';
 
 export function toWaNumber(phone) {
   return String(phone || '').replace(/\D/g, '');
@@ -48,7 +49,6 @@ export default function OnboardModal({ user, initialPassword = '', onClose, onSa
   const [phone, setPhone] = useState(user?.phone || '');
   const [password, setPassword] = useState(initialPassword || '');
   const [saving, setSaving] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [config, setConfig] = useState(null);
 
   useEffect(() => {
@@ -73,22 +73,6 @@ export default function OnboardModal({ user, initialPassword = '', onClose, onSa
   const digits = toWaNumber(phone);
   const waHref = digits ? `https://wa.me/${digits}?text=${encodeURIComponent(message)}` : null;
   const smsHref = phone ? `sms:${encodeURIComponent(phone)}?body=${encodeURIComponent(message)}` : null;
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(message);
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = message;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-    onNotify?.('Onboarding message copied', 'success');
-  };
 
   const handleSavePhone = async () => {
     if (!phone.trim()) {
@@ -186,15 +170,21 @@ export default function OnboardModal({ user, initialPassword = '', onClose, onSa
               <span>SMS</span>
             </button>
           )}
-          <button onClick={handleCopy}
-            className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl flex items-center justify-center gap-1.5">
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copied ? 'Copied' : 'Copy'}</span>
-          </button>
+          <CopyButton
+            text={message}
+            title="Copy invite message"
+            className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl flex items-center justify-center gap-1.5"
+            iconClassName="w-3.5 h-3.5"
+            onCopied={() => onNotify?.('Onboarding message copied', 'success')}
+          >
+            <span>Copy</span>
+          </CopyButton>
         </div>
 
         <p className="text-[11px] text-slate-500 text-center">
-          Password is never included — share it via the credential card handed at signup.
+          {password.trim()
+            ? 'Invite includes the Wi-Fi password above — send only to the account holder.'
+            : 'No password in this invite — share it via the credential card handed at signup.'}
         </p>
       </div>
     </div>

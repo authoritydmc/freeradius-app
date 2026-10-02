@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { formatDateTime, fetchJson } from '../utils/api';
 import CertIssuedModal from './CertIssuedModal';
+import { AsyncButton } from './ActionButton';
 
 export default function CertsTab({
   certs: propCerts,
@@ -167,7 +168,7 @@ export default function CertsTab({
   };
 
   const handleRevokeCert = async (username) => {
-    if (!window.confirm(`Are you sure you want to REVOKE the certificate for user '${username}'? This immediately invalidates their 802.1X EAP-TLS network access.`)) return;
+    if (!window.confirm(`Are you sure you want to REVOKE the certificate for user '${username}'? This immediately invalidates their 802.1X EAP-TLS network access.`)) return false;
     try {
       const res = await fetchJson(`certs/${encodeURIComponent(username)}/revoke`, {
         method: 'POST'
@@ -176,6 +177,7 @@ export default function CertsTab({
       loadData();
     } catch (err) {
       onNotify?.(err.message || 'Failed to revoke certificate', 'error');
+      throw err;
     }
   };
 
@@ -193,7 +195,7 @@ export default function CertsTab({
   const onCleanupOrphan = propOnCleanupOrphan || handleCleanupOrphan;
 
   const handleDeleteCert = async (username) => {
-    if (!window.confirm(`DELETE the certificate for '${username}'? It will be revoked upstream (signer CRL) and the local bundle removed. This cannot be undone.`)) return;
+    if (!window.confirm(`DELETE the certificate for '${username}'? It will be revoked upstream (signer CRL) and the local bundle removed. This cannot be undone.`)) return false;
     try {
       const res = await fetchJson(`certs/${encodeURIComponent(username)}`, {
         method: 'DELETE'
@@ -202,6 +204,7 @@ export default function CertsTab({
       loadData();
     } catch (err) {
       onNotify?.(err.message || 'Failed to delete certificate', 'error');
+      throw err;
     }
   };
 
@@ -339,21 +342,19 @@ export default function CertsTab({
                     <span>Profile</span>
                   </a>
 
-                  <button
+                  <AsyncButton
                     onClick={() => handleRevokeCert(c.username)}
                     title="Revoke Certificate (Invalidates EAP-TLS access)"
                     className="p-1.5 text-amber-400 hover:text-amber-300 hover:bg-amber-500/10 rounded-lg transition-colors border border-amber-500/20"
-                  >
-                    <Ban className="w-3.5 h-3.5" />
-                  </button>
+                    idleContent={<Ban className="w-3.5 h-3.5" />}
+                  />
 
-                  <button
+                  <AsyncButton
                     onClick={() => handleDeleteCert(c.username)}
-                    title="Delete Certificate Bundle Files"
+                    title="Delete + revoke upstream (CRL)"
                     className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors border border-rose-500/20"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                    idleContent={<Trash2 className="w-3.5 h-3.5" />}
+                  />
                 </td>
               </tr>
             ))}

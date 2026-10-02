@@ -4,6 +4,7 @@ import {
   ArrowDown, ArrowUp, Clock, Smartphone, Globe, AlertCircle, CheckCircle2
 } from 'lucide-react';
 import { fetchJson, formatBytes, formatDuration, formatDateTime } from '../utils/api';
+import { AsyncButton } from './ActionButton';
 
 export default function SessionsTab({ onNotify }) {
   const [sessions, setSessions] = useState([]);
@@ -29,7 +30,7 @@ export default function SessionsTab({ onNotify }) {
   }, [activeOnly]);
 
   const handleDisconnect = async (session) => {
-    if (!window.confirm(`Force terminate session for '${session.username}' via RFC 5176 CoA Disconnect?`)) return;
+    if (!window.confirm(`Force terminate session for '${session.username}' via RFC 5176 CoA Disconnect?`)) return false;
     try {
       setDisconnectingId(session.radacctid);
       const res = await fetchJson('sessions/disconnect', {
@@ -49,6 +50,7 @@ export default function SessionsTab({ onNotify }) {
       loadSessions();
     } catch (err) {
       onNotify?.(err.message || 'Failed to disconnect session', 'error');
+      throw err;
     } finally {
       setDisconnectingId(null);
     }
@@ -215,15 +217,13 @@ export default function SessionsTab({ onNotify }) {
 
                       <td className="py-3.5 px-4 text-right">
                         {isActive ? (
-                          <button
+                          <AsyncButton
                             onClick={() => handleDisconnect(s)}
-                            disabled={disconnectingId === s.radacctid}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg text-xs font-medium transition disabled:opacity-50"
                             title="Send RFC 5176 Disconnect-Request"
-                          >
-                            <PowerOff className="w-3.5 h-3.5" />
-                            <span>{disconnectingId === s.radacctid ? 'Disconnecting...' : 'Disconnect'}</span>
-                          </button>
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-lg text-xs font-medium transition disabled:opacity-50"
+                            idleContent={<><PowerOff className="w-3.5 h-3.5" /><span>Disconnect</span></>}
+                            okText="Kicked"
+                          />
                         ) : (
                           <span className="text-xs text-slate-500">—</span>
                         )}

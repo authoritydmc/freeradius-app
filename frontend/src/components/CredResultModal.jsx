@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { portalUrlFor } from '../utils/api';
+import { CopyButton } from './ActionButton';
 import { 
   CheckCircle2, 
-  Copy, 
   Eye, 
   EyeOff, 
   QrCode, 
@@ -47,14 +47,6 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
     }, 500);
   };
 
-  const handleCopyText = (text, msg) => {
-    if (onCopy) {
-      onCopy(text, msg);
-    } else {
-      navigator.clipboard.writeText(text);
-    }
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fade-in">
       <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl relative overflow-hidden">
@@ -85,13 +77,11 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
               <span className="text-white font-bold bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800">
                 {username}
               </span>
-              <button 
-                onClick={() => handleCopyText(username, 'Username copied to clipboard')}
-                className="text-slate-400 hover:text-white p-1"
+              <CopyButton
+                text={username}
                 title="Copy Username"
-              >
-                <Copy className="w-4 h-4" />
-              </button>
+                className="text-slate-400 hover:text-white p-1"
+              />
             </div>
           </div>
 
@@ -108,13 +98,11 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
               >
                 {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
-              <button 
-                onClick={() => handleCopyText(password, 'Password copied to clipboard')}
-                className="text-slate-400 hover:text-white p-1"
+              <CopyButton
+                text={password}
                 title="Copy Password"
-              >
-                <Copy className="w-4 h-4" />
-              </button>
+                className="text-slate-400 hover:text-white p-1"
+              />
             </div>
           </div>
 
@@ -147,13 +135,14 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
 
         {/* Quick Action Share Buttons */}
         <div className="grid grid-cols-2 gap-2 text-xs font-sans">
-          <button 
-            onClick={() => handleCopyText(shareText, 'Credential share text copied')}
+          <CopyButton
+            text={shareText}
+            title="Copy full details"
             className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl flex items-center justify-center gap-1.5 transition"
+            iconClassName="w-3.5 h-3.5"
           >
-            <Copy className="w-3.5 h-3.5" />
             <span>Copy Details</span>
-          </button>
+          </CopyButton>
           
           <button 
             onClick={handleDownloadTxt}

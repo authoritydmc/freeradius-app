@@ -18,7 +18,6 @@ import {
   Dice5, 
   Eye, 
   EyeOff, 
-  Copy, 
   Smartphone,
   RefreshCw,
   QrCode,
@@ -26,7 +25,10 @@ import {
   Unlock,
   ShieldAlert,
   MessageCircle,
-  Phone
+  Phone,
+  Ban,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 import { calculatePasswordStrength, fetchJson, formatDateTime } from '../utils/api';
 import WifiQrModal from './WifiQrModal';
@@ -34,6 +36,7 @@ import ResponsiveTable from './ResponsiveTable';
 import UserDetailModal from './UserDetailModal';
 import CertIssuedModal from './CertIssuedModal';
 import OnboardModal from './OnboardModal';
+import { AsyncButton, CopyButton } from './ActionButton';
 
 export default function UsersTab({
   users: propUsers,
@@ -69,6 +72,14 @@ export default function UsersTab({
   const [userForm, setUserForm] = useState({ username: '', password: '', group: 'staff', static_ip: '', phone: '' });
   const [showPass, setShowPass] = useState(false);
   const [userModalSaving, setUserModalSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState(null); // {ok, msg} inline confirmation
+  // Edit-modal admin actions
+  const [editBanned, setEditBanned] = useState(false);
+  const [editHasCert, setEditHasCert] = useState(false);
+  const [editBusy, setEditBusy] = useState(''); // 'ban' | 'revoke' | ''
+  // Bulk selection (usernames)
+  const [selected, setSelected] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState('');
 
   // Reset Password Modal
   const [resetModalOpen, setResetModalOpen] = useState(false);
@@ -76,6 +87,7 @@ export default function UsersTab({
   const [resetPassword, setResetPassword] = useState('');
   const [resetDisconnect, setResetDisconnect] = useState(false);
   const [resetSaving, setResetSaving] = useState(false);
+  const [resetResult, setResetResult] = useState(null); // {ok, msg} inline confirmation
   const [showResetPass, setShowResetPass] = useState(true);
 
   // Device Policy Modal
@@ -143,6 +155,7 @@ export default function UsersTab({
 
   const handleOpenAdd = () => {
     setIsEditing(false);
+    setSaveResult(null);
     setUserForm({
       username: '',
       password: generateRandomPass(),
@@ -165,12 +178,76 @@ export default function UsersTab({
       phone: user.phone || ''
     });
     setShowPass(false);
+    setSaveResult(null);
+    setEditBanned(Boolean(user.banned));
+    setEditHasCert(Boolean(user.has_certificate));
+    setEditBusy('');
     setUserModalOpen(true);
+  };
+
+  const handleToggleBan = async () => {
+    const toBan = !editBanned;
+    if (toBan && !window.confirm(`Ban '${userForm.username}'? They will be rejected immediately (password kept).`)) return;
+    setEditBusy('ban');
+    try {
+      const res = await fetchJson(`users/${encodeURIComponent(userForm.username)}/${toBan ? 'ban' : 'unban'}`, {
+        method: 'POST',
+        body: JSON.stringify({ disconnect: true })
+      });
+      setEditBanned(toBan);
+      onNotify?.(res.message || (toBan ? 'User banned' : 'User unbanned'), toBan ? 'warning' : 'success');
+      loadData();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to update ban state', 'error');
+    } finally {
+      setEditBusy('');
+    }
+  };
+
+  const handleRevokeCertInEdit = async () => {
+    if (!window.confirm(`Revoke the certificate for '${userForm.username}' (upstream CRL + local removal)?`)) return;
+    setEditBusy('revoke');
+    try {
+      const res = await fetchJson(`certs/${encodeURIComponent(userForm.username)}/revoke`, { method: 'POST' });
+      setEditHasCert(false);
+      onNotify?.(res.message || 'Certificate revoked', 'success');
+      loadData();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to revoke certificate', 'error');
+    } finally {
+      setEditBusy('');
+    }
+  };
+
+  const runBulkAction = async (action, label) => {
+    if (!selected.length) return;
+    if (!window.confirm(`${label} ${selected.length} selected user(s)?`)) return;
+    setBulkBusy(action);
+    try {
+      const res = await fetchJson('users/bulk-action', {
+        method: 'POST',
+        body: JSON.stringify({ usernames: selected, action, disconnect: action === 'ban' })
+      });
+      const ok = res.succeeded ?? 0;
+      const fail = res.failed ?? 0;
+      const firstErr = (res.results || []).find(r => !r.ok);
+      onNotify?.(
+        `${label}: ${ok} succeeded${fail ? `, ${fail} failed${firstErr ? ` (e.g. ${firstErr.username}: ${firstErr.error})` : ''}` : ''}`,
+        fail ? 'warning' : 'success'
+      );
+      setSelected([]);
+      loadData();
+    } catch (err) {
+      onNotify?.(err.message || 'Bulk action failed', 'error');
+    } finally {
+      setBulkBusy('');
+    }
   };
 
   const handleSaveUser = async (e) => {
     e.preventDefault();
     setUserModalSaving(true);
+    setSaveResult(null);
     try {
       if (propOnSaveUser) {
         await propOnSaveUser({
@@ -180,8 +257,9 @@ export default function UsersTab({
           framed_ip: userForm.static_ip,
           phone: userForm.phone?.trim() || undefined
         }, isEditing);
+        setSaveResult({ ok: true, msg: `User '${userForm.username}' saved.` });
       } else {
-        const endpoint = isEditing ? `users/${userForm.username}` : 'users';
+        const endpoint = isEditing ? `users/${encodeURIComponent(userForm.username)}` : 'users';
         const method = isEditing ? 'PUT' : 'POST';
         const res = await fetchJson(endpoint, {
           method,
@@ -193,7 +271,9 @@ export default function UsersTab({
             phone: userForm.phone?.trim() || undefined
           })
         });
-        onNotify?.(res.message || `User '${userForm.username}' saved successfully!`, 'success');
+        const msg = res.message || `User '${userForm.username}' saved successfully!`;
+        setSaveResult({ ok: true, msg });
+        onNotify?.(msg, 'success');
         if (!isEditing && onShowCredModal) {
           setLastCreatedCreds({ username: userForm.username, password: userForm.password });
           onShowCredModal({
@@ -206,9 +286,12 @@ export default function UsersTab({
         }
         loadData();
       }
-      setUserModalOpen(false);
+      // Inline confirmation inside the modal; auto-close shortly on success
+      setTimeout(() => setUserModalOpen(false), 1200);
     } catch (err) {
-      onNotify?.(err.message || 'Failed to save user', 'error');
+      const msg = err.message || 'Failed to save user';
+      setSaveResult({ ok: false, msg });
+      onNotify?.(msg, 'error');
     } finally {
       setUserModalSaving(false);
     }
@@ -219,11 +302,13 @@ export default function UsersTab({
     setResetPassword(generateRandomPass());
     setResetDisconnect(false);
     setShowResetPass(true);
+    setResetResult(null);
     setResetModalOpen(true);
   };
 
   const handleSaveReset = async (showQr = false) => {
     setResetSaving(true);
+    setResetResult(null);
     try {
       if (propOnResetPassword) {
         await propOnResetPassword(resetUsername, resetPassword, resetDisconnect);
@@ -240,13 +325,19 @@ export default function UsersTab({
       }
       const savedUser = resetUsername;
       const savedPass = resetPassword;
-      setResetModalOpen(false);
-      if (showQr) {
-        // Fresh secret is still known: open a QR that joins directly
-        setQrModalUser({ username: savedUser, password: savedPass });
-      }
+      setResetResult({ ok: true, msg: `Password saved for '${savedUser}'.` });
+      setTimeout(() => {
+        setResetModalOpen(false);
+        setResetResult(null);
+        if (showQr) {
+          // Fresh secret is still known: open a QR that joins directly
+          setQrModalUser({ username: savedUser, password: savedPass });
+        }
+      }, 900);
     } catch (err) {
-      onNotify?.(err.message || 'Failed to reset password', 'error');
+      const msg = err.message || 'Failed to reset password';
+      setResetResult({ ok: false, msg });
+      onNotify?.(msg, 'error');
     } finally {
       setResetSaving(false);
     }
@@ -285,17 +376,18 @@ export default function UsersTab({
   };
 
   const handleDeleteUser = async (username) => {
-    if (!window.confirm(`Are you sure you want to delete user '${username}'?`)) return;
+    if (!window.confirm(`Are you sure you want to delete user '${username}'?`)) return false;
     try {
       if (propOnDeleteUser) {
         await propOnDeleteUser(username);
       } else {
-        await fetchJson(`users/${username}`, { method: 'DELETE' });
+        await fetchJson(`users/${encodeURIComponent(username)}`, { method: 'DELETE' });
         onNotify?.(`User '${username}' deleted successfully`, 'success');
         loadData();
       }
     } catch (err) {
       onNotify?.(err.message || 'Failed to delete user', 'error');
+      throw err;
     }
   };
 
@@ -324,6 +416,7 @@ export default function UsersTab({
       }
     } catch (err) {
       onNotify?.(err.message || 'Failed to issue certificate', 'error');
+      throw err;
     }
   };
 
@@ -515,12 +608,49 @@ export default function UsersTab({
         </div>
       </div>
 
+      {/* Bulk action bar */}
+      {selected.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 bg-indigo-950/60 border border-indigo-500/30 p-3 rounded-2xl text-xs">
+          <span className="font-bold text-indigo-200 px-1">{selected.length} selected</span>
+          {[
+            { action: 'ban', label: 'Ban', cls: 'bg-rose-600 hover:bg-rose-500' },
+            { action: 'unban', label: 'Unban', cls: 'bg-emerald-600 hover:bg-emerald-500' },
+            { action: 'revoke_certs', label: 'Revoke certs', cls: 'bg-purple-600 hover:bg-purple-500' },
+            { action: 'delete', label: 'Delete', cls: 'bg-slate-700 hover:bg-rose-600' }
+          ].map(b => (
+            <button
+              key={b.action}
+              onClick={() => runBulkAction(b.action, b.label)}
+              disabled={!!bulkBusy}
+              className={`px-3 py-1.5 text-white rounded-xl font-bold transition disabled:opacity-50 flex items-center gap-1.5 ${b.cls}`}
+            >
+              {bulkBusy === b.action ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : bulkBusy ? null : null}
+              <span>{bulkBusy === b.action ? 'Working…' : b.label}</span>
+            </button>
+          ))}
+          <button onClick={() => setSelected([])} className="px-3 py-1.5 text-slate-400 hover:text-white">
+            Clear
+          </button>
+        </div>
+      )}
+
       {/* Users Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-3xl shadow-sm">
         <ResponsiveTable className="rounded-3xl">
         <table className="w-full min-w-[760px] text-left text-xs">
           <thead className="bg-slate-950/60 text-slate-400 uppercase border-b border-slate-800 text-[10px] tracking-wider">
             <tr>
+              <th className="pl-3 sm:pl-6 pr-1 py-3 sm:py-4 whitespace-nowrap w-8">
+                <input
+                  type="checkbox"
+                  title="Select all"
+                  checked={filteredUsers.length > 0 && filteredUsers.every(u => selected.includes(u.username))}
+                  onChange={(e) => setSelected(e.target.checked ? filteredUsers.map(u => u.username) : [])}
+                  className="w-4 h-4 rounded text-indigo-600 bg-slate-900 border-slate-700"
+                />
+              </th>
               <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Username & Status</th>
               <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Subscription</th>
               <th className="px-3 sm:px-6 py-3 sm:py-4 whitespace-nowrap">Group Policy</th>
@@ -531,12 +661,21 @@ export default function UsersTab({
           </thead>
           <tbody className="divide-y divide-slate-800/80">
             {filteredUsers.map((user) => (
-              <tr key={user.username} className="hover:bg-slate-800/40 transition-colors">
-                
+              <tr key={user.username} className={`hover:bg-slate-800/40 transition-colors ${selected.includes(user.username) ? 'bg-indigo-500/5' : ''}`}>
+                <td className="pl-3 sm:pl-6 pr-1 py-3 sm:py-4 whitespace-nowrap">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(user.username)}
+                    onChange={(e) => setSelected(e.target.checked
+                      ? [...selected, user.username]
+                      : selected.filter(u => u !== user.username))}
+                    className="w-4 h-4 rounded text-indigo-600 bg-slate-900 border-slate-700"
+                  />
+                </td>
                 {/* Username + Expiry + Online Status */}
                 <td className="px-3 sm:px-6 py-3 sm:py-4 font-semibold text-white whitespace-nowrap">
                   <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-slate-800 border border-slate-700/80 flex items-center justify-center text-xs text-slate-300 font-mono font-bold shrink-0">
+                    <div className={`w-8 h-8 rounded-xl border flex items-center justify-center text-xs font-mono font-bold shrink-0 ${user.banned ? 'bg-rose-500/10 border-rose-500/30 text-rose-300' : 'bg-slate-800 border-slate-700/80 text-slate-300'}`}>
                       {user.username.charAt(0).toUpperCase()}
                     </div>
                     <div className="min-w-0">
@@ -548,6 +687,11 @@ export default function UsersTab({
                         {user.username}
                       </button>
                       <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                        {user.banned && (
+                          <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-300 text-[9px] font-bold border border-rose-500/30">
+                            BANNED
+                          </span>
+                        )}
                         {user.active_sessions > 0 && (
                           <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 text-[9px] font-mono border border-emerald-500/20 flex items-center gap-1">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
@@ -648,12 +792,13 @@ export default function UsersTab({
                       </a>
                     </div>
                   ) : (
-                    <button
+                    <AsyncButton
                       onClick={() => handleIssueCert(user.username)}
+                      title="Issue certificate"
                       className="text-slate-400 hover:text-indigo-300 text-[10px] border border-slate-700 px-2.5 py-1 rounded-lg hover:border-indigo-500 transition-colors flex items-center gap-1"
-                    >
-                      <Plus className="w-3 h-3" /> Issue Cert
-                    </button>
+                      idleContent={<><Plus className="w-3 h-3" /> Issue Cert</>}
+                      okText="Issued"
+                    />
                   )}
                 </td>
 
@@ -718,13 +863,12 @@ export default function UsersTab({
                   >
                     <Play className="w-4 h-4" />
                   </button>
-                  <button
+                  <AsyncButton
                     onClick={() => handleDeleteUser(user.username)}
                     title="Delete User"
                     className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                    idleContent={<Trash2 className="w-4 h-4" />}
+                  />
                 </td>
 
               </tr>
@@ -732,7 +876,7 @@ export default function UsersTab({
 
             {filteredUsers.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-6 py-10 text-center text-slate-500 italic">
+                <td colSpan={7} className="px-6 py-10 text-center text-slate-500 italic">
                   No users found matching current filter.
                 </td>
               </tr>
@@ -947,6 +1091,57 @@ export default function UsersTab({
                 />
               </div>
 
+              {isEditing && (
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-300 font-medium">Account status</span>
+                    <button
+                      type="button"
+                      onClick={handleToggleBan}
+                      disabled={editBusy === 'ban'}
+                      title={editBanned ? 'Unban account' : 'Ban account (immediate reject, sessions kicked)'}
+                      className={`px-3 py-1.5 rounded-xl text-[11px] font-bold border transition disabled:opacity-50 flex items-center gap-1.5 ${
+                        editBanned
+                          ? 'bg-rose-500/15 text-rose-300 border-rose-500/30 hover:bg-rose-500/25'
+                          : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20 hover:bg-emerald-500/20'
+                      }`}
+                    >
+                      {editBusy === 'ban' ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : editBanned ? (
+                        <Unlock className="w-3.5 h-3.5" />
+                      ) : (
+                        <Lock className="w-3.5 h-3.5" />
+                      )}
+                      <span>{editBusy === 'ban' ? 'Working…' : editBanned ? 'BANNED — click to unban' : 'Active — click to ban'}</span>
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-300 font-medium">EAP-TLS certificate</span>
+                    {editHasCert ? (
+                      <button
+                        type="button"
+                        onClick={handleRevokeCertInEdit}
+                        disabled={editBusy === 'revoke'}
+                        className="px-3 py-1.5 rounded-xl text-[11px] font-bold bg-purple-500/10 text-purple-300 border border-purple-500/20 hover:bg-purple-500/20 transition disabled:opacity-50 flex items-center gap-1.5"
+                      >
+                        {editBusy === 'revoke' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Ban className="w-3.5 h-3.5" />}
+                        <span>{editBusy === 'revoke' ? 'Revoking…' : 'Revoke certificate'}</span>
+                      </button>
+                    ) : (
+                      <span className="text-slate-600 italic">No certificate issued</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {saveResult && (
+                <div className={`rounded-xl border p-3 text-xs font-semibold flex items-center gap-2 ${saveResult.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-rose-500/10 border-rose-500/20 text-rose-300'}`}>
+                  {saveResult.ok ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                  <span>{saveResult.msg}</span>
+                </div>
+              )}
+
               <div className="flex justify-end gap-2 pt-2">
                 <button 
                   type="button" 
@@ -1006,17 +1201,13 @@ export default function UsersTab({
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 pr-16 text-white focus:border-amber-500 outline-none font-mono"
                     />
                     <div className="absolute right-2 top-2 flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          navigator.clipboard?.writeText(resetPassword);
-                          onNotify?.('New password copied — save it to apply', 'success');
-                        }}
+                      <CopyButton
+                        text={resetPassword}
                         title="Copy new password"
                         className="text-slate-500 hover:text-white p-0.5"
-                      >
-                        <Copy className="w-4 h-4" />
-                      </button>
+                        iconClassName="w-4 h-4"
+                        onCopied={() => onNotify?.('New password copied — save it to apply', 'success')}
+                      />
                       <button 
                         type="button" 
                         onClick={() => setShowResetPass(!showResetPass)}
@@ -1054,6 +1245,13 @@ export default function UsersTab({
                 />
                 <span>Disconnect active sessions now (CoA / Port 3799)</span>
               </label>
+
+              {resetResult && (
+                <div className={`rounded-xl border p-3 text-xs font-semibold flex items-center gap-2 ${resetResult.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-rose-500/10 border-rose-500/20 text-rose-300'}`}>
+                  {resetResult.ok ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                  <span>{resetResult.msg}</span>
+                </div>
+              )}
 
               <div className="flex justify-end gap-2 pt-1">
                 <button 
