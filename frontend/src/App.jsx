@@ -80,10 +80,9 @@ export default function App() {
       setCurrentUser(savedUser || { username: 'Administrator', role: 'admin' });
       loadHealthAndStats();
     } catch (err) {
-      if (err.status === 401) {
-        removeAuthToken();
-        setCurrentUser(null);
-      }
+      console.warn('Session verification failed, resetting to login:', err);
+      removeAuthToken();
+      setCurrentUser(null);
     } finally {
       setAuthChecking(false);
     }
