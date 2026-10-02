@@ -72,3 +72,43 @@ def test_put_user_update_route():
     # Status code will be 200/404/500 depending on mock DB presence, but never 405 Method Not Allowed or 401 Unauthorized
     assert res.status_code != 405
     assert res.status_code != 401
+
+def test_cert_inspection_route_requires_admin():
+    # Unauthenticated must be rejected
+    res = client.get("/radius/api/certs/admin_radius/inspect")
+    assert res.status_code == 401
+
+def test_device_policy_routes_exist_and_protected():
+    admin_token = generate_session_token("admin_radius", role="admin")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # GET devices
+    res_get = client.get("/radius/api/users/test_user/devices", headers=headers)
+    assert res_get.status_code != 401
+    assert res_get.status_code != 405
+
+    # PUT device-policy
+    res_put = client.put("/radius/api/users/test_user/device-policy", json={"require_verified": True}, headers=headers)
+    assert res_put.status_code != 401
+    assert res_put.status_code != 405
+
+def test_audit_logs_endpoint_aliases():
+    admin_token = generate_session_token("admin_radius", role="admin")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # Both /audit and /audit-logs must be accessible to admin
+    res1 = client.get("/radius/api/audit", headers=headers)
+    assert res1.status_code != 401
+    assert res1.status_code != 404
+
+    res2 = client.get("/radius/api/audit-logs", headers=headers)
+    assert res2.status_code != 401
+    assert res2.status_code != 404
+
+def test_health_check_endpoint():
+    res = client.get("/radius/api/health")
+    assert res.status_code == 200
+    data = res.json()
+    assert "status" in data
+    assert data["api_ok"] is True
+    assert "database" in data
