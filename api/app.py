@@ -2445,7 +2445,14 @@ def ensure_plans_table():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """)
-            # Check if empty, seed default plans
+            # Ensure columns exist if table was created by older schema
+            cur.execute("""
+                ALTER TABLE plans ADD COLUMN IF NOT EXISTS currency VARCHAR(8) NOT NULL DEFAULT 'INR';
+                ALTER TABLE plans ADD COLUMN IF NOT EXISTS validity_days INT NOT NULL DEFAULT 1;
+                ALTER TABLE plans ADD COLUMN IF NOT EXISTS validity_seconds BIGINT NOT NULL DEFAULT 86400;
+                ALTER TABLE plans ADD COLUMN IF NOT EXISTS max_session_seconds INT NOT NULL DEFAULT 86400;
+            """)
+            # Check if empty or only older dummy plans, seed/update standard pricing
             cur.execute("SELECT COUNT(*) as c FROM plans")
             row = cur.fetchone()
             if row and row["c"] == 0:
@@ -2453,8 +2460,8 @@ def ensure_plans_table():
                     INSERT INTO plans (name, price, currency, validity_days, validity_seconds, max_session_seconds, description)
                     VALUES 
                     ('1 Day Daily Pass', 10.00, 'INR', 1, 86400, 86400, 'Emergency 24-hour unlimited high-speed access (₹10/day)'),
-                    ('7 Days Weekly Pass', 30.00, 'INR', 7, 604800, 86400, '7 Days high-speed broadband access (₹4.28/day)'),
-                    ('30 Days Monthly Unlimited', 52.00, 'INR', 30, 2592000, 86400, 'Best Value! Full 30 days unlimited Wi-Fi at only ₹1.73/day (₹50 + PG charges)')
+                    ('7 Days Weekly Pass', 30.00, 'INR', 7, 604800, 86400, '7 Days high-speed broadband access (₹4.28/day — Save 57% vs Daily)'),
+                    ('30 Days Monthly Unlimited', 51.35, 'INR', 30, 2592000, 86400, 'Best Value! Full 30 days unlimited Wi-Fi at ₹1.71/day (₹50 base + 2.7% PG gateway fee)')
                 """)
             conn.commit()
         conn.close()
@@ -2489,8 +2496,8 @@ def list_plans():
         # Fallback default plans in case DB offline
         return [
             {"id": 1, "name": "1 Day Daily Pass", "price": 10.0, "currency": "INR", "validity_days": 1, "validity_seconds": 86400, "max_session_seconds": 86400, "description": "Emergency 24-hour unlimited high-speed access (₹10/day)"},
-            {"id": 2, "name": "7 Days Weekly Pass", "price": 30.0, "currency": "INR", "validity_days": 7, "validity_seconds": 604800, "max_session_seconds": 86400, "description": "7 Days high-speed broadband access (₹4.28/day)"},
-            {"id": 3, "name": "30 Days Monthly Unlimited", "price": 52.0, "currency": "INR", "validity_days": 30, "validity_seconds": 2592000, "max_session_seconds": 86400, "description": "Best Value! Full 30 days unlimited Wi-Fi at only ₹1.73/day (₹50 + PG charges)"}
+            {"id": 2, "name": "7 Days Weekly Pass", "price": 30.0, "currency": "INR", "validity_days": 7, "validity_seconds": 604800, "max_session_seconds": 86400, "description": "7 Days high-speed broadband access (₹4.28/day — Save 57% vs Daily)"},
+            {"id": 3, "name": "30 Days Monthly Unlimited", "price": 51.35, "currency": "INR", "validity_days": 30, "validity_seconds": 2592000, "max_session_seconds": 86400, "description": "Best Value! Full 30 days unlimited Wi-Fi at ₹1.71/day (₹50 base + 2.7% PG gateway fee)"}
         ]
 
 @app.post("/radius/api/plans", tags=["Plans & Pricing"])
@@ -2640,7 +2647,11 @@ def list_payments(
 @app.post("/api/payments/manual-activate", tags=["Payments"])
 def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: str = Depends(authenticate_admin)):
     """1-Click manual top-up & plan activation via UTR, Note, or Cash collection."""
+    from api.db_init import init_all_tables
     from api.entitlements import process_verified_payment
+    init_all_tables()
+    ensure_plans_table()
+    
     uname = validate_username(payload.username)
     conn = get_db_connection()
     try:
@@ -2657,10 +2668,21 @@ def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: s
                 user_id = cur.fetchone()["id"]
             else:
                 user_id = u_row["id"]
+
+            # Also ensure user has at least a default radcheck record
+            cur.execute("SELECT id FROM radcheck WHERE username = %s LIMIT 1", (uname,))
+            if not cur.fetchone():
+                cur.execute("""
+                    INSERT INTO radcheck (username, attribute, op, value)
+                    VALUES (%s, 'Cleartext-Password', ':=', %s)
+                """, (uname, generate_session_secret(16)))
+
             conn.commit()
 
         # Generate unique payment ref if UTR not supplied
         payment_ref = payload.utr.strip() if payload.utr and payload.utr.strip() else f"MANUAL-{uname}-{int(time.time())}"
+        
+        validity_secs = (payload.validity_days * 86400) if payload.validity_days and payload.validity_days > 0 else None
         
         result = process_verified_payment(
             gateway=payload.gateway or "MANUAL_ADMIN",
@@ -2670,11 +2692,12 @@ def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: s
             plan_id=payload.plan_id,
             amount=payload.amount,
             currency="INR",
+            custom_validity_seconds=validity_secs,
             raw_reference=f"Manual Admin Top-up by {admin_user}: note={payload.note or ''}",
             actor_type="ADMIN",
             ip="127.0.0.1"
         )
-        log_audit(admin_user, "MANUAL_PAYMENT_ACTIVATED", uname, f"amount={payload.amount} ref={payment_ref} plan_id={payload.plan_id}")
+        log_audit(admin_user, "MANUAL_PAYMENT_ACTIVATED", uname, f"amount={payload.amount} ref={payment_ref} plan_id={payload.plan_id} validity_days={payload.validity_days}")
         return {
             "status": "success",
             "message": f"Plan successfully activated for user '{uname}' (Ref: {payment_ref})",

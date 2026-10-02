@@ -25,7 +25,8 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
   const [manualForm, setManualForm] = useState({
     username: '',
     plan_id: '',
-    amount: 20,
+    validity_days: 30,
+    amount: 51.35,
     utr: '',
     note: '',
     gateway: 'MANUAL_ADMIN'
@@ -83,18 +84,20 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
         body: JSON.stringify({
           username: manualForm.username.trim(),
           plan_id: manualForm.plan_id ? parseInt(manualForm.plan_id) : null,
+          validity_days: manualForm.validity_days ? parseInt(manualForm.validity_days) : 30,
           amount: parseFloat(manualForm.amount || 0),
           utr: manualForm.utr?.trim() || null,
           note: manualForm.note?.trim() || null,
           gateway: manualForm.gateway || 'MANUAL_ADMIN'
         })
       });
-      onNotify?.(res.message || 'Payment recorded and subscription activated!', 'success');
+      onNotify?.(res.message || `Plan successfully activated for '${manualForm.username}'!`, 'success');
       setShowManualModal(false);
       setManualForm({
         username: '',
         plan_id: '',
-        amount: 20,
+        validity_days: 30,
+        amount: 51.35,
         utr: '',
         note: '',
         gateway: 'MANUAL_ADMIN'
@@ -427,7 +430,7 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-300 mb-1 font-medium">Select Plan</label>
+                  <label className="block text-slate-300 mb-1 font-medium">Select Plan Package</label>
                   <select
                     value={manualForm.plan_id}
                     onChange={(e) => {
@@ -436,29 +439,76 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
                       setManualForm({
                         ...manualForm,
                         plan_id: pid,
+                        validity_days: selectedPlan ? selectedPlan.validity_days : manualForm.validity_days,
                         amount: selectedPlan ? selectedPlan.price : manualForm.amount
                       });
                     }}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-emerald-500 outline-none"
                   >
-                    <option value="">Custom Pass</option>
+                    <option value="">Custom Plan / Manual Pass</option>
                     {plans.map(pl => (
-                      <option key={pl.id} value={pl.id}>{pl.name} (₹{pl.price})</option>
+                      <option key={pl.id} value={pl.id}>
+                        {pl.name} (₹{pl.price} · {pl.validity_days}d)
+                      </option>
                     ))}
                   </select>
                 </div>
 
                 <div>
-                  <label className="block text-slate-300 mb-1 font-medium">Amount (₹ INR)</label>
+                  <label className="block text-slate-300 mb-1 font-medium">Recharge Amount (₹ INR)</label>
                   <input
                     type="number"
                     min="0"
-                    step="0.5"
+                    step="0.01"
                     value={manualForm.amount}
-                    onChange={(e) => setManualForm({ ...manualForm, amount: e.target.value })}
+                    onChange={(e) => setManualForm({ ...manualForm, amount: parseFloat(e.target.value) || 0 })}
                     required
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-emerald-500 outline-none font-mono font-bold text-emerald-400"
                   />
+                </div>
+              </div>
+
+              {/* Validity Days Picker & Quick Pills */}
+              <div className="space-y-1.5 bg-slate-950/60 p-3 rounded-2xl border border-slate-800/80">
+                <div className="flex items-center justify-between">
+                  <label className="text-slate-300 font-medium">Validity Duration (Days)</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min="1"
+                      value={manualForm.validity_days}
+                      onChange={(e) => setManualForm({ ...manualForm, validity_days: parseInt(e.target.value) || 1 })}
+                      className="w-16 px-2 py-1 bg-slate-900 border border-slate-750 rounded-lg text-white font-mono font-bold text-right text-xs focus:border-emerald-500 outline-none"
+                    />
+                    <span className="text-slate-400 text-[11px]">days</span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {[
+                    { label: '1 Day (₹10)', days: 1, price: 10.0 },
+                    { label: '7 Days (₹30)', days: 7, price: 30.0 },
+                    { label: '30 Days (₹51.35)', days: 30, price: 51.35 },
+                    { label: '90 Days', days: 90, price: 150.0 },
+                    { label: '1 Year (365d)', days: 365, price: 600.0 }
+                  ].map(pill => (
+                    <button
+                      key={pill.days}
+                      type="button"
+                      onClick={() => setManualForm({
+                        ...manualForm,
+                        validity_days: pill.days,
+                        amount: pill.price
+                      })}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold border transition ${
+                        manualForm.validity_days === pill.days
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 font-bold'
+                          : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700'
+                      }`}
+                    >
+                      {pill.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 

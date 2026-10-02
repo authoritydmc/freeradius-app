@@ -203,6 +203,7 @@ def process_verified_payment(
     plan_id: Optional[int],
     amount: float,
     currency: str = "INR",
+    custom_validity_seconds: Optional[int] = None,
     raw_reference: Optional[str] = None,
     actor_type: str = "PAYMENT_GATEWAY",
     ip: Optional[str] = None
@@ -254,7 +255,8 @@ def process_verified_payment(
                     "amount": amount,
                     "currency": currency,
                     "user_id": user_id,
-                    "plan_id": plan_id
+                    "plan_id": plan_id,
+                    "custom_validity_seconds": custom_validity_seconds
                 },
                 ip=ip,
                 conn=conn
@@ -264,7 +266,8 @@ def process_verified_payment(
             user_id=user_id,
             plan_id=plan_id,
             payment_id=payment_id,
-            actor_type="WEBHOOK",
+            custom_validity_seconds=custom_validity_seconds,
+            actor_type=actor_type or "WEBHOOK",
             actor_id=gateway,
             ip=ip
         )
