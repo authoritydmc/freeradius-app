@@ -292,6 +292,24 @@ def test_single_host_omits_failover_kwarg(monkeypatch):
     assert "target_session_attrs" not in calls[-1]
 
 
+def test_delete_purges_access_and_resets_central(monkeypatch):
+    """Delete wipes access + device locks, revokes upstream, keeps ledger (#27)."""
+    conn = FakeConn(lambda q, p: [])
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    res = app.delete_user("ram", "admin")
+    assert res["status"] == "success"
+    stmts = [s for s, _ in conn.log]
+    for tbl in ("radcheck", "radreply", "radusergroup",
+                "verified_devices", "user_device_policy"):
+        assert any(s == f"DELETE FROM {tbl} WHERE username = %s" for s in stmts), tbl
+    # Ban can never resurrect: access-control fields reset, ledger retained.
+    assert any("UPDATE users SET status = 'ACTIVE'" in s
+               and "recharge_required_override = NULL" in s for s in stmts)
+    assert not any(s.startswith("DELETE FROM users")
+                   or s.startswith("DELETE FROM subscriptions")
+                   or s.startswith("DELETE FROM payments") for s in stmts)
+
+
 def test_sync_allow_stamps_expiration_from_subscription():
     """ALLOW with a subscription upserts wall-clock Expiration (#25)."""
     import datetime

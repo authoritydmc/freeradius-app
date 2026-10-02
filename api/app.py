@@ -2643,30 +2643,14 @@ def delete_user(username: str, admin_user: str = Depends(authenticate_admin)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM radcheck WHERE username = %s", (username,))
-            cur.execute("DELETE FROM radreply WHERE username = %s", (username,))
-            cur.execute("DELETE FROM radusergroup WHERE username = %s", (username,))
+            purge = _purge_user_access(cur, username, admin_user)
             conn.commit()
-            # Revoke EAP-TLS identity too (issue #10): a deleted user must not
-            # keep a working certificate. Portal downloads then 404.
-            removed_certs = 0
-            for suffix in (".key", ".csr", ".crt", ".p12", "-chain.crt"):
-                try:
-                    p = safe_client_path(username, suffix)
-                except HTTPException:
-                    continue
-                try:
-                    if os.path.exists(p):
-                        os.remove(p)
-                        removed_certs += 1
-                except OSError as e:
-                    logger.warning("Cert cleanup failed for %s%s: %s", username, suffix, e)
             log_audit(admin_user, "user_delete", username,
-                      f"cert_files_removed={removed_certs}" if removed_certs else None)
-            msg = f"User '{username}' deleted successfully"
-            if removed_certs:
-                msg += f" (revoked + removed {removed_certs} certificate file(s))"
-            return {"status": "success", "message": msg, "cert_files_removed": removed_certs}
+                      f"cert_files_removed={purge['cert_files_removed']} upstream={purge['upstream_method']}:{purge['upstream_ok']}")
+            msg = f"User '{username}' deleted successfully ({purge['cert_files_removed']} certificate file(s) removed"
+            msg += ", EAP-TLS identity revoked upstream)" if purge["upstream_ok"] else f", upstream {purge['upstream_method'] or 'unconfigured'})"
+            return {"status": "success", "message": msg, "cert_files_removed": purge["cert_files_removed"],
+                    "upstream_revoked": purge["upstream_ok"]}
     finally:
         conn.close()
 
@@ -2751,6 +2735,44 @@ def _remove_local_cert_files(uname: str) -> tuple[int, Optional[str]]:
         except OSError:
             pass
     return removed, serial
+
+def _purge_user_access(cur, uname: str, admin_user: str) -> Dict[str, Any]:
+    """Full access teardown, shared by single + bulk delete.
+
+    Documented semantics: RADIUS access is gone NOW — credential/policy rows
+    wiped, EAP-TLS identity revoked upstream + files removed, device locks
+    cleared, central access-control fields reset. The money ledger (users row,
+    subscriptions, payments) is RETAINED for records: deleting the users row
+    would cascade-wipe payment history, and a recreated same-name user starts
+    ACTIVE with still-valid paid time honored — while bans never resurrect.
+    Returns counts for messages/audit. Revocation/file problems never raise
+    (DB deletes always run); caller commits.
+    """
+    try:
+        upstream = revoke_upstream_certificate(uname, reason="cessationOfOperation")
+    except Exception as e:
+        upstream = {"ok": False, "method": "error", "detail": str(e)}
+    serial = _read_cert_serial(safe_client_path(uname, ".crt"))
+    removed, _ = _remove_local_cert_files(uname)
+    try:
+        record_cert_revocation(cur, uname, serial, "cessationOfOperation", upstream, admin_user)
+    except Exception as e:
+        logger.debug("revocation ledger skipped for %s: %s", uname, e)
+    cur.execute("DELETE FROM radcheck WHERE username = %s", (uname,))
+    cur.execute("DELETE FROM radreply WHERE username = %s", (uname,))
+    cur.execute("DELETE FROM radusergroup WHERE username = %s", (uname,))
+    for tbl in ("verified_devices", "user_device_policy"):
+        try:
+            cur.execute(f"DELETE FROM {tbl} WHERE username = %s", (uname,))
+        except Exception as e:
+            logger.debug("device cleanup skipped for %s.%s: %s", uname, tbl, e)
+    try:
+        cur.execute("UPDATE users SET status = 'ACTIVE', recharge_required_override = NULL WHERE username = %s", (uname,))
+    except Exception as e:
+        logger.debug("central access reset skipped for %s: %s", uname, e)
+    return {"cert_files_removed": removed,
+            "upstream_ok": bool((upstream or {}).get("ok")),
+            "upstream_method": (upstream or {}).get("method")}
 
 @app.post("/radius/api/users/{username}/ban", tags=["Users"])
 @app.post("/api/users/{username}/ban", tags=["Users"])
@@ -2840,13 +2862,10 @@ def bulk_user_action(payload: BulkUserActionRequest, admin_user: str = Depends(a
                 conn = get_db_connection()
                 try:
                     with conn.cursor() as cur:
-                        cur.execute("DELETE FROM radcheck WHERE username = %s", (uname,))
-                        cur.execute("DELETE FROM radreply WHERE username = %s", (uname,))
-                        cur.execute("DELETE FROM radusergroup WHERE username = %s", (uname,))
+                        purge = _purge_user_access(cur, uname, admin_user)
                         conn.commit()
-                    removed, _serial = _remove_local_cert_files(uname)
-                    log_audit(admin_user, "user_delete", uname, f"bulk cert_files_removed={removed}")
-                    results.append({"username": uname, "ok": True, "message": "deleted"})
+                    log_audit(admin_user, "user_delete", uname, f"bulk cert_files_removed={purge['cert_files_removed']} upstream={purge['upstream_method']}:{purge['upstream_ok']}")
+                    results.append({"username": uname, "ok": True, "message": "deleted (access revoked)"})
                 finally:
                     conn.close()
         except HTTPException as e:
