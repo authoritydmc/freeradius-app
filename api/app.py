@@ -664,15 +664,23 @@ def is_user_admin(username: str) -> bool:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT rug.groupname, rgr.value as is_admin_val
+                SELECT rug.groupname, rgr.attribute, rgr.value
                 FROM radusergroup rug
-                LEFT JOIN radgroupreply rgr ON rug.groupname = rgr.groupname AND rgr.attribute = 'RajLabs-Is-Admin'
+                LEFT JOIN radgroupreply rgr ON rug.groupname = rgr.groupname 
+                    AND (rgr.attribute = 'Service-Type' OR rgr.attribute = 'RajLabs-Is-Admin')
                 WHERE rug.username = %s
             """, (u,))
             rows = cur.fetchall()
             conn.close()
             for r in rows:
-                if (r.get("groupname") or "").lower() in ("admins", "admin") or r.get("is_admin_val") == "1":
+                grp = (r.get("groupname") or "").lower()
+                attr = r.get("attribute") or ""
+                val = r.get("value") or ""
+                if grp in ("admins", "admin"):
+                    return True
+                if attr == "Service-Type" and val == "Administrative-User":
+                    return True
+                if attr == "RajLabs-Is-Admin" and val == "1":
                     return True
     except Exception as e:
         logger.warning("is_user_admin check exception: %s", e)
@@ -710,16 +718,17 @@ def check_user_role_and_authenticate(user: str, passwd: str) -> tuple[bool, str,
             group = str(row["groupname"] or "default").strip()
 
             cur.execute("""
-                SELECT value FROM radgroupreply 
-                WHERE groupname = %s AND attribute = 'RajLabs-Is-Admin'
+                SELECT attribute, value FROM radgroupreply 
+                WHERE groupname = %s AND (attribute = 'Service-Type' OR attribute = 'RajLabs-Is-Admin')
             """, (group,))
-            grp_adm = cur.fetchone()
+            grp_attrs = cur.fetchall()
             conn.close()
 
             is_admin = (
-                (grp_adm and grp_adm.get("value") == "1") or 
                 group.lower() in ("admins", "admin") or 
-                u in ("raj", "shipra", "admin")
+                u in ("raj", "shipra", "admin") or
+                any(r.get("attribute") == "Service-Type" and r.get("value") == "Administrative-User" for r in grp_attrs) or
+                any(r.get("attribute") == "RajLabs-Is-Admin" and r.get("value") == "1" for r in grp_attrs)
             )
 
             if secrets.compare_digest(stored_pass, passwd):
