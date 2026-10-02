@@ -1098,56 +1098,139 @@ RL_ENROLL_PER_MIN = int(os.getenv("RL_ENROLL_PER_MIN", "6") or 6)
 RL_TEST_AUTH_PER_MIN = int(os.getenv("RL_TEST_AUTH_PER_MIN", "20") or 20)
 RL_CERT_ISSUE_PER_MIN = int(os.getenv("RL_CERT_ISSUE_PER_MIN", "10") or 10)
 RL_PORTAL_PER_MIN = int(os.getenv("RL_PORTAL_PER_MIN", "30") or 30)
+RL_ADMIN_PER_MIN = int(os.getenv("RL_ADMIN_PER_MIN", "60") or 60)
 
+# Proxy headers are only honored from these client networks. An attacker
+# connecting directly can forge X-Forwarded-For freely, so trusting it
+# unconditionally lets anyone reset their own rate-limit bucket (and spoof
+# audit IPs). Defaults cover loopback + private ranges (docker/Coolify/LAN
+# proxies); override for public reverse proxies with real IPs.
+def _trusted_proxy_nets():
+    raw = os.getenv("TRUSTED_PROXY_CIDRS",
+                    "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7")
+    nets = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            logger.warning("Ignoring invalid TRUSTED_PROXY_CIDRS entry: %s", part)
+    return nets
 
-def _client_ip(request: Optional[Request]) -> str:
-    """Extracts client IP supporting Cloudflare tunnels, reverse proxies, and direct connections."""
-    if not request:
-        return "unknown"
+TRUSTED_PROXY_NETS = _trusted_proxy_nets()
+
+def _socket_ip(request: Optional[Request]) -> str:
     try:
-        cf_ip = request.headers.get("cf-connecting-ip")
-        if cf_ip and cf_ip.strip():
-            return cf_ip.strip()
-        xff = request.headers.get("x-forwarded-for")
-        if xff and xff.strip():
-            client = xff.split(",")[0].strip()
-            if client:
-                return client
-        x_real = request.headers.get("x-real-ip")
-        if x_real and x_real.strip():
-            return x_real.strip()
-        if request.client and request.client.host:
+        if request and request.client and request.client.host:
             return request.client.host
     except Exception:
         pass
     return "unknown"
 
+def _client_ip(request: Optional[Request]) -> str:
+    """Extracts client IP supporting Cloudflare tunnels, reverse proxies, and direct connections.
 
-def check_rate_limit(request: Optional[Request], scope: str, per_minute: int) -> None:
-    """Sliding-window token bucket per IP. Emits 429 Too Many Requests with Retry-After header."""
-    if per_minute <= 0:
-        return
+    Forwarded headers are honored ONLY when the socket peer is a trusted
+    proxy; direct connections use the socket IP verbatim. Header values that
+    don't parse as IPs are ignored.
+    """
+    if not request:
+        return "unknown"
+    sock = _socket_ip(request)
+    try:
+        trusted = False
+        try:
+            trusted = any(ipaddress.ip_address(sock) in net for net in TRUSTED_PROXY_NETS)
+        except ValueError:
+            trusted = False
+        if trusted:
+            cf_ip = (request.headers.get("cf-connecting-ip") or "").strip()
+            if cf_ip:
+                try:
+                    return str(ipaddress.ip_address(cf_ip))
+                except ValueError:
+                    pass
+            xff = (request.headers.get("x-forwarded-for") or "").strip()
+            if xff:
+                for part in xff.split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    try:
+                        return str(ipaddress.ip_address(part))
+                    except ValueError:
+                        continue
+            x_real = (request.headers.get("x-real-ip") or "").strip()
+            if x_real:
+                try:
+                    return str(ipaddress.ip_address(x_real))
+                except ValueError:
+                    pass
+        return sock
+    except Exception:
+        return "unknown"
+
+
+def _check_rate_limit_memory(scope: str, ip: str, per_minute: int) -> None:
+    """Per-process fallback when the shared store is unreachable (fail open)."""
     now = time.time()
     window = 60.0
-    ip = _client_ip(request)
     key = f"{scope}:{ip}"
     with _RL_LOCK:
         hits = _RL_BUCKETS.get(key, [])
         hits = [t for t in hits if now - t < window]
         if len(hits) >= per_minute:
             retry_after = int(window - (now - hits[0])) + 1
-            logger.warning("Rate limit exceeded for scope=%s client_ip=%s (limit=%d/min)", scope, ip, per_minute)
-            raise HTTPException(
-                status_code=429,
-                detail=f"Too many requests to {scope}. Rate limit exceeded. Try again in {retry_after}s.",
-                headers={
-                    "Retry-After": str(retry_after),
-                    "X-RateLimit-Limit": str(per_minute),
-                    "X-RateLimit-Remaining": "0"
-                },
-            )
+            raise _rate_limit_exc(scope, ip, per_minute, retry_after)
         hits.append(now)
         _RL_BUCKETS[key] = hits
+
+def _rate_limit_exc(scope: str, ip: str, per_minute: int, retry_after: int) -> HTTPException:
+    logger.warning("Rate limit exceeded for scope=%s client_ip=%s (limit=%d/min)", scope, ip, per_minute)
+    return HTTPException(
+        status_code=429,
+        detail=f"Too many requests to {scope}. Rate limit exceeded. Try again in {retry_after}s.",
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": str(per_minute),
+            "X-RateLimit-Remaining": "0"
+        },
+    )
+
+def check_rate_limit(request: Optional[Request], scope: str, per_minute: int) -> None:
+    """Sliding-window limit per IP, shared across workers via Postgres.
+
+    Buckets live in rate_limit_hits (migration 009) so every uvicorn worker
+    enforces the same budget. Any store failure falls back to the per-process
+    memory bucket (fail open, never fail closed) and logs once.
+    Emits 429 Too Many Requests with Retry-After header.
+    """
+    if per_minute <= 0:
+        return
+    ip = _client_ip(request)
+    key = f"{scope}:{ip}"
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM rate_limit_hits WHERE scope_ip = %s AND ts < NOW() - INTERVAL '60 seconds'", (key,))
+                cur.execute("SELECT COUNT(*) AS c FROM rate_limit_hits WHERE scope_ip = %s AND ts >= NOW() - INTERVAL '60 seconds'", (key,))
+                count = int((cur.fetchone() or {}).get("c") or 0)
+                if count >= per_minute:
+                    conn.commit()
+                    raise _rate_limit_exc(scope, ip, per_minute, 60)
+                cur.execute("INSERT INTO rate_limit_hits (scope_ip) VALUES (%s)", (key,))
+                conn.commit()
+                return
+        finally:
+            conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.debug("Shared rate-limit store unavailable, using memory bucket: %s", e)
+    _check_rate_limit_memory(scope, ip, per_minute)
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -2133,7 +2216,8 @@ def change_own_password(payload: SelfPasswordChangeRequest, request: Request, ca
 
 @app.post("/radius/api/users/password/generate", tags=["Users"])
 @app.post("/api/users/password/generate", tags=["Users"])
-def generate_password_endpoint(payload: PasswordGenerateRequest, admin_user: str = Depends(authenticate_admin)):
+def generate_password_endpoint(payload: PasswordGenerateRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "admin-password-tools", RL_ADMIN_PER_MIN)
     length = max(PASSWORD_MIN_LENGTH, min(int(payload.length or 16), 64))
     password = generate_secure_password(length, payload.symbols is not False, payload.exclude_ambiguous is not False)
     info = password_strength(password)
@@ -2195,8 +2279,9 @@ class PasswordFormatRequest(BaseModel):
 
 @app.post("/radius/api/users/password/from-format", tags=["Users"])
 @app.post("/api/users/password/from-format", tags=["Users"])
-def password_from_format(payload: PasswordFormatRequest, admin_user: str = Depends(authenticate_admin)):
+def password_from_format(payload: PasswordFormatRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
     """Render the configured password template for a username/phone preview or fill."""
+    check_rate_limit(request, "admin-password-tools", RL_ADMIN_PER_MIN)
     fmt = get_system_setting_value("password_format", "")
     password = render_password_format(fmt, payload.username, payload.phone)
     logger.info("Format password rendered by admin=%s template=%s", admin_user, fmt)
@@ -2308,7 +2393,8 @@ def get_ip_coverage(ip: str = Query(...), _: str = Depends(authenticate_admin)):
 
 @app.post("/radius/api/users", tags=["Users"])
 @app.post("/api/users", tags=["Users"])
-def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(authenticate_admin)):
+def create_or_update_user(payload: UserCreateRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "admin-user-write", RL_ADMIN_PER_MIN)
     phone = normalize_phone(payload.phone) if payload.phone is not None else None
     # Blank password defaults to the phone number digits (e.g. 919876543210).
     raw_pw = (payload.password or "").strip()
@@ -2816,8 +2902,9 @@ def unban_user(username: str, admin_user: str = Depends(authenticate_admin)):
 
 @app.post("/radius/api/users/bulk-action", tags=["Users"])
 @app.post("/api/users/bulk-action", tags=["Users"])
-def bulk_user_action(payload: BulkUserActionRequest, admin_user: str = Depends(authenticate_admin)):
+def bulk_user_action(payload: BulkUserActionRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
     """One-click action across many users: ban | unban | revoke_certs | delete."""
+    check_rate_limit(request, "admin-bulk", RL_ADMIN_PER_MIN)
     action = (payload.action or "").strip().lower()
     if action not in ("ban", "unban", "revoke_certs", "delete"):
         raise HTTPException(status_code=422, detail="action must be one of: ban, unban, revoke_certs, delete.")
@@ -2953,7 +3040,8 @@ def remove_verified_device(username: str, mac: str, admin_user: str = Depends(au
 
 @app.put("/radius/api/users/{username}/password", tags=["Users"])
 @app.put("/api/users/{username}/password", tags=["Users"])
-def update_user_password(username: str, payload: PasswordChangeRequest, admin_user: str = Depends(authenticate_admin)):
+def update_user_password(username: str, payload: PasswordChangeRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "admin-password-reset", RL_ADMIN_PER_MIN)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -3032,13 +3120,14 @@ class BulkPasswordResetRequest(BaseModel):
 
 @app.post("/radius/api/users/password/bulk-reset", tags=["Users"])
 @app.post("/api/users/password/bulk-reset", tags=["Users"])
-def bulk_reset_passwords(payload: BulkPasswordResetRequest, admin_user: str = Depends(authenticate_admin)):
+def bulk_reset_passwords(payload: BulkPasswordResetRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
     """Reset passwords for many users at once and return the new credentials.
 
     Modes: random (strong, optional length), phone (each user's phone digits),
     format (admin password template). Returns per-user results so the admin
     can copy/share them (WhatsApp/Telegram/QR) afterwards.
     """
+    check_rate_limit(request, "admin-password-reset", RL_ADMIN_PER_MIN)
     mode = (payload.mode or "random").strip().lower()
     if mode not in ("random", "phone", "format"):
         raise HTTPException(status_code=422, detail="mode must be one of: random, phone, format.")
@@ -3348,7 +3437,8 @@ def get_all_settings(_: str = Depends(authenticate_admin)):
 
 @app.post("/radius/api/settings", tags=["Settings"])
 @app.post("/api/settings", tags=["Settings"])
-def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = Depends(authenticate_admin)):
+def update_settings(payload: SystemSettingsUpdateRequest, request: Request, current_admin: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "admin-settings", RL_ADMIN_PER_MIN)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -4849,7 +4939,8 @@ def list_nas(_: str = Depends(authenticate_admin)):
 
 @app.post("/radius/api/nas", tags=["NAS"])
 @app.post("/api/nas", tags=["NAS"])
-def create_nas(payload: NasCreateRequest, admin_user: str = Depends(authenticate_admin)):
+def create_nas(payload: NasCreateRequest, request: Request, admin_user: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "admin-nas", RL_ADMIN_PER_MIN)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -4867,7 +4958,8 @@ def create_nas(payload: NasCreateRequest, admin_user: str = Depends(authenticate
 
 @app.delete("/radius/api/nas/{nas_id}", tags=["NAS"])
 @app.delete("/api/nas/{nas_id}", tags=["NAS"])
-def delete_nas(nas_id: int, admin_user: str = Depends(authenticate_admin)):
+def delete_nas(nas_id: int, request: Request, admin_user: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "admin-nas", RL_ADMIN_PER_MIN)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -5322,7 +5414,8 @@ def get_auth_logs(limit: int = 50, username: Optional[str] = None, result: Optio
 # Disconnect Session via RADIUS CoA / Disconnect-Request (RFC 5176)
 @app.post("/radius/api/sessions/disconnect", tags=["Sessions"])
 @app.post("/api/sessions/disconnect", tags=["Sessions"])
-def disconnect_session(payload: DisconnectSessionRequest, _: str = Depends(authenticate_admin)):
+def disconnect_session(payload: DisconnectSessionRequest, request: Request, _: str = Depends(authenticate_admin)):
+    check_rate_limit(request, "admin-disconnect", RL_ADMIN_PER_MIN)
     secret = payload.nas_secret or RADIUS_SECRET
     try:
         success, output = send_coa_disconnect(
@@ -6174,8 +6267,9 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest, request: Request
 
 @app.get("/radius/api/portal/download-mobileconfig", tags=["Captive Portal"])
 @app.get("/api/portal/download-mobileconfig", tags=["Captive Portal"])
-def portal_download_mobileconfig(username: str, password: str = "", ssid: str = "RajLabs-Enterprise"):
+def portal_download_mobileconfig(username: str, password: str = "", ssid: str = "RajLabs-Enterprise", request: Request = None):
     """Owner-only Apple profile: requires the account password (issue #3)."""
+    check_rate_limit(request, "portal-download", RL_PORTAL_PER_MIN)
     verify_portal_user(username, password)
     p12_bytes, fresh_pass = repackage_p12_for_mobileconfig(validate_username(username))
     mobileconfig = build_mobileconfig(username, ssid, p12_bytes, fresh_pass)
@@ -6188,15 +6282,16 @@ def portal_download_mobileconfig(username: str, password: str = "", ssid: str = 
 
 @app.post("/radius/api/portal/download-mobileconfig", tags=["Captive Portal"])
 @app.post("/api/portal/download-mobileconfig", tags=["Captive Portal"])
-def portal_download_mobileconfig_post(payload: PortalDownloadRequest, ssid: str = "RajLabs-Enterprise"):
+def portal_download_mobileconfig_post(payload: PortalDownloadRequest, request: Request, ssid: str = "RajLabs-Enterprise"):
     """POST variant (password in body, not URL) for the portal UI."""
-    return portal_download_mobileconfig(payload.username, payload.password, ssid)
+    return portal_download_mobileconfig(payload.username, payload.password, ssid, request)
 
 
 @app.post("/radius/api/portal/download-cert", tags=["Captive Portal"])
 @app.post("/api/portal/download-cert", tags=["Captive Portal"])
-def portal_download_cert_post(payload: PortalDownloadRequest):
+def portal_download_cert_post(payload: PortalDownloadRequest, request: Request):
     """Owner-only .p12 download: requires the account password (issue #3)."""
+    check_rate_limit(request, "portal-download", RL_PORTAL_PER_MIN)
     verify_portal_user(payload.username, payload.password)
     p12_path = safe_client_path(validate_username(payload.username), ".p12")
     if not os.path.exists(p12_path):
@@ -6205,8 +6300,9 @@ def portal_download_cert_post(payload: PortalDownloadRequest):
 
 @app.get("/radius/api/portal/download-cert", tags=["Captive Portal"])
 @app.get("/api/portal/download-cert", tags=["Captive Portal"])
-def portal_download_cert(username: str, password: str = ""):
+def portal_download_cert(username: str, password: str = "", request: Request = None):
     """Owner-only .p12 download (GET variant): requires the account password (issue #3)."""
+    check_rate_limit(request, "portal-download", RL_PORTAL_PER_MIN)
     verify_portal_user(username, password)
     p12_path = safe_client_path(validate_username(username), ".p12")
     if not os.path.exists(p12_path):
@@ -6216,8 +6312,9 @@ def portal_download_cert(username: str, password: str = ""):
 
 @app.post("/radius/api/portal/login", tags=["Captive Portal"])
 @app.post("/api/portal/login", tags=["Captive Portal"])
-def portal_login(payload: PortalDownloadRequest):
+def portal_login(payload: PortalDownloadRequest, request: Request):
     """Verify user credentials for portal login."""
+    check_rate_limit(request, "portal-login", RL_LOGIN_PER_MIN)
     verify_portal_user(payload.username, payload.password)
     # Fetch user's group
     groupname = "users"

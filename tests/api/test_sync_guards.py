@@ -212,7 +212,7 @@ def test_create_user_blank_password_uses_phone(monkeypatch):
     monkeypatch.setattr(app, "get_db_connection", lambda: conn)
     payload = app.UserCreateRequest(username="ram", password="",
                                     group="staff", phone="+919876543210")
-    res = app.create_or_update_user(payload, "admin")
+    res = app.create_or_update_user(payload, None, "admin")
     assert res["password"] == "919876543210"
     assert res["password_source"] == "phone"
     inserts = [(s, p) for s, p in conn.log if s.startswith("INSERT INTO radcheck")]
@@ -227,7 +227,7 @@ def test_create_user_blank_password_without_phone_rejected(monkeypatch):
     monkeypatch.setattr(app, "get_db_connection", lambda: conn)
     payload = app.UserCreateRequest(username="ram", password="")
     with pytest.raises(HTTPException) as ei:
-        app.create_or_update_user(payload, "admin")
+        app.create_or_update_user(payload, None, "admin")
     assert ei.value.status_code == 422
 
 
@@ -243,7 +243,7 @@ def test_reset_blank_password_uses_phone(monkeypatch):
 
     conn = FakeConn(handler)
     monkeypatch.setattr(app, "get_db_connection", lambda: conn)
-    res = app.update_user_password("ram", app.PasswordChangeRequest(password=""), "admin")
+    res = app.update_user_password("ram", app.PasswordChangeRequest(password=""), None, "admin")
     assert res["password"] == "919876543210"
     assert res["password_source"] == "phone"
 
@@ -403,6 +403,50 @@ def test_voucher_routes_registered():
     assert "/radius/api/vouchers" in paths
 
 
+def test_client_ip_ignores_spoofed_headers(monkeypatch):
+    """Forwarded headers from untrusted peers must not rewrite identity (#23)."""
+    from starlette.datastructures import Headers
+
+    class DummyReq:
+        def __init__(self, headers_dict, client_host="203.0.113.9"):
+            self.headers = Headers(headers_dict)
+            self.client = type("Client", (), {"host": client_host})()
+
+    # Public socket IP + forged XFF/CF headers -> socket IP wins.
+    spoofed = DummyReq({"x-forwarded-for": "1.2.3.4",
+                        "cf-connecting-ip": "5.6.7.8",
+                        "x-real-ip": "9.9.9.9"})
+    assert app._client_ip(spoofed) == "203.0.113.9"
+    # Trusted proxy (private/docker net) -> first valid forwarded IP wins.
+    via_proxy = DummyReq({"x-forwarded-for": "198.51.100.22, 10.0.0.2"},
+                         client_host="10.0.0.1")
+    assert app._client_ip(via_proxy) == "198.51.100.22"
+    # Garbage header values fall back to the socket IP.
+    garbage = DummyReq({"x-forwarded-for": "not-an-ip"}, client_host="10.0.0.1")
+    assert app._client_ip(garbage) == "10.0.0.1"
+
+
+def test_shared_rate_limit_enforced_and_zero_disables(monkeypatch):
+    """Shared buckets 429 at the limit; per_minute=0 disables (#23)."""
+    from fastapi import HTTPException
+
+    def handler(q, p):
+        if "SELECT COUNT" in q:
+            return [{"c": 99}]
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    with pytest.raises(HTTPException) as ei:
+        app.check_rate_limit(None, "test-scope", 5)
+    assert ei.value.status_code == 429
+    assert ei.value.headers.get("Retry-After")
+    # Disabled limiter never touches the store.
+    conn2 = FakeConn(lambda q, p: (_ for _ in ()).throw(AssertionError("no DB expected")))
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn2)
+    app.check_rate_limit(None, "test-scope", 0)
+
+
 def test_nas_secret_masked_on_read(monkeypatch):
     """GET /nas never returns the shared secret (#19)."""
 
@@ -557,7 +601,7 @@ def test_bulk_reset_on_deny_user_keeps_password(monkeypatch):
     monkeypatch.setattr(app, "get_db_connection", lambda: main_conn)
     monkeypatch.setattr(access_engine, "get_db_connection", lambda: sync_conn)
     payload = app.BulkPasswordResetRequest(usernames=["ram"], mode="random", length=14)
-    res = app.bulk_reset_passwords(payload, "admin")
+    res = app.bulk_reset_passwords(payload, None, "admin")
     assert res["reset"] == 1
     new_pw = res["results"][0]["password"]
     assert new_pw and len(new_pw) == 14
