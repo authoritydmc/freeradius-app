@@ -57,6 +57,9 @@ def get_db_connection():
     return psycopg2.connect(
         host=host, port=port, dbname=dbname, user=user, password=password,
         cursor_factory=RealDictCursor, connect_timeout=5,
+        # Multi-host failover: POSTGRES_HOST="primary,standby" lands on the
+        # writable node (single-host behaviour untouched).
+        **({"target_session_attrs": os.getenv("PG_TARGET_SESSION_ATTRS", "read-write")} if "," in (host or "") else {}),
     )
 
 

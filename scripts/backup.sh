@@ -29,6 +29,19 @@ chmod 600 "${DB_DUMP}" "${CERTS_TGZ}"
 ls -t "${OUT_DIR}"/radius-db-*.sql.gz 2>/dev/null | tail -n +15 | xargs -r rm -f
 ls -t "${OUT_DIR}"/radius-certs-*.tar.gz 2>/dev/null | tail -n +15 | xargs -r rm -f
 
+# Second copy (the actual "backup"): push both archives to another machine,
+# e.g. BACKUP_PUSH_TARGET="backup@backup-host:/srv/rajlabs-backups"
+# (key-based SSH). A backup on the same disk as the database is not a backup.
+if [ -n "${BACKUP_PUSH_TARGET:-}" ]; then
+  if command -v scp >/dev/null 2>&1; then
+    echo "Pushing archives -> ${BACKUP_PUSH_TARGET}"
+    scp -q "${DB_DUMP}" "${CERTS_TGZ}" "${BACKUP_PUSH_TARGET}/"
+    echo "Offsite copy complete."
+  else
+    echo "WARNING: BACKUP_PUSH_TARGET is set but scp is not installed — offsite copy skipped." >&2
+  fi
+fi
+
 touch "${OUT_DIR}/.last_backup"
 echo "Backup complete: ${DB_DUMP}, ${CERTS_TGZ}"
 echo "Copy both files encrypted offsite (losing the certs archive = re-issuing every certificate)."

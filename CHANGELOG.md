@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Phone number as default password**: blank password on create/reset uses the phone digits (min 8); server returns the effective password, UI has a Phone-fill button. Dropped the dead `password_type` option (always Cleartext — anything else breaks MS-CHAP).
 - **Honest password storage**: `users.password_hash` renamed to `users.password_cleartext` (migration 006) — it always held cleartext because MS-CHAP/PEAP requires it; the old name invited a "fix" that would break all logins.
 - **Audit coverage completed**: group save/delete and NAS create/delete now write audit rows (they were the only silent admin actions).
+- **Postgres HA without dual-write**: `POSTGRES_HOST="primary,standby"` lands API/migration writes on the primary via libpq `target_session_attrs` (all three connectors; single-host unchanged). `backup.sh` pushes a second copy to `BACKUP_PUSH_TARGET`; see `docs/BACKUP_AND_HA.md` for replica setup, promotion, and restore drills. Deliberately no app-level dual-write — `rlm_sql` can't broadcast writes and hand-rolled two-phase commit buys split-brain.
 
 ### Added
 - **wifi.rajlabs.in mobile-first explainer** in the portal Setup tab: what the site is, PEAP (easiest) vs EAP-TLS (most secure), and per-OS (Android/iOS/Windows/Linux) join steps.

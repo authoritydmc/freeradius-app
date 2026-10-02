@@ -246,3 +246,47 @@ def test_reset_blank_password_uses_phone(monkeypatch):
     res = app.update_user_password("ram", app.PasswordChangeRequest(password=""), "admin")
     assert res["password"] == "919876543210"
     assert res["password_source"] == "phone"
+
+
+def _capture_connect(monkeypatch):
+    """Replace psycopg2.connect with a recorder; returns (calls, restore)."""
+    import psycopg2
+
+    calls = []
+
+    def fake_connect(**kwargs):
+        calls.append(kwargs)
+        raise RuntimeError("no real DB in unit tests")
+
+    monkeypatch.setattr(psycopg2, "connect", fake_connect)
+    return calls
+
+
+def test_multihost_failover_kwargs_all_connectors(monkeypatch):
+    """POSTGRES_HOST='primary,standby' lands writes on the primary node."""
+    import migrate
+
+    calls = _capture_connect(monkeypatch)
+
+    monkeypatch.setattr(app, "POSTGRES_HOST", "pg-primary,pg-standby")
+    with pytest.raises(RuntimeError):
+        app.get_db_connection()
+    assert calls[-1]["host"] == "pg-primary,pg-standby"
+    assert calls[-1].get("target_session_attrs") == "read-write"
+
+    monkeypatch.setenv("POSTGRES_HOST", "pg-primary,pg-standby")
+    with pytest.raises(RuntimeError):
+        access_engine.get_db_connection()
+    assert calls[-1].get("target_session_attrs") == "read-write"
+    with pytest.raises(RuntimeError):
+        migrate.get_db_connection()
+    assert calls[-1].get("target_session_attrs") == "read-write"
+
+
+def test_single_host_omits_failover_kwarg(monkeypatch):
+    """Single host keeps legacy connect kwargs (zero behaviour change)."""
+    calls = _capture_connect(monkeypatch)
+    monkeypatch.setattr(app, "POSTGRES_HOST", "localhost")
+    with pytest.raises(RuntimeError):
+        app.get_db_connection()
+    assert "target_session_attrs" not in calls[-1]

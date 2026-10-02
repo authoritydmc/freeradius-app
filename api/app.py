@@ -603,6 +603,18 @@ except Exception:
         except Exception:
             pass
 
+def _pg_failover_kwargs(host: str) -> Dict[str, Any]:
+    """libpq multi-host failover: POSTGRES_HOST="primary,standby".
+
+    With a comma-separated host list libpq tries each in order; with
+    target_session_attrs=read-write it skips standbys and lands on the
+    primary — so the API survives a DB failover with zero code changes.
+    Single-host behaviour is untouched (kwarg omitted).
+    """
+    if "," in (host or ""):
+        return {"target_session_attrs": os.getenv("PG_TARGET_SESSION_ATTRS", "read-write")}
+    return {}
+
 def get_db_connection():
     return psycopg2.connect(
         host=POSTGRES_HOST,
@@ -611,7 +623,8 @@ def get_db_connection():
         user=POSTGRES_USER,
         password=POSTGRES_PASSWORD,
         cursor_factory=RealDictCursor,
-        connect_timeout=5
+        connect_timeout=5,
+        **_pg_failover_kwargs(POSTGRES_HOST)
     )
 
 def generate_session_token(username: str, role: str = "admin") -> str:
