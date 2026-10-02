@@ -73,7 +73,10 @@ export default function StatusTab({
   const statusCheckedAt = propStatusCheckedAt || internalCheckedAt;
   const onRefreshAll = propOnRefreshAll || loadData;
 
-  const isHealthy = health?.status === 'healthy' || (health?.api_ok && health?.db_ok);
+  const isApiOk = health ? (health.api_ok !== undefined ? Boolean(health.api_ok) : true) : false;
+  const isDbOk = health ? (health.db_ok !== undefined ? Boolean(health.db_ok) : Boolean(health.database?.connected)) : false;
+  const isRadiusOk = health ? (health.radius_ok !== undefined ? Boolean(health.radius_ok) : Boolean(health.freeradius_process?.running)) : false;
+  const isHealthy = isApiOk && isDbOk;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -114,10 +117,10 @@ export default function StatusTab({
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl relative overflow-hidden">
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold text-slate-300">FastAPI Engine</span>
-              <span className={`w-2.5 h-2.5 rounded-full ${health?.api_ok ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+              <span className={`w-2.5 h-2.5 rounded-full ${isApiOk ? 'bg-emerald-400' : 'bg-rose-400'}`} />
             </div>
-            <div className={`text-xl font-black mt-2 ${health?.api_ok ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {health?.api_ok ? 'Operational' : 'Unavailable'}
+            <div className={`text-xl font-black mt-2 ${isApiOk ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {isApiOk ? 'Operational' : 'Unavailable'}
             </div>
             <div className="text-[11px] text-slate-500 mt-1 font-mono">FastAPI :8090 /radius/api</div>
           </div>
@@ -126,10 +129,10 @@ export default function StatusTab({
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl relative overflow-hidden">
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold text-slate-300">PostgreSQL 16</span>
-              <span className={`w-2.5 h-2.5 rounded-full ${health?.db_ok ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+              <span className={`w-2.5 h-2.5 rounded-full ${isDbOk ? 'bg-emerald-400' : 'bg-rose-400'}`} />
             </div>
-            <div className={`text-xl font-black mt-2 ${health?.db_ok ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {health?.db_ok ? 'Connected' : 'Disconnected'}
+            <div className={`text-xl font-black mt-2 ${isDbOk ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {isDbOk ? 'Connected' : 'Disconnected'}
             </div>
             <div className="text-[11px] text-slate-500 mt-1 font-mono">radcheck · radacct · radreply</div>
           </div>
@@ -138,10 +141,10 @@ export default function StatusTab({
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl relative overflow-hidden">
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold text-slate-300">FreeRADIUS AAA</span>
-              <span className={`w-2.5 h-2.5 rounded-full ${health?.radius_ok ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+              <span className={`w-2.5 h-2.5 rounded-full ${isRadiusOk ? 'bg-emerald-400' : 'bg-rose-400'}`} />
             </div>
-            <div className={`text-xl font-black mt-2 ${health?.radius_ok ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {health?.radius_ok ? 'Active / Listening' : 'Daemon Offline'}
+            <div className={`text-xl font-black mt-2 ${isRadiusOk ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {isRadiusOk ? 'Active / Listening' : 'Daemon Offline'}
             </div>
             <div className="text-[11px] text-slate-500 mt-1 font-mono">UDP 1812 · 1813 · 3799 CoA</div>
           </div>

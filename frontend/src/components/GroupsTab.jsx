@@ -17,6 +17,7 @@ export default function GroupsTab({ onNotify }) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
   const [form, setForm] = useState({
     groupname: '',
     description: '',
@@ -45,6 +46,47 @@ export default function GroupsTab({ onNotify }) {
     loadGroups();
   }, []);
 
+  const handleOpenAdd = () => {
+    setIsEditing(false);
+    setForm({
+      groupname: '',
+      description: '',
+      rate_limit: '26214400/26214400',
+      session_timeout: 43200,
+      idle_timeout: 600,
+      simultaneous_use: 2,
+      vlan_id: '',
+      is_admin: false,
+      recharge_required: true
+    });
+    setShowModal(true);
+  };
+
+  const handleOpenEdit = (group) => {
+    setIsEditing(true);
+    const gName = group.groupname || group.name || '';
+    const isAdmin = Boolean(group.is_admin || gName === 'admins' || gName === 'admin');
+    const rateLimit = group.rate_limit || group.reply_attributes?.find?.(a => a.attribute === 'Mikrotik-Rate-Limit')?.value || '';
+    const simUse = parseInt(group.simultaneous_use || group.check_attributes?.find?.(a => a.attribute === 'Simultaneous-Use')?.value) || 1;
+    const sessTimeout = parseInt(group.session_timeout || group.reply_attributes?.find?.(a => a.attribute === 'Session-Timeout')?.value) || 0;
+    const idleTimeout = parseInt(group.idle_timeout || group.reply_attributes?.find?.(a => a.attribute === 'Idle-Timeout')?.value) || 600;
+    const vlanId = group.vlan_id || group.reply_attributes?.find?.(a => a.attribute === 'Tunnel-Private-Group-ID')?.value || '';
+    const isExempt = group.recharge_required === false || group.reply_attributes?.some?.(a => a.attribute === 'RajLabs-Recharge-Exempt' && a.value === '1');
+    
+    setForm({
+      groupname: gName,
+      description: group.description || '',
+      rate_limit: rateLimit,
+      session_timeout: sessTimeout,
+      idle_timeout: idleTimeout,
+      simultaneous_use: simUse,
+      vlan_id: vlanId,
+      is_admin: isAdmin,
+      recharge_required: !isAdmin && !isExempt
+    });
+    setShowModal(true);
+  };
+
   const handlePresetChange = (e) => {
     const preset = PRESETS.find(p => p.id === e.target.value);
     if (preset) {
@@ -66,7 +108,7 @@ export default function GroupsTab({ onNotify }) {
         method: 'POST',
         body: JSON.stringify(form)
       });
-      onNotify?.(`Policy group '${form.groupname}' saved successfully!`, 'success');
+      onNotify?.(`Policy group '${form.groupname}' ${isEditing ? 'updated' : 'created'} successfully!`, 'success');
       setShowModal(false);
       setForm({
         groupname: '',
@@ -136,7 +178,7 @@ export default function GroupsTab({ onNotify }) {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-indigo-400' : ''}`} />
           </button>
           <button
-            onClick={() => setShowModal(true)}
+            onClick={handleOpenAdd}
             className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-sm font-medium shadow-md shadow-indigo-500/20 transition"
           >
             <Plus className="w-4 h-4" />
@@ -188,13 +230,23 @@ export default function GroupsTab({ onNotify }) {
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => handleDelete(groupName)}
-                      className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition"
-                      title="Delete Group"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleOpenEdit(group)}
+                        className="p-1.5 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition"
+                        title="Edit Policy Group"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(groupName)}
+                        disabled={groupName === 'admins'}
+                        className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent"
+                        title={groupName === 'admins' ? "Default 'admins' system group cannot be deleted" : "Delete Group"}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Attributes Badges */}
@@ -272,7 +324,9 @@ export default function GroupsTab({ onNotify }) {
                   <Layers className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-white text-base">Create Policy Group</h3>
+                  <h3 className="font-bold text-white text-base">
+                    {isEditing ? `Edit Policy Group '${form.groupname}'` : 'Create Policy Group'}
+                  </h3>
                   <p className="text-xs text-slate-400">Define QoS, VLANs, and recharge requirement policies</p>
                 </div>
               </div>
@@ -286,12 +340,12 @@ export default function GroupsTab({ onNotify }) {
 
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               <div className="space-y-1">
-                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Quick Preset</label>
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Quick Preset Template</label>
                 <select
                   onChange={handlePresetChange}
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
                 >
-                  <option value="">-- Choose a standard template --</option>
+                  <option value="">-- Apply a standard policy template --</option>
                   {PRESETS.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
@@ -304,11 +358,17 @@ export default function GroupsTab({ onNotify }) {
                   <input
                     type="text"
                     required
+                    disabled={isEditing}
                     placeholder="e.g. staff, guests, vip"
                     value={form.groupname}
                     onChange={e => setForm({ ...form, groupname: e.target.value })}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+                    className={`w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500 font-mono ${
+                      isEditing ? 'opacity-60 cursor-not-allowed' : ''
+                    }`}
                   />
+                  {isEditing && (
+                    <p className="text-[10px] text-slate-500">Group identifier cannot be renamed while editing.</p>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">VLAN ID (Optional)</label>
@@ -412,7 +472,7 @@ export default function GroupsTab({ onNotify }) {
                   type="submit"
                   className="px-5 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-sm font-medium shadow-md shadow-indigo-500/20 transition"
                 >
-                  Save Group Policy
+                  {isEditing ? 'Update Policy Group' : 'Save Group Policy'}
                 </button>
               </div>
             </form>

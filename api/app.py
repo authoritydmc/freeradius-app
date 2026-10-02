@@ -1284,9 +1284,11 @@ def admin_get_current_user(current_admin: str = Depends(authenticate_admin)):
         "authenticated": True
     }
 
-# Public Health Check
+# Public Health Check & Status
 @app.get("/radius/api/health", tags=["Health"])
 @app.get("/api/health", tags=["Health"])
+@app.get("/radius/api/status", tags=["Health"])
+@app.get("/api/status", tags=["Health"])
 def public_health_check():
     db_ok = False
     db_error = None
@@ -1313,6 +1315,9 @@ def public_health_check():
     overall_status = "healthy" if (db_ok and radius_ok) else "degraded"
     return {
         "status": overall_status,
+        "api_ok": True,
+        "db_ok": db_ok,
+        "radius_ok": radius_ok,
         "database": {"connected": db_ok, "error": db_error, "host": POSTGRES_HOST, "database": POSTGRES_DB},
         "freeradius_process": {"running": radius_ok}
     }
@@ -2279,6 +2284,8 @@ def delete_plan(plan_id: int, admin_user: str = Depends(authenticate_admin)):
 
 @app.get("/radius/api/certs/signer-status", tags=["Certificates"])
 @app.get("/api/certs/signer-status", tags=["Certificates"])
+@app.get("/radius/api/signer/status", tags=["Certificates"])
+@app.get("/api/signer/status", tags=["Certificates"])
 def cert_signer_status(refresh: bool = False, _: str = Depends(authenticate_admin)):
     """Live Cert-Signer health: reachability + API-key validity. Key value never returned."""
     from urllib.parse import urlparse
