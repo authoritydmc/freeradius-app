@@ -27,3 +27,9 @@ logs/
 # Certs local output
 certs/clients/*.p12
 certs/clients/*.pem
+
+# Node / React
+frontend/node_modules/
+frontend/dist/
+.npm
+

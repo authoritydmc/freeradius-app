@@ -686,7 +686,7 @@ def is_user_admin(username: str) -> bool:
     u = (username or "").strip()
     if not u:
         return False
-    if secrets.compare_digest(u, ADMIN_FALLBACK_USER) or u in ("raj", "shipra", "admin"):
+    if secrets.compare_digest(u, ADMIN_FALLBACK_USER):
         return True
     try:
         conn = get_db_connection()
@@ -699,17 +699,34 @@ def is_user_admin(username: str) -> bool:
                 WHERE rug.username = %s
             """, (u,))
             rows = cur.fetchall()
-            conn.close()
             for r in rows:
                 grp = (r.get("groupname") or "").lower()
                 attr = r.get("attribute") or ""
                 val = r.get("value") or ""
                 if grp in ("admins", "admin"):
+                    conn.close()
                     return True
                 if attr == "Service-Type" and val == "Administrative-User":
+                    conn.close()
                     return True
                 if attr == "RajLabs-Is-Admin" and val == "1":
+                    conn.close()
                     return True
+            
+            try:
+                cur.execute("""
+                    SELECT g.is_admin 
+                    FROM users u 
+                    JOIN groups g ON u.group_id = g.id 
+                    WHERE u.username = %s
+                """, (u,))
+                g_row = cur.fetchone()
+                if g_row and g_row.get("is_admin"):
+                    conn.close()
+                    return True
+            except Exception:
+                pass
+            conn.close()
     except Exception as e:
         logger.warning("is_user_admin check exception: %s", e)
     return False
@@ -754,9 +771,9 @@ def check_user_role_and_authenticate(user: str, passwd: str) -> tuple[bool, str,
 
             is_admin = (
                 group.lower() in ("admins", "admin") or 
-                u in ("raj", "shipra", "admin") or
                 any(r.get("attribute") == "Service-Type" and r.get("value") == "Administrative-User" for r in grp_attrs) or
-                any(r.get("attribute") == "RajLabs-Is-Admin" and r.get("value") == "1" for r in grp_attrs)
+                any(r.get("attribute") == "RajLabs-Is-Admin" and r.get("value") == "1" for r in grp_attrs) or
+                is_user_admin(u)
             )
 
             if secrets.compare_digest(stored_pass, passwd):
@@ -772,7 +789,8 @@ def verify_admin_user(user: str, passwd: str) -> bool:
     ok, role, _ = check_user_role_and_authenticate(user, passwd)
     return ok and role == "admin"
 
-def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password: Optional[str] = None) -> str:
+def verify_certificate_and_get_user(cert_pem_or_p12_bytes: bytes, p12_password: Optional[str] = None) -> tuple[str, str]:
+    """Verifies an X.509 certificate or PKCS#12 bundle against Root CA and returns (username, role)."""
     with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as f_cert:
         cert_path = f_cert.name
 
@@ -785,7 +803,6 @@ def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password:
                 f_p12.write(cert_pem_or_p12_bytes)
                 p12_path = f_p12.name
 
-            # No well-known default: caller must supply the per-issuance p12 password
             cmd = ["openssl", "pkcs12", "-in", p12_path, "-nokeys", "-out", cert_path,
                    "-passin", f"pass:{p12_password or ''}"]
             res = subprocess.run(cmd, capture_output=True, text=True)
@@ -796,6 +813,11 @@ def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password:
 
         # Verify against Root CA
         ca_path = os.path.join(CERTS_DIR, "ca.pem")
+        if not os.path.exists(ca_path):
+            ca_path = os.path.join(CERTS_DIR, "ca.crt")
+        if not os.path.exists(ca_path):
+            raise ValueError("Root CA certificate not found on server.")
+
         verify_cmd = ["openssl", "verify", "-CAfile", ca_path, cert_path]
         v_res = subprocess.run(verify_cmd, capture_output=True, text=True)
         if v_res.returncode != 0 or "OK" not in v_res.stdout:
@@ -814,14 +836,17 @@ def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password:
         if not cn:
             raise ValueError("Common Name (CN) missing from certificate subject")
 
-        # Admin authorization check
-        if is_user_admin(cn):
-            return cn
-
-        raise ValueError(f"Certificate for '{cn}' is authentic, but user lacks Administrator role")
+        role = "admin" if is_user_admin(cn) else "user"
+        return cn, role
     finally:
         if os.path.exists(cert_path):
             os.remove(cert_path)
+
+def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password: Optional[str] = None) -> str:
+    cn, role = verify_certificate_and_get_user(cert_pem_or_p12_bytes, p12_password)
+    if role != "admin":
+        raise ValueError(f"Certificate for '{cn}' is authentic, but user lacks Administrator role")
+    return cn
 
 def authenticate_admin(request: Request) -> str:
     """Verifies admin status via Bearer Token, Admin Session Cookie, or HTTP Basic Auth."""
@@ -1182,7 +1207,7 @@ def unified_login(payload: AdminLoginRequest, response: Response, request: Reque
 
 @app.post("/radius/api/auth/cert-login", tags=["Authentication"])
 @app.post("/api/auth/cert-login", tags=["Authentication"])
-def admin_cert_login(payload: CertLoginRequest, response: Response, request: Request):
+def cert_login(payload: CertLoginRequest, response: Response, request: Request):
     check_rate_limit(request, "login", RL_LOGIN_PER_MIN)
     cert_data = None
     if payload.cert_pem and payload.cert_pem.strip():
@@ -1196,21 +1221,24 @@ def admin_cert_login(payload: CertLoginRequest, response: Response, request: Req
         raise HTTPException(status_code=400, detail="Please provide a valid PEM certificate or PKCS#12 bundle.")
 
     try:
-        admin_user = verify_certificate_and_get_admin(cert_data, payload.p12_password)
+        username, role = verify_certificate_and_get_user(cert_data, payload.p12_password)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Certificate verification failure: {str(e)}")
 
-    token = generate_session_token(admin_user)
-    set_admin_session_cookie(response, token, remember=True)
+    token = generate_session_token(username, role=role)
+    if role == "admin":
+        set_admin_session_cookie(response, token, remember=True)
+    redirect_url = "/radius" if role == "admin" else "/radius/portal"
     return {
         "status": "success",
         "token": token,
-        "username": admin_user,
+        "username": username,
         "auth_method": "x509_certificate",
-        "role": "admin",
-        "message": f"Certificate verified! Welcome back Administrator {admin_user}."
+        "role": role,
+        "redirect_url": redirect_url,
+        "message": f"Certificate verified! Welcome {username} ({'Administrator' if role == 'admin' else 'Wi-Fi Member'})."
     }
 
 @app.post("/radius/api/auth/logout", tags=["Authentication"])
@@ -3076,7 +3104,7 @@ def disconnect_session(payload: DisconnectSessionRequest, _: str = Depends(authe
 # ==============================================================================
 @app.get("/radius/api/certs/ca", tags=["Certificates"])
 @app.get("/api/certs/ca", tags=["Certificates"])
-def download_ca_cert(_: str = Depends(authenticate_admin)):
+def download_ca_cert():
     ca_path = os.path.join(CERTS_DIR, "ca.pem")
     if not os.path.exists(ca_path):
         ca_path = os.path.join(CERTS_DIR, "ca.crt")
@@ -3088,18 +3116,48 @@ def download_ca_cert(_: str = Depends(authenticate_admin)):
 @app.get("/api/certs", tags=["Certificates"])
 def list_certificates(_: str = Depends(authenticate_admin)):
     certs = []
-    for f in sorted(os.listdir(CLIENT_CERTS_DIR)):
-        if f.endswith(".p12"):
-            uname = f[:-4]
-            crt_path = os.path.join(CLIENT_CERTS_DIR, f"{uname}.crt")
-            mtime = os.path.getmtime(os.path.join(CLIENT_CERTS_DIR, f))
-            certs.append({
-                "username": uname,
-                "p12_file": f,
-                "has_crt": os.path.exists(crt_path),
-                "created_at": mtime
-            })
+    if os.path.isdir(CLIENT_CERTS_DIR):
+        for f in sorted(os.listdir(CLIENT_CERTS_DIR)):
+            if f.endswith(".p12"):
+                uname = f[:-4]
+                crt_path = os.path.join(CLIENT_CERTS_DIR, f"{uname}.crt")
+                mtime = os.path.getmtime(os.path.join(CLIENT_CERTS_DIR, f))
+                certs.append({
+                    "username": uname,
+                    "p12_file": f,
+                    "has_crt": os.path.exists(crt_path),
+                    "created_at": mtime
+                })
     return certs
+
+def authenticate_admin_or_owner(username: str, request: Request) -> str:
+    """Allows admins to manage any user, or authenticated users to access their own resource."""
+    u = validate_username(username)
+    try:
+        admin_user = authenticate_admin(request)
+        if admin_user:
+            return admin_user
+    except HTTPException:
+        pass
+
+    auth_header = request.headers.get("Authorization", "")
+    token = None
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    elif request.cookies.get("admin_session"):
+        token = request.cookies.get("admin_session")
+    elif request.cookies.get("user_session"):
+        token = request.cookies.get("user_session")
+
+    if token:
+        user = verify_session_token(token)
+        if user and secrets.compare_digest(user, u):
+            return u
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=f"Unauthorized. Administrator credentials or session for '{u}' required."
+    )
 
 def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365, san_list: Optional[List[str]] = None) -> tuple[str, str]:
     """
@@ -3275,7 +3333,8 @@ def delete_orphaned_certificate(username: str, admin_user: str = Depends(authent
 
 @app.get("/radius/api/certs/{username}/download", tags=["Certificates"])
 @app.get("/api/certs/{username}/download", tags=["Certificates"])
-def download_client_p12(username: str, _: str = Depends(authenticate_admin)):
+def download_client_p12(username: str, request: Request):
+    authenticate_admin_or_owner(username, request)
     p12_path = safe_client_path(validate_username(username), ".p12")
     if not os.path.exists(p12_path):
         raise HTTPException(status_code=404, detail=f"No certificate found for user '{username}'. Issue one first.")
@@ -3283,8 +3342,9 @@ def download_client_p12(username: str, _: str = Depends(authenticate_admin)):
 
 @app.get("/radius/api/certs/{username}/mobileconfig", tags=["Certificates"])
 @app.get("/api/certs/{username}/mobileconfig", tags=["Certificates"])
-def download_apple_mobileconfig(username: str, ssid: str = "RajLabs-Enterprise", _: str = Depends(authenticate_admin)):
+def download_apple_mobileconfig(username: str, request: Request, ssid: str = "RajLabs-Enterprise"):
     """Generates an Apple .mobileconfig WiFi Profile (fresh random p12 password per download)."""
+    authenticate_admin_or_owner(username, request)
     username = validate_username(username)
     p12_bytes, fresh_pass = repackage_p12_for_mobileconfig(username)
     mobileconfig = build_mobileconfig(username, ssid, p12_bytes, fresh_pass)
@@ -3480,37 +3540,58 @@ def portal_download_cert(username: str, password: str = ""):
         raise HTTPException(status_code=404, detail="Certificate not found. Enroll first.")
     return FileResponse(p12_path, media_type="application/x-pkcs12", filename=f"RajLabs_{username}_Certificate.p12")
 
+# Static files & React SPA Mounts
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+DIST_DIR = os.path.join(STATIC_DIR, "dist")
+DIST_ASSETS_DIR = os.path.join(DIST_DIR, "assets")
+
+if os.path.isdir(DIST_ASSETS_DIR):
+    app.mount("/radius/assets", StaticFiles(directory=DIST_ASSETS_DIR), name="dist_assets_radius")
+    app.mount("/assets", StaticFiles(directory=DIST_ASSETS_DIR), name="dist_assets_root")
+
+if os.path.isdir(STATIC_DIR):
+    app.mount("/radius/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static_root")
+
 # Public Captive Portal Splash Page
 @app.get("/radius/portal", response_class=HTMLResponse, tags=["Captive Portal"])
 @app.get("/portal", response_class=HTMLResponse, tags=["Captive Portal"])
 def get_captive_portal():
+    dist_index = os.path.join(DIST_DIR, "index.html")
+    if os.path.exists(dist_index):
+        with open(dist_index, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
     portal_path = os.path.join(STATIC_DIR, "portal.html")
     if os.path.exists(portal_path):
         with open(portal_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse(content="<h1>RajLabs Wi-Fi Login Portal</h1>")
 
-# Mount static files & Protected Web Dashboard
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-if os.path.isdir(STATIC_DIR):
-    app.mount("/radius/static", StaticFiles(directory=STATIC_DIR), name="static")
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static_root")
-
 @app.get("/radius", response_class=HTMLResponse, tags=["Dashboard"])
 @app.get("/radius/", response_class=HTMLResponse, tags=["Dashboard"])
 @app.get("/", response_class=HTMLResponse, tags=["Dashboard"])
 def get_dashboard(request: Request):
     host = request.headers.get("host", "").lower()
+    dist_index = os.path.join(DIST_DIR, "index.html")
+    
     # If accessed directly via wifi.rajlabs.in at root, serve captive portal
     if "wifi." in host and request.url.path in ("/", ""):
+        if os.path.exists(dist_index):
+            with open(dist_index, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read())
         portal_path = os.path.join(STATIC_DIR, "portal.html")
         if os.path.exists(portal_path):
             with open(portal_path, "r", encoding="utf-8") as f:
                 return HTMLResponse(content=f.read())
+                
+    if os.path.exists(dist_index):
+        with open(dist_index, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     return HTMLResponse(content="<h1>RajLabs FreeRADIUS Dashboard</h1>")
+
 
 
