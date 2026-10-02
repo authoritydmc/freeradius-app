@@ -649,7 +649,45 @@ def verify_session_token(token: str) -> Optional[str]:
         pass
     return None
 
-def verify_admin_user(user: str, passwd: str) -> bool:
+def is_user_admin(username: str) -> bool:
+    """Returns True if username has Administrator role or matches env fallback admin."""
+    u = (username or "").strip()
+    if not u:
+        return False
+    if secrets.compare_digest(u, ADMIN_FALLBACK_USER) or u in ("raj", "shipra", "admin"):
+        return True
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT rug.groupname, rgr.value as is_admin_val
+                FROM radusergroup rug
+                LEFT JOIN radgroupreply rgr ON rug.groupname = rgr.groupname AND rgr.attribute = 'RajLabs-Is-Admin'
+                WHERE rug.username = %s
+            """, (u,))
+            rows = cur.fetchall()
+            conn.close()
+            for r in rows:
+                if (r.get("groupname") or "").lower() in ("admins", "admin") or r.get("is_admin_val") == "1":
+                    return True
+    except Exception as e:
+        logger.warning("is_user_admin check exception: %s", e)
+    return False
+
+
+def check_user_role_and_authenticate(user: str, passwd: str) -> tuple[bool, str, Dict[str, Any]]:
+    """
+    Unified credential verification against PostgreSQL FreeRADIUS radcheck.
+    Returns (authenticated: bool, role: 'admin'|'user', info: dict).
+    """
+    u = (user or "").strip()
+    if not u or not passwd:
+        return False, "guest", {}
+
+    # Check fallback environment admin first
+    if secrets.compare_digest(u, ADMIN_FALLBACK_USER) and secrets.compare_digest(passwd, ADMIN_FALLBACK_PASS):
+        return True, "admin", {"group": "admins", "is_admin": True}
+
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -658,21 +696,40 @@ def verify_admin_user(user: str, passwd: str) -> bool:
                 FROM radcheck rc
                 LEFT JOIN radusergroup rug ON rc.username = rug.username
                 WHERE rc.username = %s AND rc.attribute LIKE '%%Password'
-            """, (user,))
+            """, (u,))
             row = cur.fetchone()
-            if row:
-                stored_pass = row["value"]
-                group = row["groupname"]
+            if not row:
                 conn.close()
-                if secrets.compare_digest(stored_pass, passwd) and (group == "admins" or user in ["raj", "shipra", "admin"]):
-                    return True
-        conn.close()
+                return False, "guest", {}
+
+            stored_pass = str(row["value"])
+            group = str(row["groupname"] or "default").strip()
+
+            cur.execute("""
+                SELECT value FROM radgroupreply 
+                WHERE groupname = %s AND attribute = 'RajLabs-Is-Admin'
+            """, (group,))
+            grp_adm = cur.fetchone()
+            conn.close()
+
+            is_admin = (
+                (grp_adm and grp_adm.get("value") == "1") or 
+                group.lower() in ("admins", "admin") or 
+                u in ("raj", "shipra", "admin")
+            )
+
+            if secrets.compare_digest(stored_pass, passwd):
+                role = "admin" if is_admin else "user"
+                return True, role, {"group": group, "is_admin": is_admin}
     except Exception as e:
         logger.warning("Auth DB check error: %s", e)
 
-    if secrets.compare_digest(user, ADMIN_FALLBACK_USER) and secrets.compare_digest(passwd, ADMIN_FALLBACK_PASS):
-        return True
-    return False
+    return False, "guest", {}
+
+
+def verify_admin_user(user: str, passwd: str) -> bool:
+    ok, role, _ = check_user_role_and_authenticate(user, passwd)
+    return ok and role == "admin"
 
 def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password: Optional[str] = None) -> str:
     with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as f_cert:
@@ -688,7 +745,6 @@ def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password:
                 p12_path = f_p12.name
 
             # No well-known default: caller must supply the per-issuance p12 password
-            # (legacy bundles whose password the user still knows keep working when typed in).
             cmd = ["openssl", "pkcs12", "-in", p12_path, "-nokeys", "-out", cert_path,
                    "-passin", f"pass:{p12_password or ''}"]
             res = subprocess.run(cmd, capture_output=True, text=True)
@@ -718,18 +774,8 @@ def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password:
             raise ValueError("Common Name (CN) missing from certificate subject")
 
         # Admin authorization check
-        if cn in ["raj", "shipra", "admin"]:
+        if is_user_admin(cn):
             return cn
-
-        conn = get_db_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT groupname FROM radusergroup WHERE username = %s", (cn,))
-                row = cur.fetchone()
-                if row and row["groupname"] == "admins":
-                    return cn
-        finally:
-            conn.close()
 
         raise ValueError(f"Certificate for '{cn}' is authentic, but user lacks Administrator role")
     finally:
@@ -743,7 +789,7 @@ def authenticate_admin(request: Request) -> str:
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
             user = verify_session_token(token)
-            if user:
+            if user and is_user_admin(user):
                 return user
         elif auth_header.startswith("Basic "):
             try:
@@ -758,7 +804,7 @@ def authenticate_admin(request: Request) -> str:
     cookie_token = request.cookies.get("admin_session")
     if cookie_token:
         user = verify_session_token(cookie_token)
-        if user:
+        if user and is_user_admin(user):
             return user
 
     raise HTTPException(
@@ -850,36 +896,58 @@ import threading as _threading
 
 _RL_BUCKETS: Dict[str, List[float]] = {}
 _RL_LOCK = _threading.Lock()
-RL_LOGIN_PER_MIN = int(os.getenv("RL_LOGIN_PER_MIN", "10") or 10)
-RL_ENROLL_PER_MIN = int(os.getenv("RL_ENROLL_PER_MIN", "5") or 5)
+RL_LOGIN_PER_MIN = int(os.getenv("RL_LOGIN_PER_MIN", "12") or 12)
+RL_ENROLL_PER_MIN = int(os.getenv("RL_ENROLL_PER_MIN", "6") or 6)
 RL_TEST_AUTH_PER_MIN = int(os.getenv("RL_TEST_AUTH_PER_MIN", "20") or 20)
 RL_CERT_ISSUE_PER_MIN = int(os.getenv("RL_CERT_ISSUE_PER_MIN", "10") or 10)
+RL_PORTAL_PER_MIN = int(os.getenv("RL_PORTAL_PER_MIN", "30") or 30)
 
 
 def _client_ip(request: Optional[Request]) -> str:
+    """Extracts client IP supporting Cloudflare tunnels, reverse proxies, and direct connections."""
+    if not request:
+        return "unknown"
     try:
-        if request and request.client:
-            return request.client.host or "unknown"
+        cf_ip = request.headers.get("cf-connecting-ip")
+        if cf_ip and cf_ip.strip():
+            return cf_ip.strip()
+        xff = request.headers.get("x-forwarded-for")
+        if xff and xff.strip():
+            client = xff.split(",")[0].strip()
+            if client:
+                return client
+        x_real = request.headers.get("x-real-ip")
+        if x_real and x_real.strip():
+            return x_real.strip()
+        if request.client and request.client.host:
+            return request.client.host
     except Exception:
         pass
     return "unknown"
 
 
 def check_rate_limit(request: Optional[Request], scope: str, per_minute: int) -> None:
+    """Sliding-window token bucket per IP. Emits 429 Too Many Requests with Retry-After header."""
     if per_minute <= 0:
         return
     now = time.time()
     window = 60.0
-    key = f"{scope}:{_client_ip(request)}"
+    ip = _client_ip(request)
+    key = f"{scope}:{ip}"
     with _RL_LOCK:
         hits = _RL_BUCKETS.get(key, [])
         hits = [t for t in hits if now - t < window]
         if len(hits) >= per_minute:
             retry_after = int(window - (now - hits[0])) + 1
+            logger.warning("Rate limit exceeded for scope=%s client_ip=%s (limit=%d/min)", scope, ip, per_minute)
             raise HTTPException(
                 status_code=429,
-                detail=f"Too many requests. Try again in {retry_after}s.",
-                headers={"Retry-After": str(retry_after)},
+                detail=f"Too many requests to {scope}. Rate limit exceeded. Try again in {retry_after}s.",
+                headers={
+                    "Retry-After": str(retry_after),
+                    "X-RateLimit-Limit": str(per_minute),
+                    "X-RateLimit-Remaining": "0"
+                },
             )
         hits.append(now)
         _RL_BUCKETS[key] = hits
@@ -1005,25 +1073,32 @@ class CertLoginRequest(BaseModel):
 # Authentication Endpoints
 @app.post("/radius/api/auth/login", tags=["Authentication"])
 @app.post("/api/auth/login", tags=["Authentication"])
-def admin_login(payload: AdminLoginRequest, response: Response, request: Request):
+@app.post("/radius/api/auth/unified-login", tags=["Authentication"])
+@app.post("/api/auth/unified-login", tags=["Authentication"])
+def unified_login(payload: AdminLoginRequest, response: Response, request: Request):
     check_rate_limit(request, "login", RL_LOGIN_PER_MIN)
-    if not verify_admin_user(payload.username, payload.password):
-        client = request.client.host if request.client else "?"
-        logger.warning("Admin login FAILED username=%s client=%s", payload.username, client)
+    ok, role, info = check_user_role_and_authenticate(payload.username, payload.password)
+    if not ok:
+        client = _client_ip(request)
+        logger.warning("Authentication FAILED username=%s client=%s", payload.username, client)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid administrator credentials. Access denied."
+            detail="Invalid username or password. Access denied."
         )
-    logger.info("Admin login success username=%s", payload.username)
-    
-    token = generate_session_token(payload.username)
+
+    logger.info("Authentication SUCCESS username=%s role=%s group=%s", payload.username, role, info.get("group"))
+    token = generate_session_token(payload.username, role=role)
     set_admin_session_cookie(response, token, remember=bool(payload.remember))
+
+    redirect_url = "/radius" if role == "admin" else "/radius/portal"
     return {
         "status": "success",
         "token": token,
         "username": payload.username,
-        "role": "admin",
-        "message": f"Welcome back, {payload.username}!"
+        "role": role,
+        "group": info.get("group", "default"),
+        "redirect_url": redirect_url,
+        "message": f"Welcome back, {payload.username}!" if role == "admin" else f"Welcome {payload.username} to RajLabs Wi-Fi!"
     }
 
 @app.post("/radius/api/auth/cert-login", tags=["Authentication"])

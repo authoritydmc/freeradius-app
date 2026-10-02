@@ -358,3 +358,25 @@ def test_settings_model_validation():
     assert req.admin_contact_phone == "+919876543210"
     assert req.currency == "INR"
 
+
+def test_client_ip_extraction_cloudflare_and_forwarded():
+    from starlette.datastructures import Headers
+
+    class DummyReq:
+        def __init__(self, headers_dict, client_host="10.0.0.1"):
+            self.headers = Headers(headers_dict)
+            self.client = type("Client", (), {"host": client_host})()
+
+    # Cloudflare header precedence
+    req_cf = DummyReq({"cf-connecting-ip": "203.0.113.195", "x-forwarded-for": "198.51.100.1"})
+    assert app._client_ip(req_cf) == "203.0.113.195"
+
+    # X-Forwarded-For first IP
+    req_xff = DummyReq({"x-forwarded-for": "198.51.100.22, 10.0.0.2"})
+    assert app._client_ip(req_xff) == "198.51.100.22"
+
+    # Fallback to direct client host
+    req_direct = DummyReq({}, client_host="192.168.1.55")
+    assert app._client_ip(req_direct) == "192.168.1.55"
+
+

@@ -69,14 +69,14 @@
 
       <!-- Header / Logo -->
       <div class="text-center space-y-3 mb-6">
-        <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400 items-center justify-center text-white shadow-xl shadow-indigo-500/25">
+        <div class="inline-flex w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400 items-center justify-center text-white shadow-xl shadow-indigo-500/25 ring-1 ring-white/20">
           <i class="fa-solid fa-shield-halved text-2xl"></i>
         </div>
         <div>
           <h1 class="text-2xl font-black tracking-tight text-white flex items-center justify-center gap-2">
-            RajLabs FreeRADIUS
+            RajLabs Network Gateway
           </h1>
-          <p class="text-xs text-slate-400 mt-1">Enterprise AAA & PKI Administration Console</p>
+          <p class="text-xs text-slate-400 mt-1">Enterprise 802.1X AAA & Wi-Fi Self-Service Portal</p>
         </div>
       </div>
 
@@ -92,7 +92,7 @@
         <button @click="loginTab = 'password'" class="auth-tab py-2.5 px-3 rounded-xl text-slate-400 hover:text-white transition-all flex items-center justify-center gap-1.5 border border-transparent"
                 :class="loginTab === 'password' ? 'active' : ''">
           <i class="fa-solid fa-key text-[11px]"></i>
-          <span>Credentials</span>
+          <span>Account Credentials</span>
         </button>
         <button @click="loginTab = 'cert'" class="auth-tab py-2.5 px-3 rounded-xl text-slate-400 hover:text-white transition-all flex items-center justify-center gap-1.5 border border-transparent"
                 :class="loginTab === 'cert' ? 'active' : ''">
@@ -101,13 +101,13 @@
         </button>
       </div>
 
-      <!-- TAB 1: USERNAME / PASSWORD LOGIN -->
+      <!-- TAB 1: UNIFIED USERNAME / PASSWORD LOGIN -->
       <form x-show="loginTab === 'password'" @submit.prevent="submitPasswordLogin()" class="space-y-4 text-xs">
         <div>
-          <label class="block text-slate-300 font-medium mb-1.5">Administrator Username</label>
+          <label class="block text-slate-300 font-medium mb-1.5">Account Username / Member ID</label>
           <div class="relative">
-            <i class="fa-solid fa-user-shield absolute left-3.5 top-3.5 text-slate-500"></i>
-            <input type="text" x-model="loginForm.username" required placeholder="e.g. raj or shipra"
+            <i class="fa-solid fa-user absolute left-3.5 top-3.5 text-slate-500"></i>
+            <input type="text" x-model="loginForm.username" required placeholder="e.g. raj or user1"
                    class="w-full bg-slate-950/90 border border-slate-800 rounded-xl pl-10 pr-4 py-3 text-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all placeholder:text-slate-600">
           </div>
         </div>
@@ -140,9 +140,22 @@
             <span class="flex items-center gap-2"><i class="fa-solid fa-spinner animate-spin"></i> Authenticating...</span>
           </template>
           <template x-if="!authLoading">
-            <span class="flex items-center gap-2"><span>Enter Admin Console</span> <i class="fa-solid fa-arrow-right"></i></span>
+            <span class="flex items-center gap-2"><span>Sign In</span> <i class="fa-solid fa-arrow-right"></i></span>
           </template>
         </button>
+
+        <!-- Smart Routing Hint Badge -->
+        <div class="p-3 rounded-2xl bg-indigo-950/30 border border-indigo-900/40 text-[11px] text-slate-400 flex items-start gap-2">
+          <i class="fa-solid fa-route text-indigo-400 mt-0.5"></i>
+          <span><strong>Smart Routing:</strong> Administrators unlock the AAA Console; Members & Guests enter their Wi-Fi Self-Service Portal.</span>
+        </div>
+
+        <!-- Direct Portal Jump Link -->
+        <div class="pt-2 text-center border-t border-slate-800/80">
+          <a href="/radius/portal" class="text-xs text-indigo-400 hover:text-indigo-300 font-semibold inline-flex items-center gap-1.5 transition-colors">
+            <i class="fa-solid fa-wifi"></i> Open Wi-Fi Self-Service & Device Setup Portal →
+          </a>
+        </div>
       </form>
 
       <!-- TAB 2: DIGITAL X.509 CERTIFICATE LOGIN -->
@@ -1784,7 +1797,7 @@
           this.loginAlert.show = false;
 
           try {
-            const res = await fetch('/radius/api/auth/login', {
+            const res = await fetch('/radius/api/auth/unified-login', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(this.loginForm)
@@ -1792,11 +1805,19 @@
             const data = await res.json();
 
             if (res.ok && data.status === 'success') {
-              localStorage.setItem('admin_token', data.token);
-              this.currentUser = data.username;
-              this.isAuthenticated = true;
-              this.showToast(`Welcome Administrator ${data.username}!`);
-              this.loadDashboardData();
+              if (data.role === 'admin') {
+                localStorage.setItem('admin_token', data.token);
+                this.currentUser = data.username;
+                this.isAuthenticated = true;
+                this.showToast(`Welcome Administrator ${data.username}!`);
+                this.loadDashboardData();
+              } else {
+                localStorage.setItem('user_token', data.token);
+                this.showToast(`Welcome ${data.username}! Redirecting to Wi-Fi Portal...`);
+                setTimeout(() => {
+                  window.location.href = data.redirect_url || '/radius/portal';
+                }, 700);
+              }
             } else {
               this.loginAlert = { show: true, type: 'error', message: data.detail || 'Invalid username or password.' };
             }
