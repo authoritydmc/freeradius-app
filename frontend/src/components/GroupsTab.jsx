@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Users, Plus, Trash2, Edit3, Shield, Gauge, Wifi, RefreshCw,
-  Search, CheckCircle2, AlertCircle, Layers, Clock, Zap, CreditCard, Sparkles
+  Search, CheckCircle2, AlertCircle, Layers, Clock, Zap, CreditCard, Sparkles, Smartphone
 } from 'lucide-react';
 import { fetchJson } from '../utils/api';
 
 const PRESETS = [
-  { id: 'enterprise', name: 'Enterprise Pro (100M / 100M)', rate: '104857600/104857600', session: 86400, simultaneous: 3, vlan: '10', recharge_required: true },
-  { id: 'standard', name: 'Standard Staff (25M / 25M)', rate: '26214400/26214400', session: 43200, simultaneous: 2, vlan: '20', recharge_required: false },
-  { id: 'guest', name: 'Guest Paid Pass (10M / 5M)', rate: '10485760/5242880', session: 86400, simultaneous: 1, vlan: '30', recharge_required: true },
-  { id: 'iot', name: 'IoT Free Isolated (2M / 2M)', rate: '2097152/2097152', session: 0, simultaneous: 1, vlan: '40', recharge_required: false }
+  { id: 'enterprise', name: 'Enterprise Pro (100M / 100M)', rate: '104857600/104857600', session: 86400, simultaneous: 3, vlan: '10', recharge_required: true, require_device_verification: true },
+  { id: 'standard', name: 'Standard Staff (25M / 25M)', rate: '26214400/26214400', session: 43200, simultaneous: 2, vlan: '20', recharge_required: false, require_device_verification: false },
+  { id: 'guest', name: 'Guest Paid Pass (10M / 5M)', rate: '10485760/5242880', session: 86400, simultaneous: 1, vlan: '30', recharge_required: true, require_device_verification: false },
+  { id: 'iot', name: 'IoT Free Isolated (2M / 2M)', rate: '2097152/2097152', session: 0, simultaneous: 1, vlan: '40', recharge_required: false, require_device_verification: true }
 ];
 
 export default function GroupsTab({ onNotify }) {
@@ -27,7 +27,8 @@ export default function GroupsTab({ onNotify }) {
     simultaneous_use: 2,
     vlan_id: '',
     is_admin: false,
-    recharge_required: true
+    recharge_required: true,
+    require_device_verification: false
   });
 
   const loadGroups = async () => {
@@ -57,7 +58,8 @@ export default function GroupsTab({ onNotify }) {
       simultaneous_use: 2,
       vlan_id: '',
       is_admin: false,
-      recharge_required: true
+      recharge_required: true,
+      require_device_verification: false
     });
     setShowModal(true);
   };
@@ -72,7 +74,8 @@ export default function GroupsTab({ onNotify }) {
     const idleTimeout = parseInt(group.idle_timeout || group.reply_attributes?.find?.(a => a.attribute === 'Idle-Timeout')?.value) || 600;
     const vlanId = group.vlan_id || group.reply_attributes?.find?.(a => a.attribute === 'Tunnel-Private-Group-ID')?.value || '';
     const isExempt = group.recharge_required === false || group.reply_attributes?.some?.(a => a.attribute === 'RajLabs-Recharge-Exempt' && a.value === '1');
-    
+    const reqDeviceLock = Boolean(group.require_device_verification || group.reply_attributes?.some?.(a => a.attribute === 'RajLabs-Require-Device-Lock' && a.value === '1'));
+
     setForm({
       groupname: gName,
       description: group.description || '',
@@ -82,7 +85,8 @@ export default function GroupsTab({ onNotify }) {
       simultaneous_use: simUse,
       vlan_id: vlanId,
       is_admin: isAdmin,
-      recharge_required: !isAdmin && !isExempt
+      recharge_required: !isAdmin && !isExempt,
+      require_device_verification: reqDeviceLock
     });
     setShowModal(true);
   };
@@ -96,7 +100,8 @@ export default function GroupsTab({ onNotify }) {
         session_timeout: preset.session,
         simultaneous_use: preset.simultaneous,
         vlan_id: preset.vlan,
-        recharge_required: preset.recharge_required
+        recharge_required: preset.recharge_required,
+        require_device_verification: Boolean(preset.require_device_verification)
       }));
     }
   };
@@ -114,7 +119,8 @@ export default function GroupsTab({ onNotify }) {
         simultaneous_use: parseInt(form.simultaneous_use) || 1,
         vlan_id: form.vlan_id && form.vlan_id.toString().trim() ? parseInt(form.vlan_id) : null,
         is_admin: form.is_admin || form.groupname === 'admins' || form.groupname === 'admin',
-        recharge_required: form.recharge_required
+        recharge_required: form.recharge_required,
+        require_device_verification: form.require_device_verification
       };
 
       await fetchJson('groups', {
@@ -132,7 +138,8 @@ export default function GroupsTab({ onNotify }) {
         simultaneous_use: 2,
         vlan_id: '',
         is_admin: false,
-        recharge_required: true
+        recharge_required: true,
+        require_device_verification: false
       });
       loadGroups();
     } catch (err) {
@@ -312,6 +319,16 @@ export default function GroupsTab({ onNotify }) {
                         <span className="font-mono text-violet-300 font-semibold">{group.vlan_id}</span>
                       </div>
                     )}
+                    {(group.require_device_verification || group.reply_attributes?.some?.(a => a.attribute === 'RajLabs-Require-Device-Lock' && a.value === '1')) && (
+                      <div className="flex items-center justify-between text-slate-300">
+                        <span className="flex items-center gap-1.5 text-slate-400">
+                          <Smartphone className="w-3.5 h-3.5 text-sky-400" /> Hardware MAC Lock:
+                        </span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30">
+                          Enforced by Default
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -454,6 +471,22 @@ export default function GroupsTab({ onNotify }) {
                       Require Active Paid Recharge / Subscription for Access
                     </span>
                     <p className="text-[11px] text-slate-400">If unchecked, members of this group are exempt from recharge (Free/Staff/VIP).</p>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={form.require_device_verification}
+                    onChange={e => setForm({ ...form, require_device_verification: e.target.checked })}
+                    className="w-4 h-4 rounded text-sky-600 bg-slate-950 border-slate-700 focus:ring-sky-500"
+                  />
+                  <div>
+                    <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                      <Smartphone className="w-3.5 h-3.5 text-sky-400" />
+                      Enforce Verified Device MAC Lock by Default
+                    </span>
+                    <p className="text-[11px] text-slate-400">When enabled, newly created members in this group are locked to verified MACs by default.</p>
                   </div>
                 </label>
 

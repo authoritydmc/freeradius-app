@@ -1128,6 +1128,7 @@ class GroupCreateRequest(BaseModel):
     framed_pool: Optional[str] = None # NAS DHCP Pool Name
     is_admin: Optional[bool] = False # Administrative-User role
     recharge_required: Optional[bool] = True # Whether users in this group need an active paid plan
+    require_device_verification: Optional[bool] = False # Lock group members to verified MAC addresses
     extra_reply_attributes: Optional[Dict[str, str]] = None
     extra_check_attributes: Optional[Dict[str, str]] = None
 
@@ -1665,6 +1666,16 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
                     INSERT INTO radusergroup (username, groupname, priority)
                     VALUES (%s, %s, 1)
                 """, (payload.username, payload.group))
+
+                # If new user and group has RajLabs-Require-Device-Lock, initialize user_device_policy
+                if not existed:
+                    cur.execute("SELECT 1 FROM radgroupreply WHERE groupname = %s AND attribute = 'RajLabs-Require-Device-Lock' AND value = '1'", (payload.group,))
+                    if cur.fetchone():
+                        cur.execute("""
+                            INSERT INTO user_device_policy (username, require_verified, updated_at)
+                            VALUES (%s, TRUE, NOW())
+                            ON CONFLICT (username) DO NOTHING
+                        """, (payload.username,))
 
             if payload.attributes:
                 for attr, val in payload.attributes.items():
@@ -2778,6 +2789,8 @@ def list_groups(_: str = Depends(authenticate_admin)):
                     groups_map[g]["recharge_required"] = False
                 elif attr == "RajLabs-Recharge-Exempt" and val == "1":
                     groups_map[g]["recharge_required"] = False
+                elif attr == "RajLabs-Require-Device-Lock" and val == "1":
+                    groups_map[g]["require_device_verification"] = True
 
             # Populate check attributes
             for c in check_rows:
@@ -2827,12 +2840,15 @@ def create_or_update_group(payload: GroupCreateRequest, _: str = Depends(authent
                 cur.execute("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', ':=', %s)", (payload.groupname, str(payload.simultaneous_use)))
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', '=', %s)", (payload.groupname, str(payload.simultaneous_use)))
 
-            # 2. Administrative Role & Recharge Exemption
+            # 2. Administrative Role, Recharge Exemption & Device Lock
             if payload.is_admin or payload.groupname == "admins":
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Service-Type', '=', 'Administrative-User')", (payload.groupname,))
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'RajLabs-Recharge-Exempt', '=', '1')", (payload.groupname,))
             elif payload.recharge_required is False:
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'RajLabs-Recharge-Exempt', '=', '1')", (payload.groupname,))
+
+            if payload.require_device_verification:
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'RajLabs-Require-Device-Lock', '=', '1')", (payload.groupname,))
 
 
             # 3. Session & Idle Timeouts
@@ -3381,6 +3397,85 @@ def list_certificates(_: str = Depends(authenticate_admin)):
                     "created_at": mtime
                 })
     return certs
+
+@app.get("/radius/api/certs/{username}/inspect", tags=["Certificates"])
+@app.get("/api/certs/{username}/inspect", tags=["Certificates"])
+def inspect_certificate(username: str, _: str = Depends(authenticate_admin)):
+    """Parse and return rich X.509 certificate and chain details for certificate viewer."""
+    uname = validate_username(username)
+    crt_path = safe_client_path(uname, ".crt")
+    chain_path = safe_client_path(uname, "-chain.crt")
+    p12_path = safe_client_path(uname, ".p12")
+
+    if not os.path.exists(crt_path) and not os.path.exists(p12_path):
+        raise HTTPException(status_code=404, detail=f"No certificate found for user '{uname}'.")
+
+    # If crt doesn't exist, we can extract it or check p12
+    subject = f"CN={uname}"
+    issuer = "Unknown Issuer"
+    not_before = ""
+    not_after = ""
+    serial = ""
+    fingerprint = ""
+    san_list = []
+    text_dump = ""
+
+    if os.path.exists(crt_path):
+        try:
+            # 1. Subject & Issuer
+            res_subj = subprocess.run(["openssl", "x509", "-in", crt_path, "-noout", "-subject", "-issuer", "-serial", "-dates", "-fingerprint", "-sha256"], capture_output=True, text=True)
+            lines = res_subj.stdout.splitlines()
+            for l in lines:
+                if l.startswith("subject="):
+                    subject = l[8:].strip()
+                elif l.startswith("issuer="):
+                    issuer = l[7:].strip()
+                elif l.startswith("serial="):
+                    serial = l[7:].strip()
+                elif l.startswith("notBefore="):
+                    not_before = l[10:].strip()
+                elif l.startswith("notAfter="):
+                    not_after = l[9:].strip()
+                elif l.startswith("SHA256 Fingerprint="):
+                    fingerprint = l[19:].strip()
+
+            # 2. Text dump & SANs
+            res_text = subprocess.run(["openssl", "x509", "-in", crt_path, "-noout", "-text"], capture_output=True, text=True)
+            text_dump = res_text.stdout
+            if "Subject Alternative Name:" in text_dump:
+                san_part = text_dump.split("Subject Alternative Name:")[1].split("\n")[1].strip()
+                san_list = [s.strip() for s in san_part.split(",") if s.strip()]
+        except Exception as e:
+            logger.warning("Failed to parse certificate for %s: %s", uname, e)
+
+    # Chain Inspection
+    chain_issuer = ""
+    has_chain = os.path.exists(chain_path)
+    if has_chain:
+        try:
+            res_chain = subprocess.run(["openssl", "x509", "-in", chain_path, "-noout", "-subject", "-issuer"], capture_output=True, text=True)
+            for l in res_chain.stdout.splitlines():
+                if l.startswith("issuer="):
+                    chain_issuer = l[7:].strip()
+        except Exception:
+            pass
+
+    return {
+        "username": uname,
+        "p12_exists": os.path.exists(p12_path),
+        "crt_exists": os.path.exists(crt_path),
+        "has_chain": has_chain,
+        "subject": subject,
+        "issuer": issuer,
+        "chain_issuer": chain_issuer or issuer,
+        "serial": serial,
+        "not_before": not_before,
+        "not_after": not_after,
+        "fingerprint_sha256": fingerprint,
+        "san_list": san_list,
+        "raw_text": text_dump,
+        "authority_type": "Central RajLabs-CA PKI" if ("rajlabs" in issuer.lower() or "intermediate" in issuer.lower()) else "Local FreeRADIUS Root CA"
+    }
 
 def authenticate_admin_or_owner(username: str, request: Request) -> str:
     """Allows admins to manage any user, or authenticated users to access their own resource."""

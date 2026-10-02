@@ -14,7 +14,11 @@ import {
   RotateCw,
   AlertCircle,
   ShieldAlert,
-  Ban
+  Ban,
+  Eye,
+  Copy,
+  Check,
+  FileText
 } from 'lucide-react';
 import { formatDateTime, fetchJson } from '../utils/api';
 
@@ -40,6 +44,32 @@ export default function CertsTab({
     email: ''
   });
   const [issuing, setIssuing] = useState(false);
+
+  // Certificate Inspector Modal State
+  const [inspectCert, setInspectCert] = useState(null);
+  const [inspectLoading, setInspectLoading] = useState(false);
+  const [showRawCert, setShowRawCert] = useState(false);
+  const [copiedFingerprint, setCopiedFingerprint] = useState(false);
+
+  const handleInspectCert = async (username) => {
+    setInspectLoading(true);
+    try {
+      const data = await fetchJson(`certs/${encodeURIComponent(username)}/inspect`);
+      setInspectCert(data);
+      setShowRawCert(false);
+      setCopiedFingerprint(false);
+    } catch (err) {
+      onNotify?.(err.message || `Failed to inspect certificate for '${username}'`, 'error');
+    } finally {
+      setInspectLoading(false);
+    }
+  };
+
+  const handleCopyFingerprint = (text) => {
+    navigator.clipboard?.writeText(text);
+    setCopiedFingerprint(true);
+    setTimeout(() => setCopiedFingerprint(false), 2000);
+  };
 
   const loadData = async () => {
     try {
@@ -244,6 +274,15 @@ export default function CertsTab({
                 </td>
 
                 <td className="px-6 py-4 text-right space-x-1.5 whitespace-nowrap">
+                  <button
+                    onClick={() => handleInspectCert(c.username)}
+                    title="Inspect X.509 Certificate Chain & Details"
+                    className="px-2.5 py-1.5 bg-purple-950/60 hover:bg-purple-900/80 text-purple-300 border border-purple-800/60 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <Eye className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Inspect</span>
+                  </button>
+
                   <a
                     href={`/radius/api/certs/${c.username}/download`}
                     download
@@ -316,6 +355,182 @@ export default function CertsTab({
                 </button>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* ---------------------------------------------------- */}
+      {/* X.509 CERTIFICATE INSPECTION / VIEWER MODAL */}
+      {/* ---------------------------------------------------- */}
+      {inspectCert && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-purple-500/30 rounded-3xl max-w-2xl w-full p-6 space-y-5 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-start justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-purple-500/10 text-purple-400 border border-purple-500/20 flex items-center justify-center">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>Certificate Viewer:</span>
+                    <span className="font-mono text-purple-300">{inspectCert.username}</span>
+                  </h3>
+                  <p className="text-xs text-slate-400">Cryptographic X.509 Identity & Chain Hierarchy</p>
+                </div>
+              </div>
+              <button onClick={() => setInspectCert(null)} className="text-slate-400 hover:text-white p-1 rounded-lg">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Authority & Status Badges */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-3.5 space-y-1">
+                <span className="text-[11px] text-slate-400 block font-medium">Issuing Authority Type:</span>
+                <div className="flex items-center gap-2">
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
+                    inspectCert.authority_type.includes('Central')
+                      ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                      : 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                  }`}>
+                    {inspectCert.authority_type}
+                  </span>
+                </div>
+              </div>
+
+              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-3.5 space-y-1">
+                <span className="text-[11px] text-slate-400 block font-medium">Bundle Format:</span>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> PKCS#12 (.p12) EAP-TLS Ready
+                </span>
+              </div>
+            </div>
+
+            {/* Trust Chain Hierarchy */}
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
+              <div className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-purple-400" />
+                <span>PKI Certificate Trust Chain</span>
+              </div>
+
+              <div className="space-y-2 text-xs font-mono">
+                {/* Level 1: Root / Intermediate Issuer */}
+                <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex items-start gap-2.5">
+                  <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-bold uppercase shrink-0 mt-0.5">
+                    Issuer CA
+                  </span>
+                  <div className="truncate flex-1">
+                    <div className="text-slate-200 font-bold break-all">{inspectCert.issuer || inspectCert.chain_issuer}</div>
+                    <div className="text-[11px] text-slate-500 font-sans mt-0.5">Signs and anchors trust for 802.1X RADIUS verification</div>
+                  </div>
+                </div>
+
+                {/* Level 2: End-Entity Client Cert */}
+                <div className="ml-5 border-l-2 border-purple-500/40 pl-3">
+                  <div className="bg-purple-950/20 border border-purple-500/30 rounded-xl p-3 flex items-start gap-2.5">
+                    <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 text-[10px] font-bold uppercase shrink-0 mt-0.5">
+                      Client Cert
+                    </span>
+                    <div className="truncate flex-1">
+                      <div className="text-purple-200 font-bold break-all">{inspectCert.subject}</div>
+                      <div className="text-[11px] text-slate-400 font-sans mt-0.5">CN: {inspectCert.username} (Zero-Password EAP-TLS Identity)</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Certificate Details Grid */}
+            <div className="space-y-3 bg-slate-950/60 border border-slate-800 rounded-2xl p-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <span className="text-slate-500 text-[11px] block font-medium">Serial Number</span>
+                  <span className="font-mono text-slate-200 font-semibold">{inspectCert.serial || '—'}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[11px] block font-medium">Subject Alternative Names (SAN)</span>
+                  <span className="font-mono text-slate-200">{inspectCert.san_list && inspectCert.san_list.length > 0 ? inspectCert.san_list.join(', ') : 'None'}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[11px] block font-medium">Valid Not Before</span>
+                  <span className="font-mono text-slate-300">{inspectCert.not_before || '—'}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 text-[11px] block font-medium">Valid Not After</span>
+                  <span className="font-mono text-emerald-400 font-medium">{inspectCert.not_after || '—'}</span>
+                </div>
+              </div>
+
+              {/* SHA-256 Fingerprint */}
+              {inspectCert.fingerprint_sha256 && (
+                <div className="pt-2 border-t border-slate-800/80">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-slate-500 text-[11px] font-medium">SHA-256 Fingerprint</span>
+                    <button
+                      onClick={() => handleCopyFingerprint(inspectCert.fingerprint_sha256)}
+                      className="text-[11px] text-purple-400 hover:text-purple-300 flex items-center gap-1 transition-colors"
+                    >
+                      {copiedFingerprint ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedFingerprint ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 font-mono text-[11px] text-purple-200 break-all select-all">
+                    {inspectCert.fingerprint_sha256}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Raw OpenSSL Text Dump (Collapsible) */}
+            {inspectCert.raw_text && (
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => setShowRawCert(!showRawCert)}
+                  className="text-xs text-slate-400 hover:text-purple-300 flex items-center gap-1.5 transition-colors font-medium"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>{showRawCert ? 'Hide OpenSSL Text Dump' : 'View Full OpenSSL X.509 Text Dump'}</span>
+                </button>
+
+                {showRawCert && (
+                  <pre className="bg-slate-950 border border-slate-800 rounded-2xl p-4 text-[11px] font-mono text-slate-300 overflow-x-auto max-h-48 scrollbar-thin">
+                    {inspectCert.raw_text}
+                  </pre>
+                )}
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
+              <div className="flex items-center gap-2">
+                <a
+                  href={`/radius/api/certs/${inspectCert.username}/download`}
+                  download
+                  className="px-3.5 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shadow-md shadow-purple-600/20 transition-all"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download .p12</span>
+                </a>
+                <a
+                  href={`/radius/api/certs/${inspectCert.username}/mobileconfig`}
+                  download
+                  className="px-3.5 py-2 bg-cyan-950/70 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/60 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                >
+                  <Apple className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Apple Profile</span>
+                </a>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setInspectCert(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

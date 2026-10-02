@@ -21,7 +21,10 @@ import {
   Copy, 
   Smartphone,
   RefreshCw,
-  QrCode
+  QrCode,
+  Lock,
+  Unlock,
+  ShieldAlert
 } from 'lucide-react';
 import { calculatePasswordStrength, fetchJson } from '../utils/api';
 import WifiQrModal from './WifiQrModal';
@@ -309,13 +312,64 @@ export default function UsersTab({
     setDeviceUser(username);
     setDeviceModalOpen(true);
     setDeviceLoading(true);
+    setNewMac('');
+    setNewMacDesc('');
     try {
-      const data = await fetchJson(`devices/user-policy/${username}`);
+      const data = await fetchJson(`users/${encodeURIComponent(username)}/devices`);
       setDevicePolicy(data);
     } catch (err) {
       onNotify?.(err.message || 'Failed to load device policy', 'error');
     } finally {
       setDeviceLoading(false);
+    }
+  };
+
+  const handleToggleDeviceLock = async (enabled) => {
+    try {
+      const res = await fetchJson(`users/${encodeURIComponent(deviceUser)}/device-policy`, {
+        method: 'PUT',
+        body: JSON.stringify({ require_verified: enabled })
+      });
+      setDevicePolicy(prev => prev ? { ...prev, require_verified: enabled } : { require_verified: enabled, devices: [] });
+      onNotify?.(res.message || `Hardware lock ${enabled ? 'enabled' : 'disabled'} for '${deviceUser}'`, 'success');
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to update device lock policy', 'error');
+    }
+  };
+
+  const handleAddDevice = async (e) => {
+    e?.preventDefault();
+    if (!newMac.trim()) {
+      onNotify?.('Please enter a valid MAC address', 'warning');
+      return;
+    }
+    try {
+      const res = await fetchJson(`users/${encodeURIComponent(deviceUser)}/devices`, {
+        method: 'POST',
+        body: JSON.stringify({ mac: newMac.trim(), label: newMacDesc.trim() })
+      });
+      onNotify?.(res.message || `Device ${newMac} added`, 'success');
+      setNewMac('');
+      setNewMacDesc('');
+      // Reload device list
+      const data = await fetchJson(`users/${encodeURIComponent(deviceUser)}/devices`);
+      setDevicePolicy(data);
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to add verified device', 'error');
+    }
+  };
+
+  const handleDeleteDevice = async (mac) => {
+    if (!window.confirm(`Remove verified MAC '${mac}' for user '${deviceUser}'?`)) return;
+    try {
+      const res = await fetchJson(`users/${encodeURIComponent(deviceUser)}/devices/${encodeURIComponent(mac)}`, {
+        method: 'DELETE'
+      });
+      onNotify?.(res.message || `Device ${mac} removed`, 'success');
+      const data = await fetchJson(`users/${encodeURIComponent(deviceUser)}/devices`);
+      setDevicePolicy(data);
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to remove verified device', 'error');
     }
   };
 
@@ -882,7 +936,193 @@ export default function UsersTab({
       )}
 
       {/* ---------------------------------------------------- */}
-      {/* 4. WI-FI QR ACCESS PASS / SCAN / SEND MODAL */}
+      {/* 4. VERIFIED DEVICE MAC LOCK POLICY MODAL */}
+      {/* ---------------------------------------------------- */}
+      {deviceModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-sky-500/30 rounded-3xl max-w-xl w-full p-6 space-y-5 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-start justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-sky-500/10 text-sky-400 border border-sky-500/20 flex items-center justify-center">
+                  <Smartphone className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>Verified Devices & MAC Lock:</span>
+                    <span className="font-mono text-sky-300">{deviceUser}</span>
+                  </h3>
+                  <p className="text-xs text-slate-400">Lock RADIUS authentication to specific hardware MAC addresses</p>
+                </div>
+              </div>
+              <button onClick={() => setDeviceModalOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-lg">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Lockdown Policy Switch */}
+            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  {devicePolicy?.require_verified ? (
+                    <div className="p-2 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                      <Lock className="w-4 h-4" />
+                    </div>
+                  ) : (
+                    <div className="p-2 rounded-xl bg-slate-800 text-slate-400 border border-slate-700">
+                      <Unlock className="w-4 h-4" />
+                    </div>
+                  )}
+                  <div>
+                    <div className="text-xs font-bold text-white flex items-center gap-2">
+                      <span>Hardware MAC Lockdown:</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-mono ${
+                        devicePolicy?.require_verified
+                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30 font-bold'
+                          : 'bg-slate-800 text-slate-400 border border-slate-700'
+                      }`}>
+                        {devicePolicy?.require_verified ? 'Enforced (Locked)' : 'Disabled (Open)'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      {devicePolicy?.require_verified
+                        ? "Only devices listed below can authenticate with this user's credentials."
+                        : "Any device can authenticate with valid credentials (standard 802.1X behavior)."}
+                    </p>
+                  </div>
+                </div>
+
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(devicePolicy?.require_verified)}
+                    onChange={(e) => handleToggleDeviceLock(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-sky-600"></div>
+                </label>
+              </div>
+            </div>
+
+            {/* Add Device Form */}
+            <form onSubmit={handleAddDevice} className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3 text-xs">
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Plus className="w-4 h-4 text-sky-400" /> Add Verified Device
+              </span>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium text-[11px]">MAC Address *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="AA:BB:CC:DD:EE:FF"
+                    value={newMac}
+                    onChange={(e) => setNewMac(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono placeholder:text-slate-600 focus:border-sky-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1 font-medium text-[11px]">Device Name / Label (Optional)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Office MacBook Pro, iPhone 15"
+                    value={newMacDesc}
+                    onChange={(e) => setNewMacDesc(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white placeholder:text-slate-600 focus:border-sky-500 outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-1">
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-sky-600/20 transition-all"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Verify & Allow MAC</span>
+                </button>
+              </div>
+            </form>
+
+            {/* List of Verified MACs */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-300 uppercase tracking-wider">
+                  Verified MAC Allowlist ({devicePolicy?.devices?.length || 0})
+                </span>
+                {devicePolicy?.require_verified && (devicePolicy?.devices?.length === 0) && (
+                  <span className="text-rose-400 text-[11px] font-medium flex items-center gap-1">
+                    <ShieldAlert className="w-3.5 h-3.5" /> No MACs allowed — user cannot connect!
+                  </span>
+                )}
+              </div>
+
+              {deviceLoading ? (
+                <div className="p-8 text-center text-slate-500 text-xs flex items-center justify-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-sky-400" />
+                  <span>Loading verified devices...</span>
+                </div>
+              ) : !devicePolicy?.devices || devicePolicy.devices.length === 0 ? (
+                <div className="p-6 bg-slate-950/40 border border-slate-800/80 rounded-2xl text-center text-slate-500 text-xs italic">
+                  No verified MAC addresses registered for this user yet.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-60 overflow-y-auto scrollbar-thin">
+                  {devicePolicy.devices.map((d) => (
+                    <div
+                      key={d.mac}
+                      className="bg-slate-950 border border-slate-800/90 rounded-2xl p-3.5 flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="flex items-center gap-3 truncate">
+                        <div className="w-8 h-8 rounded-xl bg-sky-500/10 text-sky-400 border border-sky-500/20 flex items-center justify-center shrink-0">
+                          <Smartphone className="w-4 h-4" />
+                        </div>
+                        <div className="truncate">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-white font-bold">{d.pretty || d.mac}</span>
+                            {d.vendor && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] font-medium truncate">
+                                {d.vendor}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-slate-400 text-[11px] truncate mt-0.5">
+                            {d.label ? <span className="text-slate-300 font-medium">{d.label}</span> : 'Unlabeled Device'}
+                            {d.added_at && <span className="text-slate-500 ml-1.5">• Added {new Date(d.added_at).toLocaleDateString()}</span>}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => handleDeleteDevice(d.mac)}
+                        title="Remove verified MAC"
+                        className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors border border-rose-500/20 shrink-0"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex justify-end pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setDeviceModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------------------------------------------------- */}
+      {/* 5. WI-FI QR ACCESS PASS / SCAN / SEND MODAL */}
       {/* ---------------------------------------------------- */}
       <WifiQrModal
         isOpen={Boolean(qrModalUser)}

@@ -27,12 +27,31 @@ export default function App() {
   const [credModalData, setCredModalData] = useState(null);
   const [showChangelog, setShowChangelog] = useState(false);
   const [toast, setToast] = useState(null);
+  const [health, setHealth] = useState({ status: 'healthy' });
+  const [stats, setStats] = useState(null);
 
   const showToast = (message, type = 'info') => {
     setToast({ message, type, id: Date.now() });
     setTimeout(() => {
       setToast(current => (current?.message === message ? null : current));
     }, 4500);
+  };
+
+  const loadHealthAndStats = async () => {
+    try {
+      const [hRes, sRes] = await Promise.allSettled([
+        fetchJson('health'),
+        fetchJson('stats')
+      ]);
+      if (hRes.status === 'fulfilled' && hRes.value) {
+        setHealth(hRes.value);
+      }
+      if (sRes.status === 'fulfilled' && sRes.value) {
+        setStats(sRes.value);
+      }
+    } catch (e) {
+      // Ignore background poll errors
+    }
   };
 
   const checkAuth = async () => {
@@ -48,6 +67,7 @@ export default function App() {
       const data = await fetchJson('status');
       const savedUser = getUserInfo();
       setCurrentUser(savedUser || { username: 'Administrator', role: 'admin' });
+      loadHealthAndStats();
     } catch (err) {
       if (err.status === 401) {
         removeAuthToken();
@@ -57,6 +77,14 @@ export default function App() {
       setAuthChecking(false);
     }
   };
+
+  useEffect(() => {
+    if (!isPortal && currentUser) {
+      loadHealthAndStats();
+      const interval = setInterval(loadHealthAndStats, 20000);
+      return () => clearInterval(interval);
+    }
+  }, [isPortal, currentUser]);
 
   useEffect(() => {
     const handleLocationChange = () => {
@@ -142,12 +170,21 @@ export default function App() {
         setActiveTab={setActiveTab}
         currentUser={currentUser}
         onLogout={handleLogout}
+        health={health}
+        stats={stats}
         onOpenChangelog={() => setShowChangelog(true)}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {activeTab === 'status' && <StatusTab onNotify={showToast} onJumpTab={setActiveTab} />}
+        {activeTab === 'status' && (
+          <StatusTab 
+            health={health} 
+            stats={stats} 
+            onNotify={showToast} 
+            onJumpTab={setActiveTab} 
+          />
+        )}
         {activeTab === 'users' && (
           <UsersTab
             onNotify={showToast}
