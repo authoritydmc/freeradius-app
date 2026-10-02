@@ -73,9 +73,10 @@ ADMIN_CONTACT_NAME = os.getenv("ADMIN_CONTACT_NAME", "Network Administrator")
 # Short-lived cache for the signer health probe (avoid blocking the UI)
 _SIGNER_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
 
-ADMIN_FALLBACK_USER = os.getenv("RADIUS_ADMIN_USER", "admin")
-ADMIN_FALLBACK_PASS = os.getenv("RADIUS_ADMIN_PASSWORD", "admin123")
+ADMIN_FALLBACK_USER = os.getenv("RADIUS_ADMIN_USER") or os.getenv("ADMIN_FALLBACK_USER") or "admin"
+ADMIN_FALLBACK_PASS = os.getenv("RADIUS_ADMIN_PASSWORD") or os.getenv("ADMIN_FALLBACK_PASSWORD") or "admin123"
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change_this_session_secret_in_production_32_chars!")
+
 
 # Table retention in days (issue #9, 0 = keep forever). Purged once at startup.
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365") or 365)
@@ -686,7 +687,8 @@ def is_user_admin(username: str) -> bool:
     u = (username or "").strip()
     if not u:
         return False
-    if secrets.compare_digest(u, ADMIN_FALLBACK_USER):
+    fallback = os.getenv("RADIUS_ADMIN_USER") or os.getenv("ADMIN_FALLBACK_USER") or ADMIN_FALLBACK_USER
+    if fallback and secrets.compare_digest(u, fallback):
         return True
     try:
         conn = get_db_connection()
