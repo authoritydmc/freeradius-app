@@ -258,6 +258,31 @@ def generate_p12_password(length: int = 20) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(max(12, min(length, 64))))
 
 
+def get_cert_signer_config() -> tuple[str, str]:
+    """Retrieve effective Cert-Signer API URL and API Key.
+    
+    Checks database system_settings first (runtime UI configured),
+    falling back to environment variables CERT_SIGNER_API_URL and CERT_SIGNER_API_KEY.
+    """
+    url = CERT_SIGNER_API_URL
+    key = CERT_SIGNER_API_KEY
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM system_settings WHERE key IN ('cert_signer_api_url', 'cert_signer_api_key')")
+            rows = cur.fetchall()
+            for r in rows:
+                if r["key"] == "cert_signer_api_url" and r["value"] and r["value"].strip():
+                    url = r["value"].strip().rstrip("/")
+                elif r["key"] == "cert_signer_api_key" and r["value"] and r["value"].strip():
+                    key = r["value"].strip()
+        conn.close()
+    except Exception:
+        pass
+    return url, key
+
+
+
 def safe_client_path(username: str, suffix: str) -> str:
     """Join CLIENT_CERTS_DIR safely; rejects traversal even if regex is bypassed."""
     validate_username(username)
@@ -1066,6 +1091,9 @@ class SystemSettingsUpdateRequest(BaseModel):
     upi_merchant_name: Optional[str] = None
     default_voucher_code: Optional[str] = None
     currency: Optional[str] = None
+    cert_signer_api_url: Optional[str] = None
+    cert_signer_api_key: Optional[str] = None
+
 
 class IssueCertRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
@@ -1836,6 +1864,10 @@ def get_all_settings(_: str = Depends(authenticate_admin)):
                 settings_map["admin_contact_phone"] = ADMIN_CONTACT_PHONE
             if "admin_contact_name" not in settings_map:
                 settings_map["admin_contact_name"] = ADMIN_CONTACT_NAME
+            if "cert_signer_api_url" not in settings_map:
+                settings_map["cert_signer_api_url"] = CERT_SIGNER_API_URL
+            if "cert_signer_api_key" not in settings_map:
+                settings_map["cert_signer_api_key"] = CERT_SIGNER_API_KEY
 
             return {
                 "settings": settings_map,
@@ -1886,8 +1918,22 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
                     VALUES ('currency', %s, 'Default system currency code', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                 """, (payload.currency.strip().upper(),))
+            if payload.cert_signer_api_url is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('cert_signer_api_url', %s, 'Central Rajlabs-CA Cert-Signer API Base URL', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.cert_signer_api_url.strip().rstrip("/"),))
+            if payload.cert_signer_api_key is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('cert_signer_api_key', %s, 'Central Rajlabs-CA Cert-Signer API Key / Token', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.cert_signer_api_key.strip(),))
             conn.commit()
 
+        # Invalidate signer probe cache on settings update
+        _SIGNER_STATUS_CACHE.update({"at": 0.0, "data": None})
         log_audit(current_admin, "SETTINGS_UPDATED", "system", f"Updated system settings: {payload.dict(exclude_unset=True)}")
         return {"status": "success", "message": "System settings updated successfully!"}
     finally:
@@ -1904,57 +1950,81 @@ def cert_signer_status(refresh: bool = False, _: str = Depends(authenticate_admi
         return _SIGNER_STATUS_CACHE["data"]
 
     checked_at = datetime.now(timezone.utc).isoformat()
-    if not CERT_SIGNER_API_URL:
+    signer_url, signer_key = get_cert_signer_config()
+
+    if not signer_url:
         data = {
             "configured": False, "mode": "local", "reachable": True, "key_valid": None,
             "status_code": None, "latency_ms": None, "host": None, "checked_at": checked_at,
-            "detail": "CERT_SIGNER_API_URL is not set — certificates are signed by the local FreeRADIUS CA. Set CERT_SIGNER_API_URL (+ CERT_SIGNER_API_KEY) to use the central Rajlabs-CA.",
+            "detail": "CERT_SIGNER_API_URL is not set — certificates are signed by the local FreeRADIUS CA. Set URL & API Key in Settings or environment to use central Rajlabs-CA.",
         }
         _SIGNER_STATUS_CACHE.update({"at": now, "data": data})
         return data
 
-    host = urlparse(CERT_SIGNER_API_URL).hostname or CERT_SIGNER_API_URL
+    host = urlparse(signer_url).hostname or signer_url
     headers = {"Accept": "application/json"}
-    if CERT_SIGNER_API_KEY:
-        headers["x-api-key"] = CERT_SIGNER_API_KEY
+    if signer_key:
+        headers["x-api-key"] = signer_key
 
+    # Probe 1: Token verification if token is provided
+    token_verified = False
     probe = None
-    tried = []
-    for path in ("/api/v1/health", "/health"):
-        r = _probe_http_json(CERT_SIGNER_API_URL + path, headers)
-        tried.append({"path": path, "status": r["status"]})
-        if r["ok"] or r["status"] in (401, 403):
-            probe = r
-            break
-        probe = r  # keep last network-level result if nothing answered
+    if signer_key:
+        token_probe = _probe_http_json(signer_url + "/api/v1/tokens/verify", headers)
+        if token_probe["ok"]:
+            token_verified = True
+            probe = token_probe
+        elif token_probe["status"] in (401, 403):
+            probe = token_probe
+
+    # Probe 2: Health check
+    if not probe or not probe["ok"]:
+        for path in ("/health", "/api/v1/health", "/api/v1/status"):
+            r = _probe_http_json(signer_url + path, headers)
+            if r["ok"] or r["status"] in (401, 403):
+                probe = r
+                break
+            probe = r  # keep last network-level result if nothing answered
 
     assert probe is not None
     if probe["ok"]:
+        if signer_key:
+            detail_msg = f"Connected & authenticated with Cert-Signer at {host} ({probe['latency_ms']} ms). API token is valid."
+            key_valid = True
+        else:
+            detail_msg = f"Connected to Cert-Signer at {host} ({probe['latency_ms']} ms), but API token is missing. Sign requests may require an API key."
+            key_valid = False
+
         data = {
-            "configured": True, "mode": "remote", "reachable": True,
-            "key_valid": True if CERT_SIGNER_API_KEY else None,
+            "configured": True, "mode": "remote" if key_valid else "remote-unauthenticated", "reachable": True,
+            "key_valid": key_valid,
+            "token_missing": not bool(signer_key),
             "status_code": probe["status"], "latency_ms": probe["latency_ms"],
             "host": host, "checked_at": checked_at,
-            "detail": f"Connected to central Cert-Signer at {host} ({probe['latency_ms']} ms). New certificates will be signed remotely."
-                      + ("" if CERT_SIGNER_API_KEY else " No API key configured — signer accepts unauthenticated health checks."),
+            "detail": detail_msg,
         }
     elif probe["status"] in (401, 403):
         data = {
             "configured": True, "mode": "local-fallback", "reachable": True,
-            "key_valid": False, "status_code": probe["status"],
+            "key_valid": False,
+            "token_missing": not bool(signer_key),
+            "status_code": probe["status"],
             "latency_ms": probe["latency_ms"], "host": host, "checked_at": checked_at,
-            "detail": f"Signer at {host} is reachable but rejected our API key (HTTP {probe['status']}). Check CERT_SIGNER_API_KEY. Certificates will fall back to the local CA until the key is fixed.",
+            "detail": f"Signer at {host} is reachable but rejected our API key (HTTP {probe['status']}). Verify your token in Settings. Falling back to local CA.",
         }
     else:
         data = {
             "configured": True, "mode": "local-fallback", "reachable": False,
-            "key_valid": None, "status_code": probe["status"],
+            "key_valid": None,
+            "token_missing": not bool(signer_key),
+            "status_code": probe["status"],
             "latency_ms": probe["latency_ms"], "host": host, "checked_at": checked_at,
-            "detail": f"Cannot reach Cert-Signer at {host}: {probe['body'][:160]}. Certificates will fall back to the local CA. Check CERT_SIGNER_API_URL and network egress.",
+            "detail": f"Cannot reach Cert-Signer at {host}: {probe['body'][:160]}. Certificates will fall back to the local CA. Check URL and network connectivity.",
         }
-    logger.info("Signer status checked by=%s reachable=%s mode=%s host=%s", _, data["reachable"], data["mode"], host)
+    logger.info("Signer status checked by=%s reachable=%s mode=%s host=%s key_valid=%s", _, data["reachable"], data["mode"], host, data["key_valid"])
     _SIGNER_STATUS_CACHE.update({"at": now, "data": data})
     return data
+
 
 # ============================================================================
 # Group Policy Management & Presets
@@ -2879,23 +2949,26 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
     or falls back to the local FreeRADIUS CA.
     Returns: (issued_cert_pem, ca_chain_pem)
     """
-    if CERT_SIGNER_API_URL:
+    signer_url, signer_key = get_cert_signer_config()
+    if signer_url:
         try:
             with open(user_csr_path, "r") as f:
                 csr_content = f.read()
             
             headers = {"Content-Type": "application/json"}
-            if CERT_SIGNER_API_KEY:
-                headers["x-api-key"] = CERT_SIGNER_API_KEY
+            if signer_key:
+                headers["x-api-key"] = signer_key
             
             sans = san_list or [f"{username}@rajlabs.in", f"{username}.local"]
             payload_data = {
                 "csr": csr_content,
                 "san": sans,
-                "days": days
+                "days": days,
+                "purpose": "wifi",
+                "ca": "int-wifi"
             }
             
-            req_url = f"{CERT_SIGNER_API_URL}/api/v1/sign"
+            req_url = f"{signer_url}/api/v1/sign"
             req = urllib.request.Request(
                 req_url,
                 data=json.dumps(payload_data).encode("utf-8"),
@@ -2909,7 +2982,8 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
                         logger.info("Certificate signed successfully via Rajlabs-CA Cert Signer for %s", username)
                         return res_json["certificate"], res_json.get("fullChain") or res_json["certificate"]
         except Exception as e:
-            logger.warning("Cert-Signer microservice request to %s failed (%s), falling back to local CA.", CERT_SIGNER_API_URL, e)
+            logger.warning("Cert-Signer microservice request to %s failed (%s), falling back to local CA.", signer_url, e)
+
 
     # Local FreeRADIUS CA Fallback
     ca_key = os.path.join(CERTS_DIR, "ca.key")

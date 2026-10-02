@@ -1212,7 +1212,59 @@
                 </div>
               </div>
 
+              <!-- Central PKI & Cert-Signer Integration Section -->
+              <div class="space-y-4">
+                <div class="flex items-center gap-2 border-b border-slate-800 pb-3">
+                  <div class="w-8 h-8 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center">
+                    <i class="fa-solid fa-certificate"></i>
+                  </div>
+                  <div>
+                    <h3 class="text-sm font-bold text-white">Central Rajlabs-CA PKI Signer Integration</h3>
+                    <p class="text-[11px] text-slate-400">Route certificate signing requests (EAP-TLS WiFi / Admin) to the central Cert-Signer microservice.</p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <label class="block text-slate-300 font-medium mb-1.5">Cert-Signer API Base URL</label>
+                    <div class="relative">
+                      <i class="fa-solid fa-link absolute left-3.5 top-3 text-cyan-400"></i>
+                      <input type="url" x-model="systemSettings.cert_signer_api_url" placeholder="https://ca.rajlabs.in or https://backend.rajlabs.in/cert-signer"
+                             class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-white font-mono focus:border-cyan-500 outline-none">
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-1 block">Public endpoint (e.g. <code class="text-cyan-300">https://ca.rajlabs.in</code> or <code class="text-cyan-300">https://certs.rajlabs.in</code>).</span>
+                  </div>
+
+                  <div>
+                    <label class="block text-slate-300 font-medium mb-1.5">API Key / Token (x-api-key)</label>
+                    <div class="relative">
+                      <i class="fa-solid fa-key absolute left-3.5 top-3 text-cyan-400"></i>
+                      <input :type="showCertSignerKey ? 'text' : 'password'" x-model="systemSettings.cert_signer_api_key" placeholder="cert_... or AUTH_TOKEN"
+                             class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-10 py-2.5 text-white font-mono focus:border-cyan-500 outline-none">
+                      <button type="button" @click="showCertSignerKey = !showCertSignerKey" class="absolute right-3 top-2.5 text-slate-500 hover:text-white">
+                        <i :class="showCertSignerKey ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye'"></i>
+                      </button>
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-1 block">Created in Cert-Signer UI → API Tokens (or fallback AUTH_TOKEN).</span>
+                  </div>
+                </div>
+
+                <!-- Signer status live feedback inside Settings -->
+                <div class="rounded-xl border p-3 flex items-center justify-between gap-3 text-xs"
+                     :class="signerStatus.configured && signerStatus.reachable ? (signerStatus.key_valid ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300' : 'bg-amber-950/40 border-amber-500/30 text-amber-300') : 'bg-slate-950 border-slate-800 text-slate-400'">
+                  <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full shrink-0"
+                          :class="signerStatus.configured && signerStatus.reachable ? (signerStatus.key_valid ? 'bg-emerald-400' : 'bg-amber-400') : 'bg-slate-500'"></span>
+                    <span class="text-[11px]" x-text="signerStatus.detail"></span>
+                  </div>
+                  <button type="button" @click="fetchSignerStatus(true)" class="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10px] font-semibold shrink-0">
+                    <i class="fa-solid fa-rotate"></i> Test Connection
+                  </button>
+                </div>
+              </div>
+
               <!-- Action Bar -->
+
               <div class="pt-4 border-t border-slate-800 flex items-center justify-between">
                 <span class="text-xs text-slate-400">Changes are saved to the database and take effect immediately.</span>
                 <button type="submit" :disabled="settingsSaving"
@@ -1718,16 +1770,20 @@
         testResult: null,
         contactAdminModal: { show: false, username: '' },
 
+        showCertSignerKey: false,
         systemSettings: {
           admin_contact_phone: '+919999999999',
           admin_contact_name: 'Network Administrator',
           upi_vpa: '',
           upi_merchant_name: '',
           default_voucher_code: 'WELCOME2026',
-          currency: 'INR'
+          currency: 'INR',
+          cert_signer_api_url: '',
+          cert_signer_api_key: ''
         },
         systemSettingsRecords: [],
         settingsSaving: false,
+
 
         userModal: {
           show: false,
@@ -1926,10 +1982,13 @@
         signerHeadline() {
           const s = this.signerStatus || {};
           if (!s.configured) return 'PKI Signer: Local FreeRADIUS CA (no central signer configured)';
-          if (s.reachable && s.key_valid === false) return `PKI Signer: reachable at ${s.host} — API key rejected (HTTP ${s.status_code})`;
+          if (s.reachable && s.token_missing) return `PKI Signer: Running at ${s.host} — API Token missing (Configure in Settings)`;
+          if (s.reachable && s.key_valid === false) return `PKI Signer: Reachable at ${s.host} — API key/token invalid (HTTP ${s.status_code})`;
+          if (s.reachable && s.key_valid === true) return `PKI Signer: Connected & Authenticated (${s.host})`;
           if (s.reachable) return `PKI Signer: Connected (${s.host})`;
           return `PKI Signer: Unreachable (${s.host || 'unknown host'}) — using local CA fallback`;
         },
+
 
         async fetchStats() {
           try {
@@ -2697,7 +2756,9 @@
                   upi_vpa: data.settings.upi_vpa || '',
                   upi_merchant_name: data.settings.upi_merchant_name || '',
                   default_voucher_code: data.settings.default_voucher_code || 'WELCOME2026',
-                  currency: data.settings.currency || 'INR'
+                  currency: data.settings.currency || 'INR',
+                  cert_signer_api_url: data.settings.cert_signer_api_url || '',
+                  cert_signer_api_key: data.settings.cert_signer_api_key || ''
                 };
               }
               this.systemSettingsRecords = data.records || [];
@@ -2717,9 +2778,10 @@
             });
             const data = await res.json();
             if (res.ok) {
-              this.showToast('System settings and contact info saved successfully!');
+              this.showToast('System settings and PKI configuration saved successfully!');
               await this.fetchSettings();
               await this.fetchPublicConfig();
+              await this.fetchSignerStatus(true);
             } else {
               this.showToast(data.detail || 'Failed to update system settings.', 'error');
             }
@@ -2729,6 +2791,7 @@
             this.settingsSaving = false;
           }
         }
+
       }
     }
   </script>
