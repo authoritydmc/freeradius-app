@@ -129,6 +129,9 @@
             <input type="checkbox" x-model="loginForm.remember" class="rounded bg-slate-950 border-slate-800 text-indigo-600 focus:ring-0">
             <span class="text-slate-400 text-[11px]">Remember station (7 days)</span>
           </label>
+          <button type="button" @click="openContactAdminModal(loginForm.username)" class="text-[11px] text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
+            Forgot Password?
+          </button>
         </div>
 
         <button type="submit" :disabled="authLoading"
@@ -1193,6 +1196,48 @@
     </div>
   </div>
 
+  <!-- Contact Admin / Password Reset Request Modal -->
+  <div x-show="contactAdminModal.show" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+    <div class="bg-slate-900 border border-indigo-500/40 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-headset text-indigo-400"></i> Contact Administrator
+        </h3>
+        <button type="button" @click="contactAdminModal.show = false" class="text-slate-400 hover:text-white">
+          <i class="fa-solid fa-xmark text-lg"></i>
+        </button>
+      </div>
+      <p class="text-xs text-slate-400">Need your password reset or account unlocked? Contact the network admin directly with 1-click pre-composed message:</p>
+      
+      <div class="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Your Account Username</label>
+          <input type="text" x-model="contactAdminModal.username" placeholder="e.g. raj or your username"
+                 class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-white font-mono focus:border-indigo-500 outline-none">
+        </div>
+        <div class="flex items-center justify-between text-[11px] pt-1 border-t border-slate-800/80">
+          <span class="text-slate-500">Admin Contact:</span>
+          <span class="font-mono text-indigo-300 font-semibold" x-text="publicConfig.admin_contact?.phone || '+919999999999'"></span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+        <a :href="contactAdminWhatsAppUrl()" target="_blank" rel="noopener"
+           class="px-4 py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 transition-all text-center">
+          <i class="fa-brands fa-whatsapp text-base"></i> WhatsApp Admin
+        </a>
+        <a :href="contactAdminSmsUrl()"
+           class="px-4 py-3 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-sky-600/20 transition-all text-center">
+          <i class="fa-solid fa-comment-sms text-base"></i> Text SMS
+        </a>
+      </div>
+      
+      <div class="flex justify-end pt-1">
+        <button type="button" @click="contactAdminModal.show = false" class="px-4 py-2 text-slate-400 hover:text-white text-xs">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Group Policy Modal (Add/Edit) -->
   <div x-show="groupModal.show" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
     <div class="bg-slate-900 border border-slate-800 rounded-3xl max-w-xl w-full p-6 space-y-4 shadow-2xl my-8">
@@ -1455,10 +1500,11 @@
         logLimit: 50,
         auditLogs: [],
         auditSearch: '',
-        publicConfig: { radius_host: '', radius_ports: {}, portal_path: '/radius/portal', signer_configured: false },
+        publicConfig: { radius_host: '', radius_ports: {}, portal_path: '/radius/portal', signer_configured: false, admin_contact: { phone: '+919999999999', name: 'Network Administrator' } },
         signerStatus: { configured: false, mode: 'local', reachable: true, key_valid: null, detail: 'Checking signer status...' },
         testForm: { username: 'raj', password: '', calling_station_id: '' },
         testResult: null,
+        contactAdminModal: { show: false, username: '' },
 
         userModal: {
           show: false,
@@ -2383,6 +2429,28 @@
           this.testForm.password = '';
           this.testForm.calling_station_id = '';
           this.testResult = null;
+        },
+
+        openContactAdminModal(username = '') {
+          this.contactAdminModal = {
+            show: true,
+            username: username || ''
+          };
+          this.fetchPublicConfig();
+        },
+
+        contactAdminWhatsAppUrl() {
+          const rawPhone = (this.publicConfig.admin_contact?.phone || '+919999999999').replace(/[^0-9]/g, '');
+          const u = this.contactAdminModal.username ? ` (Username: ${this.contactAdminModal.username})` : '';
+          const msg = encodeURIComponent(`Hello Admin, I need help resetting my RajLabs Wi-Fi / RADIUS password${u}. Please assist.`);
+          return `https://wa.me/${rawPhone}?text=${msg}`;
+        },
+
+        contactAdminSmsUrl() {
+          const phone = this.publicConfig.admin_contact?.phone || '+919999999999';
+          const u = this.contactAdminModal.username ? ` (Username: ${this.contactAdminModal.username})` : '';
+          const msg = encodeURIComponent(`Hello Admin, I need help resetting my RajLabs Wi-Fi / RADIUS password${u}. Please assist.`);
+          return `sms:${phone}?body=${msg}`;
         }
       }
     }

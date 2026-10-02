@@ -63,6 +63,10 @@ CERT_SIGNER_API_KEY = os.getenv("CERT_SIGNER_API_KEY", "")
 # Defaults to the API host when unset; override when UDP and HTTPS differ.
 RADIUS_PUBLIC_HOST = os.getenv("RADIUS_PUBLIC_HOST", "")
 
+# Support and Password Reset Contact
+ADMIN_CONTACT_PHONE = os.getenv("ADMIN_CONTACT_PHONE", "+919999999999")
+ADMIN_CONTACT_NAME = os.getenv("ADMIN_CONTACT_NAME", "Network Administrator")
+
 # Short-lived cache for the signer health probe (avoid blocking the UI)
 _SIGNER_STATUS_CACHE: Dict[str, Any] = {"at": 0.0, "data": None}
 
@@ -1678,13 +1682,17 @@ def _probe_http_json(url: str, headers: Dict[str, str], timeout: int = 5) -> Dic
 @app.get("/radius/api/public-config", tags=["Health"])
 @app.get("/api/public-config", tags=["Health"])
 def get_public_config(request: Request):
-    """Unauthenticated client facts: RADIUS host/ports, portal path, signer presence (no secrets)."""
+    """Unauthenticated client facts: RADIUS host/ports, portal path, signer presence, admin contact (no secrets)."""
     host = RADIUS_PUBLIC_HOST or (request.headers.get("host", "").split(":")[0] if request.headers.get("host") else "")
     return {
         "radius_host": host,
         "radius_ports": {"auth": 1812, "acct": 1813, "coa": 3799},
         "portal_path": "/radius/portal",
         "signer_configured": bool(CERT_SIGNER_API_URL),
+        "admin_contact": {
+            "phone": ADMIN_CONTACT_PHONE,
+            "name": ADMIN_CONTACT_NAME
+        }
     }
 
 @app.get("/radius/api/certs/signer-status", tags=["Certificates"])
