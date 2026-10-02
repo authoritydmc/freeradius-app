@@ -6267,10 +6267,9 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest, request: Request
 
 @app.get("/radius/api/portal/download-mobileconfig", tags=["Captive Portal"])
 @app.get("/api/portal/download-mobileconfig", tags=["Captive Portal"])
-def portal_download_mobileconfig(username: str, password: str = "", ssid: str = "RajLabs-Enterprise", request: Request = None):
-    """Owner-only Apple profile: requires the account password (issue #3)."""
-    check_rate_limit(request, "portal-download", RL_PORTAL_PER_MIN)
-    verify_portal_user(username, password)
+def portal_download_mobileconfig(token: str = "", request: Request = None, ssid: str = "RajLabs-Enterprise"):
+    """Owner-only Apple profile via single-use token (no password in URL)."""
+    username = _consume_download_token(token, request)
     p12_bytes, fresh_pass = repackage_p12_for_mobileconfig(validate_username(username))
     mobileconfig = build_mobileconfig(username, ssid, p12_bytes, fresh_pass)
     return Response(
@@ -6284,7 +6283,16 @@ def portal_download_mobileconfig(username: str, password: str = "", ssid: str = 
 @app.post("/api/portal/download-mobileconfig", tags=["Captive Portal"])
 def portal_download_mobileconfig_post(payload: PortalDownloadRequest, request: Request, ssid: str = "RajLabs-Enterprise"):
     """POST variant (password in body, not URL) for the portal UI."""
-    return portal_download_mobileconfig(payload.username, payload.password, ssid, request)
+    check_rate_limit(request, "portal-download", RL_PORTAL_PER_MIN)
+    verify_portal_user(payload.username, payload.password)
+    username = validate_username(payload.username)
+    p12_bytes, fresh_pass = repackage_p12_for_mobileconfig(username)
+    mobileconfig = build_mobileconfig(payload.username, ssid, p12_bytes, fresh_pass)
+    return Response(
+        content=mobileconfig,
+        media_type="application/x-apple-aspen-config",
+        headers={"Content-Disposition": f'attachment; filename="RajLabs_{payload.username}_WiFi.mobileconfig"'}
+    )
 
 
 @app.post("/radius/api/portal/download-cert", tags=["Captive Portal"])
@@ -6300,14 +6308,70 @@ def portal_download_cert_post(payload: PortalDownloadRequest, request: Request):
 
 @app.get("/radius/api/portal/download-cert", tags=["Captive Portal"])
 @app.get("/api/portal/download-cert", tags=["Captive Portal"])
-def portal_download_cert(username: str, password: str = "", request: Request = None):
-    """Owner-only .p12 download (GET variant): requires the account password (issue #3)."""
-    check_rate_limit(request, "portal-download", RL_PORTAL_PER_MIN)
-    verify_portal_user(username, password)
+def portal_download_cert(token: str = "", request: Request = None):
+    """Owner-only .p12 download via single-use token (no password in URL).
+
+    Mint with POST /portal/download-token (password in body). iPhone profile
+    install needs a plain navigation URL, which is why this GET exists at all.
+    """
+    username = _consume_download_token(token, request)
     p12_path = safe_client_path(validate_username(username), ".p12")
     if not os.path.exists(p12_path):
         raise HTTPException(status_code=404, detail="Certificate not found. Enroll first.")
     return FileResponse(p12_path, media_type="application/x-pkcs12", filename=f"RajLabs_{username}_Certificate.p12")
+
+
+def _consume_download_token(token: str, request: Optional[Request]) -> str:
+    """Validate + burn a single-use download token. Returns the username."""
+    check_rate_limit(request, "portal-download", RL_PORTAL_PER_MIN)
+    raw = (token or "").strip()
+    if not raw:
+        raise HTTPException(status_code=401, detail="A download token is required. Get one from the Enroll tab (POST /portal/download-token).")
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM portal_download_tokens WHERE expires_at < NOW()")
+            cur.execute("SELECT username, expires_at, used_at FROM portal_download_tokens WHERE token_hash = %s", (digest,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=401, detail="Invalid or expired download token.")
+            if row.get("used_at") is not None:
+                raise HTTPException(status_code=401, detail="Download token already used. Mint a fresh one.")
+            cur.execute("UPDATE portal_download_tokens SET used_at = CURRENT_TIMESTAMP WHERE token_hash = %s", (digest,))
+            conn.commit()
+            return row["username"]
+    finally:
+        conn.close()
+
+
+class DownloadTokenRequest(BaseModel):
+    username: str
+    password: str
+
+@app.post("/radius/api/portal/download-token", tags=["Captive Portal"])
+@app.post("/api/portal/download-token", tags=["Captive Portal"])
+def portal_download_token(payload: DownloadTokenRequest, request: Request):
+    """Verify the account password (in body, never URL) and mint a 5-minute
+    single-use download token for the .p12 / .mobileconfig GET links."""
+    check_rate_limit(request, "portal-download", RL_PORTAL_PER_MIN)
+    verify_portal_user(payload.username, payload.password)
+    uname = validate_username(payload.username)
+    raw = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM portal_download_tokens WHERE expires_at < NOW()")
+            cur.execute("""
+                INSERT INTO portal_download_tokens (token_hash, username, expires_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP + INTERVAL '5 minutes')
+            """, (digest, uname))
+            conn.commit()
+    finally:
+        conn.close()
+    logger.info("Download token minted username=%s", uname)
+    return {"token": raw, "username": uname, "expires_in_seconds": 300}
 
 
 @app.post("/radius/api/portal/login", tags=["Captive Portal"])

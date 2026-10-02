@@ -403,6 +403,50 @@ def test_voucher_routes_registered():
     assert "/radius/api/vouchers" in paths
 
 
+def test_download_token_single_use(monkeypatch):
+    """Token downloads work once, then burn; no password in URL (#21)."""
+    import datetime
+    from fastapi import HTTPException
+
+    state = {"used": False}
+
+    def handler(q, p):
+        if "FROM radcheck" in q and "LIKE" in q:
+            return [{"username": "ram", "value": "pw123456"}]
+        if q.startswith("INSERT INTO portal_download_tokens"):
+            return []
+        if "FROM portal_download_tokens" in q and "token_hash" in q:
+            if state["used"]:
+                return [{"username": "ram", "expires_at": None, "used_at": "used"}]
+            return [{"username": "ram", "expires_at": None, "used_at": None}]
+        if q.startswith("UPDATE portal_download_tokens"):
+            state["used"] = True
+            return []
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    minted = app.portal_download_token(app.DownloadTokenRequest(username="ram", password="pw123456"), None)
+    assert len(minted["token"]) >= 32 and minted["expires_in_seconds"] == 300
+    # Valid token, no cert file on disk in tests -> 404 proves auth passed.
+    with pytest.raises(HTTPException) as ei:
+        app.portal_download_cert(token=minted["token"], request=None)
+    assert ei.value.status_code == 404
+    # Second use burns.
+    with pytest.raises(HTTPException) as ei2:
+        app.portal_download_cert(token=minted["token"], request=None)
+    assert ei2.value.status_code == 401
+    # No token at all -> 401, never password-prompt.
+    with pytest.raises(HTTPException) as ei3:
+        app.portal_download_cert(token="", request=None)
+    assert ei3.value.status_code == 401
+
+
+def test_download_token_route_registered():
+    paths = {getattr(r, "path", "") for r in app.app.routes}
+    assert "/radius/api/portal/download-token" in paths
+
+
 def test_client_ip_ignores_spoofed_headers(monkeypatch):
     """Forwarded headers from untrusted peers must not rewrite identity (#23)."""
     from starlette.datastructures import Headers

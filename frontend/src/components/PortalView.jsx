@@ -6,7 +6,7 @@ import {
   HelpCircle, ExternalLink, ArrowRight, Copy, Check, Lock, Sparkles, QrCode, Printer,
   X, CheckCircle, Info, Monitor, Cpu, Laptop, ShieldCheck, BadgeCheck
 } from 'lucide-react';
-import { fetchJson, apiRequest } from '../utils/api';
+import { fetchJson } from '../utils/api';
 
 export default function PortalView() {
   const [config, setConfig] = useState(null);
@@ -45,7 +45,6 @@ export default function PortalView() {
   const [paymentStatus, setPaymentStatus] = useState(null);
   const [osTab, setOsTab] = useState('android'); // 'android', 'ios', 'windows', 'linux'
   const [caInfo, setCaInfo] = useState(null);
-  const [downloading, setDownloading] = useState('');
 
   useEffect(() => {
     fetchJson('public-config').then(setConfig).catch(() => {});
@@ -155,6 +154,7 @@ export default function PortalView() {
     e.preventDefault();
     setEnrollError('');
     setEnrollResult(null);
+    setDlToken(null);
     setEnrolling(true);
     try {
       const res = await fetchJson('portal/enroll-certificate', {
@@ -187,36 +187,26 @@ export default function PortalView() {
     setTimeout(() => setCopiedUpi(false), 2000);
   };
 
-  // POST-based blob download: keeps the account password in the request
-  // body (never in the URL / browser history / proxy logs).
-  const downloadBlob = async (kind) => {
+  // Token download links: password goes in a POST body once, the server
+  // returns a 5-minute single-use token, and the actual files are plain
+  // navigations (?token=...) — the only form iPhone profile install accepts.
+  // No password ever lands in a URL, history entry, or proxy log.
+  const [dlToken, setDlToken] = useState(null);
+  const [mintingToken, setMintingToken] = useState(false);
+
+  const mintDlToken = async () => {
     if (!enrollForm.username || !enrollForm.password) return;
-    setDownloading(kind);
+    setMintingToken(true);
     try {
-      const endpoint = kind === 'p12' ? 'portal/download-cert' : 'portal/download-mobileconfig';
-      const res = await apiRequest(endpoint, {
+      const res = await fetchJson('portal/download-token', {
         method: 'POST',
         body: JSON.stringify({ username: enrollForm.username, password: enrollForm.password })
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.message || `Download failed (HTTP ${res.status})`);
-      }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = kind === 'p12'
-        ? `RajLabs_${enrollForm.username}_Certificate.p12`
-        : `RajLabs_${enrollForm.username}_WiFi.mobileconfig`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
+      setDlToken(res.token);
     } catch (err) {
-      setEnrollError(err.message || 'Download failed.');
+      setEnrollError(err.message || 'Could not prepare download links.');
     } finally {
-      setDownloading('');
+      setMintingToken(false);
     }
   };
 
@@ -876,33 +866,42 @@ export default function PortalView() {
                   </div>
                 )}
 
-                {/* Download Actions (POST — password stays out of the URL) */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                {/* Download Actions (single-use token links — no password in URL) */}
+                {!dlToken ? (
                   <button
-                    onClick={() => downloadBlob('mobileconfig')}
-                    disabled={downloading === 'mobileconfig'}
-                    className="flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white rounded-xl text-xs font-semibold shadow transition cursor-pointer disabled:opacity-50"
-                  >
-                    <Apple className="w-4 h-4 text-slate-200" />
-                    <span>{downloading === 'mobileconfig' ? 'Preparing…' : 'Download Apple Profile'}</span>
-                  </button>
-
-                  <button
-                    onClick={() => downloadBlob('p12')}
-                    disabled={downloading === 'p12'}
-                    className="flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition cursor-pointer disabled:opacity-50"
+                    onClick={mintDlToken}
+                    disabled={mintingToken}
+                    className="w-full flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition cursor-pointer disabled:opacity-50"
                   >
                     <Download className="w-4 h-4" />
-                    <span>{downloading === 'p12' ? 'Preparing…' : 'Download .p12 Bundle'}</span>
+                    <span>{mintingToken ? 'Preparing secure links…' : 'Get download links'}</span>
                   </button>
-                </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                    <a
+                      href={`/radius/api/portal/download-mobileconfig?token=${encodeURIComponent(dlToken)}`}
+                      className="flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white rounded-xl text-xs font-semibold shadow transition cursor-pointer"
+                    >
+                      <Apple className="w-4 h-4 text-slate-200" />
+                      <span>Download Apple Profile</span>
+                    </a>
+
+                    <a
+                      href={`/radius/api/portal/download-cert?token=${encodeURIComponent(dlToken)}`}
+                      className="flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition cursor-pointer"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>Download .p12 Bundle</span>
+                    </a>
+                  </div>
+                )}
                 <p className="text-[11px] text-slate-500 text-center">
-                  The .p12 opens with the bundle password above. The Apple profile needs no password — it carries the certificate inside.
+                  Links work once and expire in 5 minutes. The .p12 opens with the bundle password above. The Apple profile needs no password — it carries the certificate inside.
                 </p>
 
                 <div className="text-center pt-2">
                   <button
-                    onClick={() => setEnrollResult(null)}
+                    onClick={() => { setEnrollResult(null); setDlToken(null); }}
                     className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
                   >
                     ← Enroll another device
