@@ -264,8 +264,8 @@ ${customPass ? `🔑 Password: ${customPass}\n` : ''}${effectiveExpiry ? `⏳ Ex
             <div className="text-xs bg-slate-950 p-2.5 rounded-xl border border-slate-800 print:hidden space-y-2">
               <p className="text-[11px] text-slate-400">
                 {customPass
-                  ? 'QR embeds this password — scanning joins directly.'
-                  : 'No password set: enter it below so the QR joins directly (stored passwords are hashed and cannot be read back).'}
+                  ? 'QR embeds this password for supported clients (enter credentials when prompted).'
+                  : 'No password set: enter it below so the QR configures credentials (passwords are masked in the UI for safety).'}
               </p>
               <div className="grid grid-cols-2 gap-2">
               <div>

@@ -118,23 +118,42 @@ server default {
             Tmp-String-0 := 'no'
         }
         Post-Auth-Type REJECT {
-            # Every reject leaves a human-readable reason in radpostauth.reason.
-            # Specific policies (device lockdown, subscription sync) already set
-            # Reply-Message; the fallbacks below cover the rest. The captive
-            # portal URL doubles as the "redirect on failure": 802.1X has no
-            # HTTP redirect, so the rejection itself tells the user where to
-            # test their password and recharge (supplicants that display
-            # Reply-Message show it; the dashboard Tester shows it always).
+            # Granular reject reason saved directly into radpostauth.reason.
             if (&User-Name =~ /^anonymous$/i) {
                 if (!&reply:Reply-Message) {
                     update reply {
-                        Reply-Message := "Rejected: phone hid the real username inside the encrypted tunnel (outer identity 'anonymous'). Re-check the Wi-Fi password, or test your login and recharge at https://wifi.rajlabs.in"
+                        Reply-Message := "Rejected: outer identity 'anonymous' failed inner tunnel authentication. Check password at https://wifi.rajlabs.in"
                     }
                 }
             }
             elsif (!&reply:Reply-Message) {
-                update reply {
-                    Reply-Message := "Rejected: authentication failed (invalid password, unknown user, expired or no active subscription). Test your login and recharge at https://wifi.rajlabs.in"
+                # Determine granular reason via SQL lookups if not already set by policy
+                if ("%{sql:SELECT COUNT(*) FROM radcheck WHERE username=replace('%{User-Name}', '''', '''''') AND attribute='Auth-Type' AND value='Reject'}" > '0') {
+                    update reply {
+                        Reply-Message := "Rejected: user account is banned or suspended by administrator."
+                    }
+                }
+                elsif ("%{sql:SELECT COUNT(*) FROM radcheck WHERE username=replace('%{User-Name}', '''', '''''')}" == '0') {
+                    update reply {
+                        Reply-Message := "Rejected: unknown user %{User-Name} (not registered). Register or recharge at https://wifi.rajlabs.in"
+                    }
+                }
+                elsif ("%{sql:SELECT COUNT(*) FROM radcheck WHERE username=replace('%{User-Name}', '''', '''''') AND attribute='Expiration' AND value != ''}" > '0') {
+                    if ("%{sql:SELECT CASE WHEN TO_TIMESTAMP(value, 'DD Mon YYYY HH24:MI:SS') <= NOW() THEN 'expired' ELSE 'active' END FROM radcheck WHERE username=replace('%{User-Name}', '''', '''''') AND attribute='Expiration' LIMIT 1}" == 'expired') {
+                        update reply {
+                            Reply-Message := "Rejected: Wi-Fi subscription expired. Renew plan at https://wifi.rajlabs.in"
+                        }
+                    }
+                    else {
+                        update reply {
+                            Reply-Message := "Rejected: invalid password for user %{User-Name}. Check credentials at https://wifi.rajlabs.in"
+                        }
+                    }
+                }
+                else {
+                    update reply {
+                        Reply-Message := "Rejected: invalid password for user %{User-Name}. Test login at https://wifi.rajlabs.in"
+                    }
                 }
             }
             -sql

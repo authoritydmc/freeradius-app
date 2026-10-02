@@ -407,4 +407,54 @@ def test_guest_user_routes_registered():
     assert "/api/users/guest" in routes
 
 
+def test_no_hardcoded_radius_secret_in_frontend():
+    from pathlib import Path
+    fe_dir = Path("frontend/src")
+    forbidden = ["testing123", "RadSec_9921", "RADIUS_SECRET = '"]
+    for p in fe_dir.rglob("*.jsx"):
+        src = p.read_text(encoding="utf-8")
+        for bad in forbidden:
+            assert bad not in src, f"Found forbidden secret-like string '{bad}' in {p}"
+
+
+def test_locale_immune_expiration_date_parser():
+    import datetime as dt
+    from api.entitlements import parse_freeradius_expiration
+    
+    parsed = parse_freeradius_expiration("15 Oct 2026 18:30:00")
+    assert parsed is not None
+    assert parsed.year == 2026
+    assert parsed.month == 10
+    assert parsed.day == 15
+    assert parsed.hour == 18
+    assert parsed.minute == 30
+    assert parsed.second == 0
+    assert parsed.tzinfo == dt.timezone.utc
+
+    for m_idx, m_str in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1):
+        p = parse_freeradius_expiration(f"01 {m_str} 2027 00:00:00")
+        assert p is not None
+        assert p.month == m_idx
+
+    assert parse_freeradius_expiration("garbage") is None
+    assert parse_freeradius_expiration("") is None
+
+
+def test_retention_tables_include_growth_tables():
+    src = inspect.getsource(app.purge_expired_tables)
+    assert "admin_audit_log" in src
+    assert "audit_events" in src
+    assert "radacct" in src
+    assert "radpostauth" in src
+    assert "revoked_certificates" in src
+
+
+def test_health_endpoint_registered_and_structure():
+    routes = {r.path for r in app.app.routes}
+    assert "/health" in routes
+    assert "/api/health" in routes
+    assert "/radius/api/health" in routes
+
+
+
 

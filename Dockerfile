@@ -12,16 +12,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     python3 \
     python3-pip \
-    python3-fastapi \
-    python3-uvicorn \
-    python3-pydantic \
-    python3-psycopg2 \
-    python3-jinja2 \
     procps \
     curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+COPY api/requirements.txt /app/api/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r /app/api/requirements.txt
 
 COPY config/ /app/config/
 COPY api/ /app/api/

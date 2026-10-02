@@ -132,6 +132,39 @@ def run_migrations() -> list:
     return applied_now
 
 
+def get_migration_summary() -> dict:
+    """Returns applied versions, pending versions, and overall status."""
+    files = _list_migration_files()
+    all_versions = [f.stem for f in files]
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                _ensure_version_table(cur)
+                done = _applied_versions(cur)
+                pending = [v for v in all_versions if v not in done]
+                return {
+                    "ok": len(pending) == 0,
+                    "applied_count": len(done),
+                    "pending_count": len(pending),
+                    "applied": sorted(list(done)),
+                    "pending": pending,
+                    "latest_migration": all_versions[-1] if all_versions else None
+                }
+        finally:
+            conn.close()
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "applied_count": 0,
+            "pending_count": len(all_versions),
+            "applied": [],
+            "pending": all_versions,
+            "latest_migration": all_versions[-1] if all_versions else None
+        }
+
+
 def ensure_migrated():
     """Cheap per-process guard for request handlers (replaces ensure_*/init_* calls).
 
@@ -149,3 +182,4 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     done = run_migrations()
     print(f"Applied: {done if done else 'nothing pending — schema up to date'}")
+

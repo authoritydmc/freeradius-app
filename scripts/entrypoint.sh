@@ -10,12 +10,10 @@ POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
 RADIUS_SECRET="${RADIUS_SECRET:-testing123}"
 # Password of the local CA private key created by FreeRADIUS `certs/bootstrap`
-# (upstream bootstrap default). NOT a client .p12 password — every client bundle
-# gets its own random password from the API. Change only together with a CA
-# re-bootstrap; keep it out of logs.
 CA_KEY_PASSWORD="${CA_KEY_PASSWORD:-whatever}"
 
-export RADIUS_SECRET CA_KEY_PASSWORD
+# Export for FreeRADIUS SQL module ($ENV{POSTGRES_*}) and sub-processes
+export RADIUS_SECRET CA_KEY_PASSWORD POSTGRES_HOST POSTGRES_PORT POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD
 
 # UTC everywhere: Python expiry uses UTC epoch and FreeRADIUS `expiration`
 # parses Expiration wall-time in local zone — these must agree.
@@ -28,29 +26,39 @@ weak_secret() {
     *) return 1;;
   esac
 }
- if weak_secret "${RADIUS_ADMIN_PASSWORD:-}" || weak_secret "${SESSION_SECRET:-}" || [ "${#SESSION_SECRET}" -lt 32 ]; then
-   echo "ERROR: RADIUS_ADMIN_PASSWORD and SESSION_SECRET must be set to strong, non-default values (>=32 chars for SESSION_SECRET)." >&2
-   echo "Generate one with: openssl rand -hex 32" >&2
-   echo "Refusing to boot. See .env.example." >&2
-   exit 1
- fi
- if weak_secret "${RADIUS_SECRET:-}"; then
-   echo "WARNING: RADIUS_SECRET is a published default — rotate it now and update every NAS/router." >&2
- fi
+if weak_secret "${RADIUS_ADMIN_PASSWORD:-}" || weak_secret "${SESSION_SECRET:-}" || [ "${#SESSION_SECRET}" -lt 32 ]; then
+  echo "ERROR: RADIUS_ADMIN_PASSWORD and SESSION_SECRET must be set to strong, non-default values (>=32 chars for SESSION_SECRET)." >&2
+  echo "Generate one with: openssl rand -hex 32" >&2
+  echo "Refusing to boot. See .env.example." >&2
+  exit 1
+fi
+if weak_secret "${RADIUS_SECRET:-}"; then
+  echo "WARNING: RADIUS_SECRET is a published default — rotate it now and update every NAS/router." >&2
+fi
 
-echo "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT}..."
+PG_WAIT_TIMEOUT="${PG_WAIT_TIMEOUT:-30}"
+elapsed=0
+echo "Waiting for PostgreSQL at ${POSTGRES_HOST}:${POSTGRES_PORT} (timeout ${PG_WAIT_TIMEOUT}s)..."
 until PGPASSWORD="${POSTGRES_PASSWORD}" pg_isready -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}"; do
+  if [ "$elapsed" -ge "$PG_WAIT_TIMEOUT" ]; then
+    echo "FATAL: PostgreSQL unreachable at ${POSTGRES_HOST}:${POSTGRES_PORT} after ${PG_WAIT_TIMEOUT}s. Exiting." >&2
+    exit 1
+  fi
   echo "PostgreSQL is unavailable - sleeping 2s"
   sleep 2
+  elapsed=$((elapsed + 2))
 done
 echo "PostgreSQL is ready!"
 
 # Apply versioned DB migrations (api/migrations/*.sql via api/migrate.py).
 # Forward-only, idempotent, tracked in schema_migrations — safe on every boot.
-# Falls back to legacy config/schema.sql only if the migrator is missing.
+# Fails fast on error (Issue #31).
 if python3 -c "import api.migrate" 2>/dev/null; then
   echo "Applying versioned database migrations..."
-  python3 -m api.migrate || echo "WARNING: migration runner failed — API will retry at startup." >&2
+  if ! python3 -m api.migrate; then
+    echo "FATAL: Database migrations failed. Refusing to boot against broken schema." >&2
+    exit 1
+  fi
 elif [ -f /app/config/schema.sql ]; then
   if [ "$(PGPASSWORD="${POSTGRES_PASSWORD}" psql -h "${POSTGRES_HOST}" -p "${POSTGRES_PORT}" -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tAc "SELECT to_regclass('public.radcheck')" 2>/dev/null)" != "radcheck" ]; then
     echo "Applying database schema from /app/config/schema.sql..."
@@ -67,8 +75,6 @@ RAD_DIR="/etc/freeradius/3.0"
 echo "Configuring FreeRADIUS at ${RAD_DIR}..."
 
 # Bootstrap EAP-TLS certificates if not generated (GitHub issue #16).
-# BOOTSTRAP_STRICT=1 aborts boot when bootstrap fails; default warns loudly and
-# continues so signer-only / pre-provisioned installs keep booting.
 BOOTSTRAP_STRICT="${BOOTSTRAP_STRICT:-0}"
 if [ ! -f "${RAD_DIR}/certs/ca.pem" ] || [ ! -f "${RAD_DIR}/certs/server.pem" ]; then
   echo "Bootstrapping FreeRADIUS EAP-TLS CA and Server certificates..."
@@ -88,7 +94,6 @@ fi
 mkdir -p "${RAD_DIR}/certs/clients"
 
 # --- EAP server identity (Public ACME / Let's Encrypt or Local CA) --------
-# Auto-detect primary domain from env (COOLIFY_FQDN, COOLIFY_URL, RADIUS_PUBLIC_HOST)
 if [ -z "${EAP_SERVER_CN:-}" ]; then
   if [ -n "${RADIUS_PUBLIC_HOST:-}" ]; then
     EAP_SERVER_CN="${RADIUS_PUBLIC_HOST}"
@@ -124,27 +129,36 @@ elif [ -f "${RAD_DIR}/certs/acme/server.pem" ] && [ -f "${RAD_DIR}/certs/acme/se
   chmod 644 "${RAD_DIR}/certs/server.pem"
   chmod 600 "${RAD_DIR}/certs/server.key"
   ACME_IMPORTED=1
-else
-  # Auto-discover acme.json from Traefik / standalone mounts
-  for ACME_CANDIDATE in "/traefik-certs/acme.json" "/etc/traefik/certs/acme.json" "/data/coolify/proxy/acme.json" "/traefik/acme.json" "/app/data/certs/acme.json"; do
-    if [ -f "${ACME_CANDIDATE}" ]; then
-      echo "Discovered ACME certificate storage at ${ACME_CANDIDATE} — extracting certificate for ${EAP_SERVER_CN}..."
-      if python3 /app/scripts/sync-acme-certs.py --acme-json "${ACME_CANDIDATE}" --target-dir "${RAD_DIR}/certs" --domain "${EAP_SERVER_CN}" 2>/dev/null; then
-        echo "ACME certificate extracted successfully from ${ACME_CANDIDATE}."
-        ACME_IMPORTED=1
-        break
-      fi
+elif [ -f "/traefik-certs/acme.json" ] || [ -f "/etc/traefik/certs/acme.json" ] || [ -f "/data/coolify/proxy/acme.json" ]; then
+  ACME_SRC=""
+  for candidate in "/traefik-certs/acme.json" "/etc/traefik/certs/acme.json" "/data/coolify/proxy/acme.json"; do
+    if [ -f "${candidate}" ]; then
+      ACME_SRC="${candidate}"
+      break
     fi
   done
+  echo "Found Traefik/Coolify ACME file at ${ACME_SRC} — extracting public certificate for ${EAP_SERVER_CN}..."
+  if python3 /app/scripts/sync-acme-certs.py --acme-json "${ACME_SRC}" --domain "${EAP_SERVER_CN}" --out-dir "${RAD_DIR}/certs"; then
+    echo "Public Let's Encrypt certificate extracted and loaded for ${EAP_SERVER_CN}."
+    ACME_IMPORTED=1
+  else
+    echo "WARNING: Could not extract domain ${EAP_SERVER_CN} from ${ACME_SRC}."
+  fi
 fi
 
 if [ "${ACME_IMPORTED}" = "1" ]; then
-  echo "Public ACME Server Certificate loaded successfully."
+  echo "FreeRADIUS is configured with Public Trusted Server Certificate for ${EAP_SERVER_CN}."
 else
-  # Re-issue server cert with proper SAN (DNS:wifi.rajlabs.in, DNS:backend.rajlabs.in)
-  if [ -f "${RAD_DIR}/certs/ca.pem" ] && [ -f "${RAD_DIR}/certs/ca.key" ] && [ -f "${RAD_DIR}/certs/server.pem" ] && [ -f "${RAD_DIR}/certs/server.key" ]; then
-    EAP_SAN="DNS:${EAP_SERVER_CN},DNS:backend.rajlabs.in,DNS:wifi.rajlabs.in"
-    EAP_SAN_MATCH="DNS:${EAP_SERVER_CN}"
+  # SAN validation for Local CA server cert
+  if [ -f "${RAD_DIR}/certs/server.pem" ] && [ -f "${RAD_DIR}/certs/ca.pem" ] && [ -f "${RAD_DIR}/certs/ca.key" ]; then
+    if printf '%s' "${EAP_SERVER_CN}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+      EAP_SAN="IP:${EAP_SERVER_CN}"
+      EAP_SAN_MATCH="${EAP_SERVER_CN}"
+    else
+      EAP_SAN="DNS:${EAP_SERVER_CN}"
+      EAP_SAN_MATCH="${EAP_SERVER_CN}"
+    fi
+
     if openssl x509 -in "${RAD_DIR}/certs/server.pem" -noout -ext subjectAltName 2>/dev/null | grep -q "${EAP_SAN_MATCH}"; then
       echo "EAP server certificate already carries SAN ${EAP_SAN_MATCH}."
     else
@@ -155,8 +169,8 @@ else
         cp -f server.pem "server.pem.bak.${TS}" 2>/dev/null || true
         cp -f server.key "server.key.bak.${TS}" 2>/dev/null || true
         KEYPASS_ARGS=""
-        if openssl rsa -in server.key -passin "pass:${CA_KEY_PASSWORD}" -noout >/dev/null 2>&1; then
-          KEYPASS_ARGS="-passin pass:${CA_KEY_PASSWORD}"
+        if openssl rsa -in server.key -passin env:CA_KEY_PASSWORD -noout >/dev/null 2>&1; then
+          KEYPASS_ARGS="-passin env:CA_KEY_PASSWORD"
         elif ! openssl rsa -in server.key -noout >/dev/null 2>&1; then
           echo "Existing server.key unreadable — generating a fresh key..."
           openssl genrsa -out server.key 2048
@@ -166,7 +180,7 @@ else
              -subj "/C=IN/ST=Delhi/O=RajLabs/CN=${EAP_SERVER_CN}" \
           && printf "subjectAltName=%s\n" "${EAP_SAN}" > /tmp/eap-server.ext \
           && openssl x509 -req -in /tmp/eap-server.csr \
-             -CA ca.pem -CAkey ca.key -passin "pass:${CA_KEY_PASSWORD}" \
+             -CA ca.pem -CAkey ca.key -passin env:CA_KEY_PASSWORD \
              -CAcreateserial -days 825 -sha256 -extfile /tmp/eap-server.ext \
              -out server.pem \
           && openssl verify -CAfile ca.pem server.pem >/dev/null \
@@ -188,9 +202,14 @@ if [ -f "${RAD_DIR}/certs/server.pem" ]; then
   openssl x509 -in "${RAD_DIR}/certs/server.pem" -noout -subject -issuer -ext subjectAltName 2>/dev/null || true
 fi
 
+# Guarded copy of configuration files
 cp -f /app/config/clients.conf "${RAD_DIR}/clients.conf"
 cp -f /app/config/mods-available/sql "${RAD_DIR}/mods-available/sql"
 cp -f /app/config/sites-available/default "${RAD_DIR}/sites-available/default"
+if [ -f /app/config/mods-available/eap ]; then
+  cp -f /app/config/mods-available/eap "${RAD_DIR}/mods-available/eap"
+  ln -sf "${RAD_DIR}/mods-available/eap" "${RAD_DIR}/mods-enabled/eap"
+fi
 if [ -f /app/config/dictionary ]; then
   cp -f /app/config/dictionary "${RAD_DIR}/dictionary"
 fi
@@ -238,10 +257,10 @@ fi
 RADIUSD_PID=$!
 
 echo "Starting FreeRADIUS API & Dashboard on port 8090..."
-# --proxy-headers: correct client IPs behind Traefik/Coolify (rate limits + audit).
-# UVICORN_WORKERS: raise for larger installs (default 1 keeps memory low).
+# --proxy-headers and --forwarded-allow-ips: real client IPs behind Traefik/Coolify.
+# UVICORN_WORKERS: raise for larger installs (default 1).
 python3 -m uvicorn app:app --host 0.0.0.0 --port 8090 --app-dir /app/api \
-  --proxy-headers --workers "${UVICORN_WORKERS:-1}" &
+  --proxy-headers --forwarded-allow-ips='*' --workers "${UVICORN_WORKERS:-1}" &
 UVICORN_PID=$!
 
 echo "RajLabs FreeRADIUS & Web Dashboard are up and running!"

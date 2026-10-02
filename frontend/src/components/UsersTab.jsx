@@ -1324,7 +1324,7 @@ export default function UsersTab({
                   placeholder="Enter current password"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono"
                 />
-                <p className="text-[11px] text-slate-500 mt-1">Stored passwords are hashes — enter the real secret to get a true verdict.</p>
+                <p className="text-[11px] text-slate-500 mt-1">Passwords are masked in the UI — enter the cleartext secret to test authentication.</p>
               </div>
               <button
                 type="submit"

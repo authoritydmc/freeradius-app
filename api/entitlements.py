@@ -1,6 +1,7 @@
 import os
 import json
 import secrets
+import datetime as _dt
 import datetime
 import subprocess
 from typing import Optional, Dict, Any, List, Tuple
@@ -504,19 +505,67 @@ def get_user_usage_stats(username: str) -> Dict[str, Any]:
     finally:
         conn.close()
 
-def disconnect_active_radius_session(username: str, nas_ip: str = "127.0.0.1", session_id: Optional[str] = None):
-    """Sends RFC 5176 Disconnect-Request packet via radclient to terminate expired user session (argv input mode)."""
+def get_nas_secret(nas_ip: str) -> str:
+    """Returns the secret for a specific NAS IP from the nas table or default RADIUS_SECRET."""
+    clean_ip = (nas_ip or "").strip()
+    try:
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT secret FROM nas WHERE nasname = %s OR nasname = %s LIMIT 1", (clean_ip, clean_ip + "/32"))
+                row = cur.fetchone()
+                if row and row.get("secret"):
+                    return row["secret"]
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    return RADIUS_SECRET
+
+def disconnect_active_radius_session(username: str, nas_ip: str = "127.0.0.1", session_id: Optional[str] = None) -> bool:
+    """Sends RFC 5176 Disconnect-Request packet via radclient to terminate expired user session."""
     lines = [f'User-Name = "{username}"']
     if session_id:
         lines.append(f'Acct-Session-Id = "{session_id}"')
     input_data = "\n".join(lines)
-    cmd = ["radclient", "-r", "1", f"{nas_ip}:3799", "disconnect", RADIUS_SECRET]
+    secret = get_nas_secret(nas_ip)
+    cmd = ["radclient", "-r", "1", f"{nas_ip}:3799", "disconnect", secret]
     try:
         res = subprocess.run(cmd, input=input_data, capture_output=True, text=True, timeout=3)
         return res.returncode == 0
     except Exception as e:
         logging.warning(f"Could not disconnect session for {username}: {e}")
         return False
+
+_ENGLISH_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12
+}
+
+def parse_freeradius_expiration(val: str) -> Optional[_dt.datetime]:
+    """Parses FreeRADIUS Expiration format (e.g. '01 Oct 2026 12:00:00') in a locale-independent manner."""
+    if not val or not isinstance(val, str):
+        return None
+    try:
+        parts = val.strip().split()
+        if len(parts) >= 4:
+            day = int(parts[0])
+            month_str = parts[1].lower()[:3]
+            month = _ENGLISH_MONTHS.get(month_str)
+            year = int(parts[2])
+            time_parts = parts[3].split(":")
+            hour = int(time_parts[0])
+            minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+            second = int(time_parts[2]) if len(time_parts) > 2 else 0
+            if month:
+                return _dt.datetime(year, month, day, hour, minute, second, tzinfo=_dt.timezone.utc)
+    except Exception:
+        pass
+    try:
+        return _dt.datetime.strptime(val.strip(), "%d %b %Y %H:%M:%S").replace(tzinfo=_dt.timezone.utc)
+    except Exception as e:
+        logging.warning("Unparseable FreeRADIUS Expiration '%s': %s", val, e)
+        return None
 
 def cleanup_expired_guest_accounts() -> int:
     """Auto-delete expired captive-portal guest accounts (`guest_NNNNNN`).
@@ -529,7 +578,6 @@ def cleanup_expired_guest_accounts() -> int:
     backed) are never touched here.
     Returns the number of accounts removed.
     """
-    import datetime as _dt
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -543,11 +591,12 @@ def cleanup_expired_guest_accounts() -> int:
 
             now = _dt.datetime.now(_dt.timezone.utc)
             expired = []
+            unparseable_count = 0
             for r in rows:
-                try:
-                    exp = _dt.datetime.strptime(r["expiration"], "%d %b %Y %H:%M:%S").replace(
-                        tzinfo=_dt.timezone.utc)
-                except (ValueError, TypeError, KeyError):
+                exp = parse_freeradius_expiration(r.get("expiration", ""))
+                if exp is None:
+                    unparseable_count += 1
+                    logging.warning("Guest account %s has unparseable Expiration '%s' - flagging for review", r.get("username"), r.get("expiration"))
                     continue
                 if exp <= now:
                     expired.append(r["username"])

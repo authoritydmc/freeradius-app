@@ -1,0 +1,63 @@
+# -*- text -*-
+##
+##  mods-available/eap -- RajLabs Hardened EAP Configuration
+##  Pins TLS 1.2+ minimum, modern cipher list, and pinned certificate paths.
+##
+
+eap {
+	default_eap_type = peap
+	timer_expire = 60
+	ignore_unknown_eap_types = no
+	cisco_accounting_username_bug = no
+	max_sessions = ${max_requests}
+
+	# Common TLS Configuration
+	tls-config tls-common {
+		private_key_file = ${certdir}/server.key
+		certificate_file = ${certdir}/server.pem
+		ca_file = ${certdir}/ca.pem
+		ca_path = ${cadir}
+		auto_chain = yes
+
+		# Security Hardening: TLS 1.2+ minimum
+		tls_min_version = "1.2"
+		tls_max_version = "1.3"
+
+		# Strong Ciphers (No export, null, SSLv2, SSLv3, or weak RC4)
+		cipher_list = "HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!aECDH:!EDH-DSS-DES-CBC3-SHA:!EDH-RSA-DES-CBC3-SHA:!KRB5-DES-CBC3-SHA"
+		cipher_server_preference = yes
+		ecdh_curve = "prime256v1"
+
+		# OCSP / CRL validation settings
+		check_crl = no
+		check_cert_issuer = yes
+		check_cert_cn = no
+	}
+
+	# EAP-TLS (Client certificate authentication)
+	tls {
+		tls = tls-common
+	}
+
+	# EAP-TTLS
+	ttls {
+		tls = tls-common
+		default_eap_type = mschapv2
+		copy_request_to_tunnel = yes
+		use_tunneled_reply = yes
+		virtual_server = "inner-tunnel"
+	}
+
+	# PEAP (Protected EAP with MSCHAPv2 inner tunnel)
+	peap {
+		tls = tls-common
+		default_eap_type = mschapv2
+		copy_request_to_tunnel = yes
+		use_tunneled_reply = yes
+		virtual_server = "inner-tunnel"
+	}
+
+	# EAP-MSCHAPv2
+	mschapv2 {
+	}
+}

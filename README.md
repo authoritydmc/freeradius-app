@@ -17,9 +17,10 @@ An enterprise-grade, containerized **FreeRADIUS v3.2** server powered by **Postg
 - **🎨 Glassmorphism UI**:
   - **Admin Console (`/radius/`)**: Multi-method authentication supporting **Admin Credentials** and **Digital X.509 Certificate Login** (zero-password PKI).
   - **User Captive Portal (`/radius/portal`)**: Self-service portal supporting Web Login, 1-Click Device Certificate Auto-Enrollment, and Network Diagnostics.
-- **🔑 User Password Management**: 1-click secure password regenerate (16-char, `secrets`-based), reset with strength meter + show/hide/copy, credential share card (copy, `.txt` download, QR, WhatsApp/Email), search + group filter, enforced policy (min 12 chars: upper + lower + digit + symbol).
-- **📋 Audit Trail & Structured Logging**: Every create / update / password-reset / delete is recorded (`GET /radius/api/audit`, visible in Admin Console → Logs) and logged server-side with secret redaction (`LOG_LEVEL` tunable).
-- **🚀 Coolify & Reverse Proxy Ready**: Native Docker Compose with volume persistence for CA keys and auto-integration with Traefik/Nginx reverse proxies.
+- **🔑 User Password Management**: 1-click secure password generation (14-16 chars), reset with strength evaluation, credential share card (copy, `.txt` download, setup QR, WhatsApp, Telegram, Email), search + group filter, flexible policy (min 8 chars, mobile numbers / passphrases supported).
+- **📋 Audit Trail & Structured Logging**: Every create / update / password-reset / delete is recorded in `admin_audit_log` and `audit_events`, visible in Admin Console → Logs with secret redaction and configurable table retention (`AUDIT_RETENTION_DAYS`, `RADPOSTAUTH_RETENTION_DAYS`, etc.).
+- **🔐 Reversible Cleartext Storage by RADIUS Necessity**: Stored in standard `Cleartext-Password` format required for 802.1X PEAP/MSCHAPv2 inner-tunnel authentication, and masked across all web UI views.
+- **🚀 Coolify, Standalone Compose & Reverse Proxy Ready**: Native Docker Compose with automated Let's Encrypt / ACME public certificate discovery for zero-warning client connections on Android, iOS, Windows, and macOS.
 
 ---
 
@@ -254,7 +255,12 @@ For detailed cloud ingress rules (**Oracle Cloud OCI**, **AWS EC2**, **GCP**, **
 - **Rate limits** (per IP, sliding 60s window, `429 + Retry-After`): login `10/min`, portal enroll `5/min`, test-auth `20/min`, cert issue `10/min`. Tune via `RL_LOGIN_PER_MIN`, `RL_ENROLL_PER_MIN`, `RL_TEST_AUTH_PER_MIN`, `RL_CERT_ISSUE_PER_MIN` (0 = off).
 - **CORS**: same-origin only by default. Set `CORS_ORIGINS=https://admin.example.com,https://portal.example.com` to allow dashboard origins (wildcard + credentials is never used).
 - **Cookies**: `Secure` by default. For plain-HTTP LAN testing set `COOKIE_SECURE=0` (trusted LAN only) — otherwise the browser silently drops the session cookie and only the Bearer-token path works.
-- **Reverse proxy**: run with `--proxy-headers` already enabled; add hardening headers from 👉 **[Reverse-Proxy Headers Guide](docs/REVERSE_PROXY_HEADERS.md)**.
+### 📚 Additional Guides & Runbooks
+- 🔑 **[Secrets & RADIUS Key Rotation Runbook](docs/ROTATION_RUNBOOK.md)**
+- 🛡️ **[Reverse Proxy Security Headers Guide](docs/PROXY_SECURITY_HEADERS.md)**
+- 🏢 **[High Availability & Backup / Restore Guide](docs/BACKUP_AND_HA.md)**
+- 📡 **[Wi-Fi Testing & AP Simulation Guide](docs/WIFI_TESTING_AND_AP_SIMULATION_GUIDE.md)**
+- 🔒 **[Complete Port & Cloud Security Guide](docs/PORT_SECURITY_GUIDE.md)**
 
 ### 💾 Backup & restore
 

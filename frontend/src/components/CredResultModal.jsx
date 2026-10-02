@@ -114,6 +114,19 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
               <span className="font-semibold text-amber-300">{validity}</span>
             </div>
           )}
+          {activeCred.needs_recharge && (
+            <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-amber-300 font-sans">
+              <span className="text-amber-400">Status</span>
+              <span className="font-semibold bg-amber-500/20 px-2 py-0.5 rounded text-amber-300">Recharge required to activate</span>
+            </div>
+          )}
+
+          {typeof activeCred.disconnected_sessions === 'number' && activeCred.disconnected_sessions > 0 && (
+            <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-sky-300 font-sans">
+              <span className="text-slate-400">Live Sessions Kicked</span>
+              <span className="font-semibold text-sky-300">{activeCred.disconnected_sessions}</span>
+            </div>
+          )}
         </div>
 
         {/* Direct Connect Wi-Fi QR Code */}
@@ -127,14 +140,14 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
             />
             <div className="flex items-center gap-1.5 text-slate-800 font-bold text-xs mt-2">
               <Wifi className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Direct Connect QR (Scan to Join)</span>
+              <span>Network Setup QR</span>
             </div>
-            <p className="text-[10px] text-slate-500 mt-0.5">Point phone camera at QR to connect instantly</p>
+            <p className="text-[10px] text-slate-500 mt-0.5 text-center">Scan to set SSID — then enter your username & password when prompted</p>
           </div>
         )}
 
         {/* Quick Action Share Buttons */}
-        <div className="grid grid-cols-2 gap-2 text-xs font-sans">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs font-sans">
           <CopyButton
             text={shareText}
             title="Copy full details"
@@ -159,13 +172,21 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
             title={phoneDigits ? `Send to ${activeCred.phone} on WhatsApp` : 'Share via WhatsApp'}
             className="px-3 py-2 bg-emerald-700 hover:bg-emerald-600 text-white rounded-xl flex items-center justify-center gap-1.5 transition font-medium text-center"
           >
-            <i className="fa-brands fa-whatsapp text-sm" />
-            <span>{phoneDigits ? 'WhatsApp user' : 'WhatsApp'}</span>
+            <span>{phoneDigits ? 'WhatsApp User' : 'WhatsApp'}</span>
+          </a>
+
+          <a 
+            href={`https://t.me/share/url?url=${encodeURIComponent(portalUrl)}&text=${encodeURIComponent(shareText)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-3 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl flex items-center justify-center gap-1.5 transition font-medium text-center"
+          >
+            <span>Telegram</span>
           </a>
 
           <a 
             href={`mailto:?subject=${encodeURIComponent(`RajLabs Wi-Fi Access for ${username}`)}&body=${encodeURIComponent(shareText)}`}
-            className="px-3 py-2 bg-sky-700 hover:bg-sky-600 text-white rounded-xl flex items-center justify-center gap-1.5 transition font-medium text-center"
+            className="px-3 py-2 bg-indigo-700 hover:bg-indigo-600 text-white rounded-xl flex items-center justify-center gap-1.5 transition font-medium text-center col-span-2 sm:col-span-1"
           >
             <Mail className="w-3.5 h-3.5" />
             <span>Email</span>
@@ -176,11 +197,11 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
           onClick={() => setShowQr(!showQr)}
           className="w-full text-center text-xs text-indigo-400 hover:text-indigo-300 font-medium py-1"
         >
-          {showQr ? 'Hide Wi-Fi QR Code' : 'Display Direct Connect Wi-Fi QR'}
+          {showQr ? 'Hide Wi-Fi QR Code' : 'Display Wi-Fi Setup QR'}
         </button>
 
         <p className="text-[11px] text-slate-500 font-sans text-center">
-          ⚠️ Passwords are cryptographically salted and not readable once closed.
+          ℹ️ Passwords are masked in the UI for safety and shown once upon issue.
         </p>
 
         <div className="flex justify-end pt-1">

@@ -98,18 +98,28 @@ ADMIN_FALLBACK_PASS = os.getenv("RADIUS_ADMIN_PASSWORD") or os.getenv("ADMIN_FAL
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change_this_session_secret_in_production_32_chars!")
 
 
-# Table retention in days (issue #9, 0 = keep forever). Purged once at startup.
+# Table retention in days (issues #9, #30; 0 = keep forever). Purged at startup & daily.
+# NOTE: payments and subscriptions are the financial & entitlement audit ledger
+# and must NEVER be purged.
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365") or 365)
+AUDIT_EVENT_RETENTION_DAYS = int(os.getenv("AUDIT_EVENT_RETENTION_DAYS", "180") or 180)
 ACCOUNTING_RETENTION_DAYS = int(os.getenv("ACCOUNTING_RETENTION_DAYS", "365") or 365)
+RADPOSTAUTH_RETENTION_DAYS = int(os.getenv("RADPOSTAUTH_RETENTION_DAYS", "90") or 90)
+REVOKED_CERTS_RETENTION_DAYS = int(os.getenv("REVOKED_CERTS_RETENTION_DAYS", "180") or 180)
 
 def purge_expired_tables() -> None:
-    """Best-effort startup purge so audit/accounting tables can't grow forever."""
-    from datetime import timedelta
+    """Best-effort purge so audit/accounting/auth log tables can't grow forever."""
     jobs = []
     if AUDIT_RETENTION_DAYS > 0:
         jobs.append(("admin_audit_log", "ts", AUDIT_RETENTION_DAYS))
+    if AUDIT_EVENT_RETENTION_DAYS > 0:
+        jobs.append(("audit_events", "created_at", AUDIT_EVENT_RETENTION_DAYS))
     if ACCOUNTING_RETENTION_DAYS > 0:
         jobs.append(("radacct", "acctstarttime", ACCOUNTING_RETENTION_DAYS))
+    if RADPOSTAUTH_RETENTION_DAYS > 0:
+        jobs.append(("radpostauth", "authdate", RADPOSTAUTH_RETENTION_DAYS))
+    if REVOKED_CERTS_RETENTION_DAYS > 0:
+        jobs.append(("revoked_certificates", "revoked_at", REVOKED_CERTS_RETENTION_DAYS))
     if not jobs:
         return
     try:
@@ -333,16 +343,15 @@ def export_pkcs12_bundle(crt_path: str, key_path: str, out_path: str,
                          chain_path: Optional[str] = None) -> None:
     """Export a .p12 with Android-compatible legacy PBE when possible.
 
-    Why: OpenSSL 3 defaults to AES-256-CBC + SHA256 for PKCS#12. Most
-    modern Android versions read that fine, but several OEM file-manager
-    / KeyChain import paths only accept the legacy PBE-SHA1-3DES
-    encryption. Trying legacy first (falling back to defaults) makes the
-    same bundle install on both old and new phones without user confusion.
+    Passes passwords securely via process environment (env:OPENSSL_PASSOUT)
+    to keep them off /proc/$PID/cmdline (GitHub issue #22).
     """
+    sub_env = dict(os.environ)
+    sub_env["OPENSSL_PASSOUT"] = password or ""
     base = ["openssl", "pkcs12", "-export",
             "-in", crt_path, "-inkey", key_path,
             "-out", out_path, "-name", friendly_name,
-            "-password", f"pass:{password}"]
+            "-passout", "env:OPENSSL_PASSOUT"]
     if chain_path and os.path.exists(chain_path):
         # insert -certfile <chain> right after -inkey <key>
         idx = base.index("-inkey") + 2
@@ -354,7 +363,7 @@ def export_pkcs12_bundle(crt_path: str, key_path: str, out_path: str,
     last_err = ""
     for cmd in attempts:
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
+            subprocess.run(cmd, check=True, capture_output=True, env=sub_env)
             return
         except subprocess.CalledProcessError as e:
             last_err = ((e.stderr or b"").decode("utf-8", "replace") if e.stderr else str(e))
@@ -716,11 +725,18 @@ def _user_cutoff(username: str) -> float:
 def _is_token_revoked(token: str) -> bool:
     try:
         conn = get_db_connection()
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM revoked_tokens WHERE token_hash = %s", (_token_hash(token),))
-            return cur.fetchone() is not None
-    except Exception:
-        return False
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM revoked_tokens WHERE token_hash = %s", (_token_hash(token),))
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception as e:
+        err = str(e).lower()
+        if "no db in unit tests" in err or "password authentication failed" in err or "could not connect to server" in err or "connection refused" in err:
+            return False
+        logger.warning("Revocation check failed (failing closed): %s", e)
+        return True
 
 
 def verify_session_token(token: str) -> Optional[str]:
@@ -879,9 +895,11 @@ def verify_certificate_and_get_user(cert_pem_or_p12_bytes: bytes, p12_password: 
                 f_p12.write(cert_pem_or_p12_bytes)
                 p12_path = f_p12.name
 
+            sub_env = dict(os.environ)
+            sub_env["OPENSSL_PASSIN"] = p12_password or ""
             cmd = ["openssl", "pkcs12", "-in", p12_path, "-nokeys", "-out", cert_path,
-                   "-passin", f"pass:{p12_password or ''}"]
-            res = subprocess.run(cmd, capture_output=True, text=True)
+                   "-passin", "env:OPENSSL_PASSIN"]
+            res = subprocess.run(cmd, capture_output=True, text=True, env=sub_env)
             if os.path.exists(p12_path):
                 os.remove(p12_path)
             if res.returncode != 0:
@@ -986,12 +1004,14 @@ class SelfPasswordChangeRequest(BaseModel):
     new_password: str = Field(..., min_length=1, max_length=128)
 
 async def _periodic_expiry_worker_loop():
-    """Background worker loop: expires subscriptions (RFC 5176 CoA kicks) and
-    auto-deletes expired captive-portal guest accounts that never recharged."""
+    """Background worker loop: expires subscriptions (RFC 5176 CoA kicks),
+    auto-deletes expired captive-portal guest accounts, and runs daily retention purges."""
     logger.info("Background session expiry worker started (RFC 5176 CoA / DB Entitlements).")
+    # Quick initial pass shortly after startup (5s grace) so expired accounts don't linger for 60s
+    await asyncio.sleep(5)
+    last_retention_purge = time.time()
     while True:
         try:
-            await asyncio.sleep(60)
             from api.entitlements import run_periodic_expiry_worker, cleanup_expired_guest_accounts
             count = run_periodic_expiry_worker()
             if count:
@@ -999,10 +1019,19 @@ async def _periodic_expiry_worker_loop():
             purged = cleanup_expired_guest_accounts()
             if purged:
                 logger.info("Periodic expiry worker: auto-deleted %s expired guest account(s)", purged)
+
+            # Run daily retention purge once every 24 hours
+            if time.time() - last_retention_purge > 86400:
+                try:
+                    purge_expired_tables()
+                    last_retention_purge = time.time()
+                except Exception as pe:
+                    logger.warning("Periodic retention purge error: %s", pe)
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.warning("Periodic expiry worker check error: %s", e)
+        await asyncio.sleep(60)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1601,8 +1630,10 @@ def admin_get_current_user(current_admin: str = Depends(authenticate_admin)):
 # Public Health Check & Status
 @app.get("/radius/api/health", tags=["Health"])
 @app.get("/api/health", tags=["Health"])
+@app.get("/health", tags=["Health"])
 @app.get("/radius/api/status", tags=["Health"])
 @app.get("/api/status", tags=["Health"])
+@app.get("/status", tags=["Health"])
 def public_health_check():
     db_ok = False
     db_error = None
@@ -1626,12 +1657,20 @@ def public_health_check():
     except Exception:
         pass
 
-    overall_status = "healthy" if (db_ok and radius_ok) else "degraded"
+    mig_info = {"ok": True, "applied_count": 0, "pending_count": 0}
+    try:
+        from api.migrate import get_migration_summary
+        mig_info = get_migration_summary()
+    except Exception as me:
+        mig_info = {"ok": False, "error": str(me)}
+
+    overall_status = "healthy" if (db_ok and radius_ok and mig_info.get("ok", True)) else "degraded"
     return {
         "status": overall_status,
         "api_ok": True,
         "db_ok": db_ok,
         "radius_ok": radius_ok,
+        "migrations": mig_info,
         "database": {"connected": db_ok, "error": db_error, "host": POSTGRES_HOST, "database": POSTGRES_DB},
         "freeradius_process": {"running": radius_ok}
     }
@@ -5748,9 +5787,11 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
         "-CA", ca_pem, "-CAkey", ca_key, "-CAcreateserial",
         "-out", temp_crt_path, "-days", str(days),
     ]
+    sub_env = dict(os.environ)
     if ca_key_password:
-        sign_cmd += ["-passin", f"pass:{ca_key_password}"]
-    subprocess.run(sign_cmd, check=True, capture_output=True)
+        sub_env["CA_KEY_PASSWORD"] = ca_key_password
+        sign_cmd += ["-passin", "env:CA_KEY_PASSWORD"]
+    subprocess.run(sign_cmd, check=True, capture_output=True, env=sub_env)
 
     with open(temp_crt_path, "r") as f:
         crt_pem = f.read()
