@@ -2169,13 +2169,14 @@ def get_public_config(request: Request):
     except Exception:
         pass
 
+    signer_url, _ = get_cert_signer_config()
     return {
         "radius_host": host,
         "radius_ports": {"auth": 1812, "acct": 1813, "coa": 3799},
         "portal_path": "/radius/portal",
         "wifi_ssid": wifi_ssid,
         "wifi_auth_type": wifi_auth_type,
-        "signer_configured": bool(CERT_SIGNER_API_URL),
+        "signer_configured": bool(signer_url),
         "admin_contact": {
             "phone": phone,
             "name": name

@@ -29,6 +29,8 @@ export default function App() {
   const [toast, setToast] = useState(null);
   const [health, setHealth] = useState({ status: 'healthy' });
   const [stats, setStats] = useState(null);
+  const [signerStatus, setSignerStatus] = useState(null);
+  const [publicConfig, setPublicConfig] = useState(null);
 
   const showToast = (message, type = 'info') => {
     setToast({ message, type, id: Date.now() });
@@ -39,15 +41,23 @@ export default function App() {
 
   const loadHealthAndStats = async () => {
     try {
-      const [hRes, sRes] = await Promise.allSettled([
+      const [hRes, sRes, sigRes, pRes] = await Promise.allSettled([
         fetchJson('health'),
-        fetchJson('stats')
+        fetchJson('stats'),
+        fetchJson('signer/status'),
+        fetchJson('public-config')
       ]);
       if (hRes.status === 'fulfilled' && hRes.value) {
         setHealth(hRes.value);
       }
       if (sRes.status === 'fulfilled' && sRes.value) {
         setStats(sRes.value);
+      }
+      if (sigRes.status === 'fulfilled' && sigRes.value) {
+        setSignerStatus(sigRes.value);
+      }
+      if (pRes.status === 'fulfilled' && pRes.value) {
+        setPublicConfig(pRes.value);
       }
     } catch (e) {
       // Ignore background poll errors
@@ -181,6 +191,8 @@ export default function App() {
           <StatusTab 
             health={health} 
             stats={stats} 
+            signerStatus={signerStatus}
+            publicConfig={publicConfig}
             onNotify={showToast} 
             onJumpTab={setActiveTab} 
           />
@@ -195,7 +207,12 @@ export default function App() {
         {activeTab === 'nas' && <NasTab onNotify={showToast} />}
         {activeTab === 'sessions' && <SessionsTab onNotify={showToast} />}
         {activeTab === 'devices' && <DevicesTab onNotify={showToast} />}
-        {activeTab === 'certs' && <CertsTab onNotify={showToast} />}
+        {activeTab === 'certs' && (
+          <CertsTab 
+            signerStatus={signerStatus}
+            onNotify={showToast} 
+          />
+        )}
         {activeTab === 'tester' && <TesterTab onNotify={showToast} />}
         {activeTab === 'logs' && <LogsTab onNotify={showToast} />}
         {activeTab === 'settings' && <SettingsTab onNotify={showToast} />}

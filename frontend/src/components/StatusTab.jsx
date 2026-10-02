@@ -58,12 +58,10 @@ export default function StatusTab({
   };
 
   useEffect(() => {
-    if (!propHealth) {
-      loadData();
-      const interval = setInterval(loadData, 15000);
-      return () => clearInterval(interval);
-    }
-  }, [propHealth]);
+    loadData();
+    const interval = setInterval(loadData, 15000);
+    return () => clearInterval(interval);
+  }, []);
 
   const health = propHealth || internalHealth;
   const stats = propStats || internalStats;
@@ -77,6 +75,8 @@ export default function StatusTab({
   const isDbOk = health ? (health.db_ok !== undefined ? Boolean(health.db_ok) : Boolean(health.database?.connected)) : false;
   const isRadiusOk = health ? (health.radius_ok !== undefined ? Boolean(health.radius_ok) : Boolean(health.freeradius_process?.running)) : false;
   const isHealthy = isApiOk && isDbOk;
+
+  const isSignerOnline = signerStatus && (signerStatus.reachable && (signerStatus.key_valid || signerStatus.mode === 'remote' || signerStatus.mode === 'central'));
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -153,17 +153,45 @@ export default function StatusTab({
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl relative overflow-hidden">
             <div className="flex items-center justify-between">
               <span className="text-sm font-semibold text-slate-300">Rajlabs-CA Signer</span>
-              <span className={`w-2.5 h-2.5 rounded-full ${signerStatus?.reachable && signerStatus?.key_valid ? 'bg-emerald-400' : signerStatus?.reachable ? 'bg-amber-400' : 'bg-rose-400'}`} />
+              <span className={`w-2.5 h-2.5 rounded-full ${
+                !signerStatus 
+                  ? 'bg-slate-500 animate-pulse' 
+                  : isSignerOnline 
+                    ? 'bg-emerald-400' 
+                    : signerStatus.reachable 
+                      ? 'bg-amber-400' 
+                      : 'bg-rose-400'
+              }`} />
             </div>
-            <div className={`text-xl font-black mt-2 ${signerStatus?.reachable && signerStatus?.key_valid ? 'text-emerald-400' : signerStatus?.reachable ? 'text-amber-400' : 'text-rose-400'}`}>
-              {signerStatus?.configured && (signerStatus?.mode === 'remote' || signerStatus?.mode === 'central')
-                ? (signerStatus?.key_valid ? 'Connected (API)' : 'Token Missing')
-                : (signerStatus?.mode === 'local' ? 'Local CA Ready' : 'Local CA Fallback')}
+            <div className={`text-xl font-black mt-2 ${
+              !signerStatus 
+                ? 'text-slate-400' 
+                : isSignerOnline 
+                  ? 'text-emerald-400' 
+                  : signerStatus.reachable 
+                    ? 'text-amber-400' 
+                    : 'text-rose-400'
+            }`}>
+              {!signerStatus ? (
+                'Checking...'
+              ) : isSignerOnline ? (
+                'Connected (API)'
+              ) : signerStatus.configured && !signerStatus.key_valid && signerStatus.reachable ? (
+                'Token Missing'
+              ) : signerStatus.mode === 'local' ? (
+                'Local CA Ready'
+              ) : (
+                'Local CA Fallback'
+              )}
             </div>
             <div className="text-[11px] text-slate-500 mt-1 font-mono truncate">
-              {signerStatus?.configured && (signerStatus?.mode === 'remote' || signerStatus?.mode === 'central')
-                ? `Central Rajlabs PKI (${signerStatus?.latency_ms ? `${signerStatus.latency_ms}ms` : 'Active'})`
-                : 'Local FreeRADIUS Root CA'}
+              {!signerStatus ? (
+                'Probing PKI endpoint...'
+              ) : isSignerOnline ? (
+                `Central Rajlabs PKI (${signerStatus.latency_ms ? `${signerStatus.latency_ms}ms` : 'Active'})`
+              ) : (
+                'Local FreeRADIUS Root CA'
+              )}
             </div>
           </div>
 
