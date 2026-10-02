@@ -128,7 +128,7 @@ server default {
             }
             elsif (!&reply:Reply-Message) {
                 update reply {
-                    Reply-Message := "Rejected: authentication failed (wrong password, unknown user, expired or no active subscription). Test your login and recharge at https://wifi.rajlabs.in"
+                    Reply-Message := "Rejected: authentication failed (invalid password, unknown user, expired or no active subscription). Test your login and recharge at https://wifi.rajlabs.in"
                 }
             }
             -sql

@@ -240,6 +240,7 @@ def sync_user_radius_attributes(username: str, conn=None):
     """
     Synchronizes radcheck, radreply, and radusergroup for FreeRADIUS
     based on the central Access Decision Engine result.
+    Returns the decision dict (or None when the central user is unknown).
     """
     should_close = False
     if conn is None:
@@ -249,7 +250,7 @@ def sync_user_radius_attributes(username: str, conn=None):
     try:
         user_ctx = get_user_full_context(username, conn=conn)
         if not user_ctx:
-            return
+            return None
 
         decision = get_access_decision(user_ctx)
         
@@ -302,6 +303,7 @@ def sync_user_radius_attributes(username: str, conn=None):
                 """, (username, decision["reason"]))
 
             conn.commit()
+            return decision
     finally:
         if should_close:
             conn.close()
