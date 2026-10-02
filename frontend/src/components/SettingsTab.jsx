@@ -3,7 +3,7 @@ import { QRCodeSVG } from 'qrcode.react';
 import { 
   Settings, Save, Key, Shield, Phone, CreditCard, RefreshCw, 
   CheckCircle2, AlertCircle, ExternalLink, Globe, Wifi, QrCode,
-  Printer, Copy, Check
+  Printer, Copy, Check, Plus, Trash2, Edit3, Tag, Clock, DollarSign
 } from 'lucide-react';
 import { fetchJson } from '../utils/api';
 
@@ -13,6 +13,20 @@ export default function SettingsTab({ onNotify }) {
   const [testingSigner, setTestingSigner] = useState(false);
   const [signerStatus, setSignerStatus] = useState(null);
   const [copiedQrString, setCopiedQrString] = useState(false);
+
+  // Plans state
+  const [plans, setPlans] = useState([]);
+  const [loadingPlans, setLoadingPlans] = useState(false);
+  const [showPlanModal, setShowPlanModal] = useState(false);
+  const [editingPlan, setEditingPlan] = useState(null);
+  const [planForm, setPlanForm] = useState({
+    name: '',
+    price: 20,
+    currency: 'INR',
+    validity_days: 1,
+    max_session_seconds: 86400,
+    description: ''
+  });
 
   const [form, setForm] = useState({
     admin_contact_name: '',
@@ -46,10 +60,23 @@ export default function SettingsTab({ onNotify }) {
         });
       }
       checkSignerStatus(false);
+      loadPlans();
     } catch (err) {
       onNotify?.(err.message || 'Failed to load system settings', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadPlans = async () => {
+    try {
+      setLoadingPlans(true);
+      const data = await fetchJson('plans');
+      setPlans(data || []);
+    } catch (err) {
+      console.error('Failed to load plans:', err);
+    } finally {
+      setLoadingPlans(false);
     }
   };
 
@@ -96,6 +123,57 @@ export default function SettingsTab({ onNotify }) {
     }
   };
 
+  const handleSavePlan = async (e) => {
+    e.preventDefault();
+    try {
+      await fetchJson('plans', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...planForm,
+          id: editingPlan ? editingPlan.id : undefined
+        })
+      });
+      onNotify?.(`Plan '${planForm.name}' saved successfully!`, 'success');
+      setShowPlanModal(false);
+      setEditingPlan(null);
+      setPlanForm({
+        name: '',
+        price: 20,
+        currency: form.currency || 'INR',
+        validity_days: 1,
+        max_session_seconds: 86400,
+        description: ''
+      });
+      loadPlans();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to save plan', 'error');
+    }
+  };
+
+  const handleDeletePlan = async (plan) => {
+    if (!window.confirm(`Are you sure you want to delete plan '${plan.name}'?`)) return;
+    try {
+      await fetchJson(`plans/${plan.id}`, { method: 'DELETE' });
+      onNotify?.(`Plan '${plan.name}' deleted`, 'success');
+      loadPlans();
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to delete plan', 'error');
+    }
+  };
+
+  const openEditPlan = (plan) => {
+    setEditingPlan(plan);
+    setPlanForm({
+      name: plan.name,
+      price: plan.price,
+      currency: plan.currency || 'INR',
+      validity_days: plan.validity_days,
+      max_session_seconds: plan.max_session_seconds || 86400,
+      description: plan.description || ''
+    });
+    setShowPlanModal(true);
+  };
+
   const qrWifiString = `WIFI:T:WPA;S:${form.wifi_ssid || 'RajLabs-Enterprise'};;`;
 
   const handleCopyQr = () => {
@@ -114,8 +192,8 @@ export default function SettingsTab({ onNotify }) {
             <Settings className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-white">System Settings & Gateway Integrations</h2>
-            <p className="text-xs text-slate-400">Configure Wi-Fi SSID, Direct Connect QR, central PKI Signer, and UPI payments</p>
+            <h2 className="text-lg font-bold text-white">System Settings & Plans Pricing</h2>
+            <p className="text-xs text-slate-400">Configure Wi-Fi plans, recharge rates, SSID, central PKI Signer, and UPI payments</p>
           </div>
         </div>
 
@@ -126,8 +204,99 @@ export default function SettingsTab({ onNotify }) {
           className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white rounded-xl text-sm font-semibold shadow-md shadow-amber-500/20 transition disabled:opacity-50 cursor-pointer"
         >
           {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          <span>Save Changes</span>
+          <span>Save System Settings</span>
         </button>
+      </div>
+
+      {/* Wi-Fi Plans & Pricing Section */}
+      <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
+              <CreditCard className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-white text-base">Wi-Fi Subscription Plans & Recharge Pricing</h3>
+              <p className="text-xs text-slate-400">Manage paid packages, validity days, and voucher recharge rates</p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setEditingPlan(null);
+              setPlanForm({
+                name: '',
+                price: 20,
+                currency: form.currency || 'INR',
+                validity_days: 1,
+                max_session_seconds: 86400,
+                description: ''
+              });
+              setShowPlanModal(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-500/20 transition"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Add New Plan</span>
+          </button>
+        </div>
+
+        {loadingPlans ? (
+          <div className="p-8 text-center text-xs text-slate-400">Loading plans...</div>
+        ) : plans.length === 0 ? (
+          <div className="p-8 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl">
+            No plans configured. Click "Add New Plan" to create your first Wi-Fi recharge package.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+            {plans.map(plan => (
+              <div 
+                key={plan.id}
+                className="bg-slate-950 p-4 rounded-2xl border border-slate-800 hover:border-slate-700 transition flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <h4 className="font-bold text-white text-sm">{plan.name}</h4>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => openEditPlan(plan)}
+                        className="p-1 text-slate-400 hover:text-indigo-400 rounded transition"
+                        title="Edit Plan"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeletePlan(plan)}
+                        className="p-1 text-slate-400 hover:text-rose-400 rounded transition"
+                        title="Delete Plan"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="text-2xl font-black text-emerald-400 font-mono mb-2">
+                    {plan.currency === 'INR' ? '₹' : plan.currency} {plan.price}
+                  </div>
+
+                  <p className="text-xs text-slate-400 mb-3">{plan.description || 'Broadband Wi-Fi access pass'}</p>
+
+                  <div className="space-y-1.5 text-[11px] font-mono border-t border-slate-800/80 pt-2.5 text-slate-300">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Validity:</span>
+                      <span className="font-bold text-indigo-300">{plan.validity_days} Days</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Max Session:</span>
+                      <span>{Math.round(plan.max_session_seconds / 3600)} Hours</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <form onSubmit={handleSave} className="space-y-6">
@@ -367,6 +536,96 @@ export default function SettingsTab({ onNotify }) {
           </div>
         </div>
       </form>
+
+      {/* Add / Edit Plan Modal */}
+      {showPlanModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-slate-750 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/50">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-5 h-5 text-emerald-400" />
+                <h3 className="font-bold text-white text-base">
+                  {editingPlan ? 'Edit Wi-Fi Plan' : 'Create New Wi-Fi Plan'}
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowPlanModal(false)}
+                className="text-slate-400 hover:text-white text-lg"
+              >
+                &times;
+              </button>
+            </div>
+
+            <form onSubmit={handleSavePlan} className="p-6 space-y-4">
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Plan Name *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. 1 Day Unlimited Pass"
+                  value={planForm.name}
+                  onChange={e => setPlanForm({ ...planForm, name: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-emerald-500 font-medium"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Price ({form.currency || 'INR'}) *</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    required
+                    value={planForm.price}
+                    onChange={e => setPlanForm({ ...planForm, price: parseFloat(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-emerald-500 font-mono font-bold"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Validity (Days) *</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={planForm.validity_days}
+                    onChange={e => setPlanForm({ ...planForm, validity_days: parseInt(e.target.value) || 1 })}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Description</label>
+                <input
+                  type="text"
+                  placeholder="Plan features, speed, device limit"
+                  value={planForm.description}
+                  onChange={e => setPlanForm({ ...planForm, description: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowPlanModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-500/20"
+                >
+                  {editingPlan ? 'Update Plan' : 'Create Plan'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

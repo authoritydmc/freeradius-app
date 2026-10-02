@@ -1112,8 +1112,19 @@ class GroupCreateRequest(BaseModel):
     vlan_id: Optional[int] = None # 802.1Q VLAN Tag (e.g. 10, 20, 30)
     framed_pool: Optional[str] = None # NAS DHCP Pool Name
     is_admin: Optional[bool] = False # Administrative-User role
+    recharge_required: Optional[bool] = True # Whether users in this group need an active paid plan
     extra_reply_attributes: Optional[Dict[str, str]] = None
     extra_check_attributes: Optional[Dict[str, str]] = None
+
+class PlanCreateRequest(BaseModel):
+    id: Optional[int] = None
+    name: str = Field(..., min_length=1, max_length=64)
+    price: float = Field(default=0.0, ge=0)
+    currency: Optional[str] = "INR"
+    validity_days: int = Field(default=1, ge=1)
+    max_session_seconds: Optional[int] = 86400
+    description: Optional[str] = None
+
 
 class ApplyPresetRequest(BaseModel):
     preset_id: str
@@ -2153,6 +2164,119 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
     finally:
         conn.close()
 
+# ============================================================================
+# Wi-Fi Plans & Pricing Management
+# ============================================================================
+def ensure_plans_table():
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS plans (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(64) NOT NULL,
+                    price NUMERIC(10, 2) NOT NULL DEFAULT 0.00,
+                    currency VARCHAR(8) NOT NULL DEFAULT 'INR',
+                    validity_days INT NOT NULL DEFAULT 1,
+                    validity_seconds BIGINT NOT NULL DEFAULT 86400,
+                    max_session_seconds INT NOT NULL DEFAULT 86400,
+                    description TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            # Check if empty, seed default plans
+            cur.execute("SELECT COUNT(*) as c FROM plans")
+            row = cur.fetchone()
+            if row and row["c"] == 0:
+                cur.execute("""
+                    INSERT INTO plans (name, price, currency, validity_days, validity_seconds, max_session_seconds, description)
+                    VALUES 
+                    ('1 Day Unlimited Pass', 20.00, 'INR', 1, 86400, 86400, 'High-speed 24-hour unlimited Wi-Fi voucher pass'),
+                    ('7 Days Weekly Pro', 99.00, 'INR', 7, 604800, 86400, '7 Days continuous broadband Wi-Fi access with QoS'),
+                    ('30 Days Enterprise Monthly', 299.00, 'INR', 30, 2592000, 86400, 'Full month unlimited multi-device Wi-Fi access')
+                """)
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("Could not ensure plans table: %s", e)
+
+@app.get("/radius/api/plans", tags=["Plans & Pricing"])
+@app.get("/api/plans", tags=["Plans & Pricing"])
+def list_plans():
+    """Publicly accessible list of active Wi-Fi plans & prices."""
+    ensure_plans_table()
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, price, currency, validity_days, validity_seconds, max_session_seconds, description, created_at FROM plans ORDER BY price ASC, validity_days ASC")
+            rows = cur.fetchall()
+            out = []
+            for r in rows:
+                out.append({
+                    "id": r["id"],
+                    "name": r["name"],
+                    "price": float(r["price"]),
+                    "currency": r.get("currency") or "INR",
+                    "validity_days": r["validity_days"],
+                    "validity_seconds": r["validity_seconds"],
+                    "max_session_seconds": r["max_session_seconds"],
+                    "description": r["description"] or ""
+                })
+            conn.close()
+            return out
+    except Exception:
+        # Fallback default plans in case DB offline
+        return [
+            {"id": 1, "name": "1 Day Unlimited Pass", "price": 20.0, "currency": "INR", "validity_days": 1, "validity_seconds": 86400, "max_session_seconds": 86400, "description": "High-speed 24-hour unlimited Wi-Fi voucher pass"},
+            {"id": 2, "name": "7 Days Weekly Pro", "price": 99.0, "currency": "INR", "validity_days": 7, "validity_seconds": 604800, "max_session_seconds": 86400, "description": "7 Days continuous broadband Wi-Fi access with QoS"},
+            {"id": 3, "name": "30 Days Enterprise Monthly", "price": 299.0, "currency": "INR", "validity_days": 30, "validity_seconds": 2592000, "max_session_seconds": 86400, "description": "Full month unlimited multi-device Wi-Fi access"}
+        ]
+
+@app.post("/radius/api/plans", tags=["Plans & Pricing"])
+@app.post("/api/plans", tags=["Plans & Pricing"])
+def create_or_update_plan(payload: PlanCreateRequest, admin_user: str = Depends(authenticate_admin)):
+    ensure_plans_table()
+    validity_secs = payload.validity_days * 86400
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            if payload.id:
+                cur.execute("""
+                    UPDATE plans 
+                    SET name = %s, price = %s, currency = %s, validity_days = %s, validity_seconds = %s, max_session_seconds = %s, description = %s
+                    WHERE id = %s
+                """, (payload.name.strip(), payload.price, (payload.currency or "INR").upper(), payload.validity_days, validity_secs, payload.max_session_seconds or 86400, payload.description or "", payload.id))
+                action = "plan_update"
+            else:
+                cur.execute("""
+                    INSERT INTO plans (name, price, currency, validity_days, validity_seconds, max_session_seconds, description)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (payload.name.strip(), payload.price, (payload.currency or "INR").upper(), payload.validity_days, validity_secs, payload.max_session_seconds or 86400, payload.description or ""))
+                action = "plan_create"
+            conn.commit()
+            log_audit(admin_user, action, payload.name, f"price={payload.price} validity_days={payload.validity_days}")
+            return {"status": "success", "message": f"Plan '{payload.name}' saved successfully!"}
+    finally:
+        conn.close()
+
+@app.delete("/radius/api/plans/{plan_id}", tags=["Plans & Pricing"])
+@app.delete("/api/plans/{plan_id}", tags=["Plans & Pricing"])
+def delete_plan(plan_id: int, admin_user: str = Depends(authenticate_admin)):
+    ensure_plans_table()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM plans WHERE id = %s RETURNING name", (plan_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Plan not found")
+            conn.commit()
+            log_audit(admin_user, "plan_delete", row["name"], f"id={plan_id}")
+            return {"status": "success", "message": f"Plan '{row['name']}' deleted successfully"}
+    finally:
+        conn.close()
+
+
 @app.get("/radius/api/certs/signer-status", tags=["Certificates"])
 @app.get("/api/certs/signer-status", tags=["Certificates"])
 def cert_signer_status(refresh: bool = False, _: str = Depends(authenticate_admin)):
@@ -2526,6 +2650,7 @@ def list_groups(_: str = Depends(authenticate_admin)):
                     "vlan_id": None,
                     "framed_pool": None,
                     "is_admin": (g == "admins"),
+                    "recharge_required": (g != "admins"),
                     "reply_attributes": [],
                     "check_attributes": [],
                     "summary": ""
@@ -2565,6 +2690,9 @@ def list_groups(_: str = Depends(authenticate_admin)):
                     groups_map[g]["framed_pool"] = val
                 elif attr == "Service-Type" and val == "Administrative-User":
                     groups_map[g]["is_admin"] = True
+                    groups_map[g]["recharge_required"] = False
+                elif attr == "RajLabs-Recharge-Exempt" and val == "1":
+                    groups_map[g]["recharge_required"] = False
 
             # Populate check attributes
             for c in check_rows:
@@ -2614,9 +2742,13 @@ def create_or_update_group(payload: GroupCreateRequest, _: str = Depends(authent
                 cur.execute("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', ':=', %s)", (payload.groupname, str(payload.simultaneous_use)))
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', '=', %s)", (payload.groupname, str(payload.simultaneous_use)))
 
-            # 2. Administrative Role
+            # 2. Administrative Role & Recharge Exemption
             if payload.is_admin or payload.groupname == "admins":
                 cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Service-Type', '=', 'Administrative-User')", (payload.groupname,))
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'RajLabs-Recharge-Exempt', '=', '1')", (payload.groupname,))
+            elif payload.recharge_required is False:
+                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'RajLabs-Recharge-Exempt', '=', '1')", (payload.groupname,))
+
 
             # 3. Session & Idle Timeouts
             if payload.session_timeout is not None and payload.session_timeout > 0:

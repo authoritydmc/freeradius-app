@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Users, Plus, Trash2, Edit3, Shield, Gauge, Wifi, RefreshCw,
-  Search, CheckCircle2, AlertCircle, Layers, Clock, Zap
+  Search, CheckCircle2, AlertCircle, Layers, Clock, Zap, CreditCard, Sparkles
 } from 'lucide-react';
 import { fetchJson } from '../utils/api';
 
 const PRESETS = [
-  { id: 'enterprise', name: 'Enterprise Pro (100M / 100M)', rate: '104857600/104857600', session: 86400, simultaneous: 3, vlan: '10' },
-  { id: 'standard', name: 'Standard Staff (25M / 25M)', rate: '26214400/26214400', session: 43200, simultaneous: 2, vlan: '20' },
-  { id: 'guest', name: 'Guest Access (10M / 5M)', rate: '10485760/5242880', session: 86400, simultaneous: 1, vlan: '30' },
-  { id: 'iot', name: 'IoT Isolated (2M / 2M)', rate: '2097152/2097152', session: 0, simultaneous: 1, vlan: '40' }
+  { id: 'enterprise', name: 'Enterprise Pro (100M / 100M)', rate: '104857600/104857600', session: 86400, simultaneous: 3, vlan: '10', recharge_required: true },
+  { id: 'standard', name: 'Standard Staff (25M / 25M)', rate: '26214400/26214400', session: 43200, simultaneous: 2, vlan: '20', recharge_required: false },
+  { id: 'guest', name: 'Guest Paid Pass (10M / 5M)', rate: '10485760/5242880', session: 86400, simultaneous: 1, vlan: '30', recharge_required: true },
+  { id: 'iot', name: 'IoT Free Isolated (2M / 2M)', rate: '2097152/2097152', session: 0, simultaneous: 1, vlan: '40', recharge_required: false }
 ];
 
 export default function GroupsTab({ onNotify }) {
@@ -25,7 +25,8 @@ export default function GroupsTab({ onNotify }) {
     idle_timeout: 600,
     simultaneous_use: 2,
     vlan_id: '',
-    is_admin: false
+    is_admin: false,
+    recharge_required: true
   });
 
   const loadGroups = async () => {
@@ -52,7 +53,8 @@ export default function GroupsTab({ onNotify }) {
         rate_limit: preset.rate,
         session_timeout: preset.session,
         simultaneous_use: preset.simultaneous,
-        vlan_id: preset.vlan
+        vlan_id: preset.vlan,
+        recharge_required: preset.recharge_required
       }));
     }
   };
@@ -64,7 +66,7 @@ export default function GroupsTab({ onNotify }) {
         method: 'POST',
         body: JSON.stringify(form)
       });
-      onNotify?.(`Policy group '${form.groupname}' created successfully!`, 'success');
+      onNotify?.(`Policy group '${form.groupname}' saved successfully!`, 'success');
       setShowModal(false);
       setForm({
         groupname: '',
@@ -74,7 +76,8 @@ export default function GroupsTab({ onNotify }) {
         idle_timeout: 600,
         simultaneous_use: 2,
         vlan_id: '',
-        is_admin: false
+        is_admin: false,
+        recharge_required: true
       });
       loadGroups();
     } catch (err) {
@@ -110,7 +113,7 @@ export default function GroupsTab({ onNotify }) {
           </div>
           <div>
             <h2 className="text-lg font-bold text-white">Policy Groups & QoS Profiles</h2>
-            <p className="text-xs text-slate-400">Manage bandwidth shaping, VLAN tagging, session limits, and admin roles</p>
+            <p className="text-xs text-slate-400">Configure bandwidth QoS, VLAN tags, session constraints, and recharge requirements</p>
           </div>
         </div>
 
@@ -159,6 +162,8 @@ export default function GroupsTab({ onNotify }) {
           {filteredGroups.map(group => {
             const groupName = group.groupname || group.name || '';
             const isAdmin = group.is_admin || groupName === 'admins' || groupName === 'admin';
+            const isRechargeRequired = !isAdmin && group.recharge_required !== false;
+
             return (
               <div 
                 key={groupName}
@@ -194,12 +199,28 @@ export default function GroupsTab({ onNotify }) {
 
                   {/* Attributes Badges */}
                   <div className="space-y-2 mt-4 pt-3 border-t border-slate-800/80 text-xs">
+                    {/* Recharge requirement policy status */}
+                    <div className="flex items-center justify-between text-slate-300">
+                      <span className="flex items-center gap-1.5 text-slate-400">
+                        <CreditCard className="w-3.5 h-3.5 text-pink-400" /> Recharge Policy:
+                      </span>
+                      {isRechargeRequired ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          Paid Plan Required
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          Recharge Exempt / Free
+                        </span>
+                      )}
+                    </div>
+
                     <div className="flex items-center justify-between text-slate-300">
                       <span className="flex items-center gap-1.5 text-slate-400">
                         <Gauge className="w-3.5 h-3.5 text-indigo-400" /> Rate Limit:
                       </span>
                       <span className="font-mono text-indigo-300 font-medium">
-                        {group.rate_limit || group.reply_attributes?.['Mikrotik-Rate-Limit'] || 'Unlimited'}
+                        {group.rate_limit || group.reply_attributes?.find?.(a => a.attribute === 'Mikrotik-Rate-Limit')?.value || 'Unlimited'}
                       </span>
                     </div>
                     <div className="flex items-center justify-between text-slate-300">
@@ -215,7 +236,7 @@ export default function GroupsTab({ onNotify }) {
                         <Zap className="w-3.5 h-3.5 text-emerald-400" /> Concurrent Devices:
                       </span>
                       <span className="font-mono text-slate-300">
-                        {group.simultaneous_use || group.check_attributes?.['Simultaneous-Use'] || '1'}
+                        {group.simultaneous_use || group.check_attributes?.find?.(a => a.attribute === 'Simultaneous-Use')?.value || '1'}
                       </span>
                     </div>
                     {group.vlan_id && (
@@ -230,7 +251,7 @@ export default function GroupsTab({ onNotify }) {
                 </div>
 
                 <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-500">
-                  <span>{group.users_count !== undefined ? `${group.users_count} assigned users` : 'Active Policy'}</span>
+                  <span>{group.user_count !== undefined ? `${group.user_count} assigned users` : 'Active Policy'}</span>
                   <span className="text-emerald-400 flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3" /> Enforced
                   </span>
@@ -252,7 +273,7 @@ export default function GroupsTab({ onNotify }) {
                 </div>
                 <div>
                   <h3 className="font-bold text-white text-base">Create Policy Group</h3>
-                  <p className="text-xs text-slate-400">Define QoS, VLANs, and session constraints</p>
+                  <p className="text-xs text-slate-400">Define QoS, VLANs, and recharge requirement policies</p>
                 </div>
               </div>
               <button 
@@ -345,18 +366,37 @@ export default function GroupsTab({ onNotify }) {
                 </div>
               </div>
 
-              <div className="pt-2">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
+              {/* Policy Toggles */}
+              <div className="space-y-3 pt-2 border-t border-slate-800">
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={form.recharge_required}
+                    onChange={e => setForm({ ...form, recharge_required: e.target.checked })}
+                    className="w-4 h-4 rounded text-pink-600 bg-slate-950 border-slate-700 focus:ring-pink-500"
+                  />
+                  <div>
+                    <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                      <CreditCard className="w-3.5 h-3.5 text-pink-400" />
+                      Require Active Paid Recharge / Subscription for Access
+                    </span>
+                    <p className="text-[11px] text-slate-400">If unchecked, members of this group are exempt from recharge (Free/Staff/VIP).</p>
+                  </div>
+                </label>
+
+                <label className="flex items-center gap-2.5 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     checked={form.is_admin}
                     onChange={e => setForm({ ...form, is_admin: e.target.checked })}
                     className="w-4 h-4 rounded text-indigo-600 bg-slate-950 border-slate-700 focus:ring-indigo-500"
                   />
-                  <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
-                    <Shield className="w-3.5 h-3.5 text-amber-400" />
-                    Grant Administrative AAA Console Permissions to Members
-                  </span>
+                  <div>
+                    <span className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                      <Shield className="w-3.5 h-3.5 text-amber-400" />
+                      Grant Administrative AAA Console Permissions to Members
+                    </span>
+                  </div>
                 </label>
               </div>
 
@@ -372,7 +412,7 @@ export default function GroupsTab({ onNotify }) {
                   type="submit"
                   className="px-5 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-sm font-medium shadow-md shadow-indigo-500/20 transition"
                 >
-                  Create Group
+                  Save Group Policy
                 </button>
               </div>
             </form>

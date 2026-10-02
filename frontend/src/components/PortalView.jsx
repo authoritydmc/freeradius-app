@@ -9,16 +9,19 @@ import { fetchJson, apiRequest } from '../utils/api';
 
 export default function PortalView() {
   const [config, setConfig] = useState(null);
-  const [activeTab, setActiveTab] = useState('qr'); // 'qr', 'enroll', 'setup', 'help'
+  const [plans, setPlans] = useState([]);
+  const [activeTab, setActiveTab] = useState('qr'); // 'qr', 'plans', 'enroll', 'setup', 'help'
   const [enrollForm, setEnrollForm] = useState({ username: '', password: '', cert_password: '' });
   const [enrolling, setEnrolling] = useState(false);
   const [enrollResult, setEnrollResult] = useState(null);
   const [enrollError, setEnrollError] = useState('');
   const [copiedPass, setCopiedPass] = useState(false);
   const [copiedQrString, setCopiedQrString] = useState(false);
+  const [copiedUpi, setCopiedUpi] = useState(false);
 
   useEffect(() => {
     fetchJson('public-config').then(setConfig).catch(() => {});
+    fetchJson('plans').then(setPlans).catch(() => {});
   }, []);
 
   const ssid = config?.wifi_ssid || 'RajLabs-Enterprise';
@@ -54,6 +57,12 @@ export default function PortalView() {
     setTimeout(() => setCopiedQrString(false), 2000);
   };
 
+  const handleCopyUpi = (upiId) => {
+    navigator.clipboard.writeText(upiId);
+    setCopiedUpi(true);
+    setTimeout(() => setCopiedUpi(false), 2000);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col justify-between relative overflow-hidden">
       {/* Glow Effects */}
@@ -86,31 +95,38 @@ export default function PortalView() {
       {/* Main Container */}
       <main className="max-w-4xl mx-auto px-4 py-8 w-full z-10 flex-1 flex flex-col justify-center">
         {/* Navigation Tabs */}
-        <div className="flex bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 max-w-xl mx-auto mb-8 shadow-xl">
+        <div className="flex bg-slate-900/90 p-1.5 rounded-2xl border border-slate-800 max-w-2xl mx-auto mb-8 shadow-xl overflow-x-auto">
           <button
             onClick={() => setActiveTab('qr')}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'qr' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex-1 min-w-[110px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'qr' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <QrCode className="w-3.5 h-3.5" />
-            <span>Direct Wi-Fi QR</span>
+            <span>Wi-Fi QR</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('plans')}
+            className={`flex-1 min-w-[110px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'plans' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            <CreditCard className="w-3.5 h-3.5" />
+            <span>Plans & Pricing</span>
           </button>
           <button
             onClick={() => setActiveTab('enroll')}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'enroll' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex-1 min-w-[110px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'enroll' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Cert Enrollment</span>
+            <span>Certificates</span>
           </button>
           <button
             onClick={() => setActiveTab('setup')}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'setup' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex-1 min-w-[110px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'setup' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Download className="w-3.5 h-3.5" />
             <span>Root CA</span>
           </button>
           <button
             onClick={() => setActiveTab('help')}
-            className={`flex-1 py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'help' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
+            className={`flex-1 min-w-[110px] py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition ${activeTab === 'help' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'}`}
           >
             <Phone className="w-3.5 h-3.5" />
             <span>Support</span>
@@ -153,19 +169,112 @@ export default function PortalView() {
             <div className="grid grid-cols-2 gap-3 pt-1">
               <button
                 onClick={handleCopyQr}
-                className="flex items-center justify-center gap-2 py-2.5 px-3 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition"
+                className="flex items-center justify-center gap-2 py-2.5 px-3 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl text-xs font-semibold border border-slate-700 transition cursor-pointer"
               >
                 {copiedQrString ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                 <span>{copiedQrString ? 'Copied' : 'Copy String'}</span>
               </button>
               <button
                 onClick={() => window.print()}
-                className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition"
+                className="flex items-center justify-center gap-2 py-2.5 px-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition cursor-pointer"
               >
                 <Printer className="w-4 h-4" />
                 <span>Print QR Badge</span>
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Tab: Plans & Pricing */}
+        {activeTab === 'plans' && (
+          <div className="bg-slate-900/80 backdrop-blur-xl border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl max-w-3xl mx-auto w-full space-y-6 animate-fade-in">
+            <div className="text-center max-w-md mx-auto">
+              <div className="inline-flex p-3 bg-indigo-500/10 text-indigo-400 rounded-2xl mb-2 border border-indigo-500/20">
+                <CreditCard className="w-6 h-6" />
+              </div>
+              <h2 className="text-xl font-bold text-white">Wi-Fi Subscription Plans</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Choose an internet access plan and pay via instant UPI / QR code.
+              </p>
+            </div>
+
+            {plans.length === 0 ? (
+              <div className="text-center py-10 border border-dashed border-slate-800 rounded-2xl text-slate-400 text-xs">
+                No active plans currently published. Contact the network administrator for recharge details.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {plans.map((p) => {
+                  const currSymbol = p.currency === 'INR' ? '₹' : p.currency === 'USD' ? '$' : p.currency + ' ';
+                  return (
+                    <div
+                      key={p.id}
+                      className="bg-slate-950/80 border border-slate-800 hover:border-indigo-500/50 rounded-2xl p-5 flex flex-col justify-between transition group hover:shadow-lg hover:shadow-indigo-500/10"
+                    >
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold uppercase tracking-wider text-indigo-400 font-mono">
+                            {p.validity_days} {p.validity_days === 1 ? 'Day' : 'Days'}
+                          </span>
+                          <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full">
+                            {p.max_session_seconds ? `${Math.round(p.max_session_seconds / 3600)}h session` : 'Unlimited'}
+                          </span>
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-white text-base">{p.name}</h3>
+                          <div className="text-2xl font-extrabold text-white mt-1">
+                            {currSymbol}{p.price}
+                            <span className="text-xs font-normal text-slate-400 ml-1">/ {p.validity_days}d</span>
+                          </div>
+                        </div>
+                        {p.description && (
+                          <p className="text-xs text-slate-400 leading-relaxed border-t border-slate-900 pt-2">
+                            {p.description}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="pt-4 mt-4 border-t border-slate-800/80">
+                        {config?.payment_config?.upi_vpa ? (
+                          <a
+                            href={`upi://pay?pa=${encodeURIComponent(config.payment_config.upi_vpa)}&pn=RajLabs-WiFi&am=${p.price}&cu=INR&tn=${encodeURIComponent(`WiFi Recharge ${p.name}`)}`}
+                            className="w-full py-2 px-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 shadow transition"
+                          >
+                            <span>Pay with UPI</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
+                          </a>
+                        ) : (
+                          <button
+                            onClick={() => setActiveTab('help')}
+                            className="w-full py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition"
+                          >
+                            <span>Contact Support to Recharge</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {config?.payment_config?.upi_vpa && (
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span className="text-slate-300">
+                    Official Recharge UPI VPA: <span className="font-mono font-bold text-emerald-400">{config.payment_config.upi_vpa}</span>
+                  </span>
+                </div>
+                <button
+                  onClick={() => handleCopyUpi(config.payment_config.upi_vpa)}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition cursor-pointer"
+                >
+                  {copiedUpi ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedUpi ? 'Copied' : 'Copy UPI VPA'}</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -209,7 +318,7 @@ export default function PortalView() {
                       </code>
                       <button
                         onClick={() => handleCopy(enrollResult.p12_password)}
-                        className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs transition"
+                        className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs transition cursor-pointer"
                       >
                         {copiedPass ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                         <span>{copiedPass ? 'Copied' : 'Copy'}</span>
@@ -222,7 +331,7 @@ export default function PortalView() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                   <a
                     href={`/radius/api/portal/download-mobileconfig?username=${encodeURIComponent(enrollForm.username)}&password=${encodeURIComponent(enrollForm.password)}`}
-                    className="flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-750 border border-slate-700 text-white rounded-xl text-xs font-semibold shadow transition"
+                    className="flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-750 border border-slate-700 text-white rounded-xl text-xs font-semibold shadow transition cursor-pointer"
                   >
                     <Apple className="w-4 h-4 text-slate-200" />
                     <span>Download Apple Profile</span>
@@ -230,7 +339,7 @@ export default function PortalView() {
 
                   <a
                     href={`/radius/api/portal/download-cert?username=${encodeURIComponent(enrollForm.username)}&password=${encodeURIComponent(enrollForm.password)}`}
-                    className="flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition"
+                    className="flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition cursor-pointer"
                   >
                     <Download className="w-4 h-4" />
                     <span>Download .p12 Bundle</span>
@@ -240,7 +349,7 @@ export default function PortalView() {
                 <div className="text-center pt-2">
                   <button
                     onClick={() => setEnrollResult(null)}
-                    className="text-xs text-slate-400 hover:text-slate-200"
+                    className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
                   >
                     ← Enroll another device
                   </button>
@@ -306,7 +415,7 @@ export default function PortalView() {
               <a
                 href="/radius/api/certs/ca"
                 download="RajLabs_FreeRADIUS_Root_CA.pem"
-                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-violet-500/20 transition whitespace-nowrap"
+                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-violet-500/20 transition whitespace-nowrap cursor-pointer"
               >
                 <Download className="w-4 h-4" />
                 <span>Download ca.pem</span>
