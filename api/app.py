@@ -267,6 +267,7 @@ def get_cert_signer_config() -> tuple[str, str]:
     
     Checks database system_settings first (runtime UI configured),
     falling back to environment variables CERT_SIGNER_API_URL and CERT_SIGNER_API_KEY.
+    Automatically resolves frontend URL ca.rajlabs.in to backend signer API.
     """
     url = CERT_SIGNER_API_URL
     key = CERT_SIGNER_API_KEY
@@ -283,6 +284,12 @@ def get_cert_signer_config() -> tuple[str, str]:
         conn.close()
     except Exception:
         pass
+
+    if url:
+        url = url.rstrip("/")
+        if "ca.rajlabs.in" in url and "backend.rajlabs.in" not in url:
+            url = "https://backend.rajlabs.in/cert-signer"
+
     return url, key
 
 
@@ -1083,6 +1090,13 @@ class UserCreateRequest(BaseModel):
     # Static client IP: None = leave existing pinning untouched, "" = remove it (DHCP), value = pin it.
     framed_ip: Optional[str] = None
 
+class UserUpdateRequest(BaseModel):
+    password: Optional[str] = None
+    password_type: Optional[str] = "Cleartext-Password"
+    group: Optional[str] = None
+    attributes: Optional[Dict[str, str]] = None
+    framed_ip: Optional[str] = None
+
 class GuestUserGenerateRequest(BaseModel):
     duration: Optional[str] = "24h" # "1h", "6h", "12h", "24h" (default), "3d", "7d", "30d"
     group: Optional[str] = "guests"
@@ -1686,6 +1700,70 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
     finally:
         conn.close()
 
+@app.put("/radius/api/users/{username}", tags=["Users"])
+@app.put("/api/users/{username}", tags=["Users"])
+def update_user_profile(username: str, payload: UserUpdateRequest, admin_user: str = Depends(authenticate_admin)):
+    uname = validate_username(username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (uname,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail=f"User '{uname}' not found.")
+
+            # Update password if provided and non-empty
+            if payload.password and payload.password.strip():
+                validate_password_policy(payload.password, uname)
+                cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (uname,))
+                cur.execute("""
+                    INSERT INTO radcheck (username, attribute, op, value)
+                    VALUES (%s, %s, ':=', %s)
+                """, (uname, payload.password_type or "Cleartext-Password", payload.password))
+
+            # Update group membership
+            if payload.group is not None:
+                cur.execute("DELETE FROM radusergroup WHERE username = %s", (uname,))
+                if payload.group.strip():
+                    cur.execute("""
+                        INSERT INTO radusergroup (username, groupname, priority)
+                        VALUES (%s, %s, 1)
+                    """, (uname, payload.group.strip()))
+
+            # Update extra attributes
+            if payload.attributes is not None:
+                for attr, val in payload.attributes.items():
+                    cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = %s", (uname, attr))
+                    if val and val.strip():
+                        cur.execute("""
+                            INSERT INTO radreply (username, attribute, op, value)
+                            VALUES (%s, %s, '=', %s)
+                        """, (uname, attr, val.strip()))
+
+            # Static IP pinning
+            ip_attrs: Dict[str, str] = {}
+            if payload.framed_ip is not None:
+                if payload.framed_ip.strip():
+                    try:
+                        ipaddress.ip_address(payload.framed_ip.strip())
+                    except ValueError:
+                        raise HTTPException(status_code=422, detail=f"'{payload.framed_ip}' is not a valid IP address.")
+                    cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Framed-IP-Address'", (uname,))
+                    cur.execute("INSERT INTO radreply (username, attribute, op, value) VALUES (%s, 'Framed-IP-Address', '=', %s)",
+                                (uname, payload.framed_ip.strip()))
+                    ip_attrs = {"Framed-IP-Address": payload.framed_ip.strip()}
+                else:
+                    cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Framed-IP-Address'", (uname,))
+
+            conn.commit()
+            merged = dict(payload.attributes or {})
+            merged.update(ip_attrs)
+            warnings = framed_ip_warnings(merged, f"User '{uname}'")
+            log_audit(admin_user, "user_update", uname,
+                      f"group={payload.group}" + (f" warnings={len(warnings)}" if warnings else ""))
+            return {"status": "success", "message": f"User '{uname}' updated successfully", "warnings": warnings}
+    finally:
+        conn.close()
+
 GUEST_DURATION_MAP = {
     "1h": (3600, "1 Hour"),
     "6h": (21600, "6 Hours"),
@@ -1994,7 +2072,12 @@ def _probe_http_json(url: str, headers: Dict[str, str], timeout: int = 5) -> Dic
     """Single GET probe. Never raises; never logs secrets."""
     start = time.time()
     try:
-        req = urllib.request.Request(url, headers=headers, method="GET")
+        probe_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            **headers
+        }
+        req = urllib.request.Request(url, headers=probe_headers, method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read(2048).decode("utf-8", "replace")
             return {"ok": True, "status": resp.status, "body": body,
@@ -2310,26 +2393,20 @@ def cert_signer_status(refresh: bool = False, _: str = Depends(authenticate_admi
     headers = {"Accept": "application/json"}
     if signer_key:
         headers["x-api-key"] = signer_key
+        headers["X-API-KEY"] = signer_key
+        headers["Authorization"] = f"Bearer {signer_key}"
 
-    # Probe 1: Token verification if token is provided
-    token_verified = False
+    # Probe 1: Endpoint Status & Health probe
     probe = None
-    if signer_key:
-        token_probe = _probe_http_json(signer_url + "/api/v1/tokens/verify", headers)
-        if token_probe["ok"]:
-            token_verified = True
-            probe = token_probe
-        elif token_probe["status"] in (401, 403):
-            probe = token_probe
-
-    # Probe 2: Health check
-    if not probe or not probe["ok"]:
-        for path in ("/health", "/api/v1/health", "/api/v1/status"):
-            r = _probe_http_json(signer_url + path, headers)
-            if r["ok"] or r["status"] in (401, 403):
-                probe = r
-                break
-            probe = r  # keep last network-level result if nothing answered
+    for path in ("/api/v1/status", "/health", "/api/v1/health", "/api/v1/tokens/verify", ""):
+        r = _probe_http_json(signer_url + path, headers)
+        if r["ok"]:
+            probe = r
+            break
+        elif r["status"] in (401, 403):
+            probe = r
+            break
+        probe = r
 
     assert probe is not None
     if probe["ok"]:

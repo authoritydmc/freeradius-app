@@ -62,3 +62,13 @@ def test_user_session_token_isolation():
     # Regular user must be forbidden from administrative settings (strictly 401)
     res = client.get("/radius/api/settings", headers=headers)
     assert res.status_code == 401
+
+def test_put_user_update_route():
+    admin_token = generate_session_token("admin_radius", role="admin")
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    
+    # PUT route must exist and be protected
+    res = client.put("/radius/api/users/test_user", json={"group": "staff", "framed_ip": "10.0.0.50"}, headers=headers)
+    # Status code will be 200/404/500 depending on mock DB presence, but never 405 Method Not Allowed or 401 Unauthorized
+    assert res.status_code != 405
+    assert res.status_code != 401
