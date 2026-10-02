@@ -6122,6 +6122,91 @@ def parse_radtest_output(output: str) -> tuple[bool, str]:
     return False, "Rejected / Failed"
 
 
+def extract_reply_attributes(output: str) -> tuple[list[dict], Optional[str]]:
+    """Parse RADIUS attributes and Reply-Message from radtest/radclient output."""
+    attrs = []
+    reply_msg = None
+    in_reply = False
+    for line in (output or "").splitlines():
+        if "Received Access-" in line:
+            in_reply = True
+            continue
+        if in_reply:
+            m = re.match(r"^\s*([A-Za-z0-9\-_]+)\s*=\s*(.*)$", line)
+            if m:
+                k, v = m.group(1), m.group(2).strip("\"'\t ")
+                attrs.append({"attribute": k, "value": v})
+                if k == "Reply-Message":
+                    reply_msg = v
+    return attrs, reply_msg
+
+def get_server_cert_info() -> Dict[str, Any]:
+    cert_path = "/etc/freeradius/3.0/certs/server.pem"
+    if not os.path.exists(cert_path):
+        cert_path = "data/certs/server.pem"
+    if not os.path.exists(cert_path):
+        return {"exists": False}
+    try:
+        res = subprocess.run(["openssl", "x509", "-in", cert_path, "-noout", "-subject", "-issuer", "-dates", "-ext", "subjectAltName"], capture_output=True, text=True)
+        txt = res.stdout
+        subject = ""
+        issuer = ""
+        sans = []
+        valid_to = ""
+        for line in txt.splitlines():
+            line = line.strip()
+            if line.startswith("subject="):
+                subject = line.replace("subject=", "").strip()
+            elif line.startswith("issuer="):
+                issuer = line.replace("issuer=", "").strip()
+            elif line.startswith("notAfter="):
+                valid_to = line.replace("notAfter=", "").strip()
+            elif "DNS:" in line:
+                sans = [s.strip().replace("DNS:", "") for s in line.split(",") if "DNS:" in s]
+        
+        is_public = any(ca in issuer for ca in ["Let's Encrypt", "DigiCert", "Sectigo", "ZeroSSL", "GTS", "Google Trust Services"])
+        return {
+            "exists": True,
+            "subject": subject,
+            "issuer": issuer,
+            "sans": sans,
+            "valid_to": valid_to,
+            "is_public_ca": is_public,
+            "domain": sans[0] if sans else "wifi.rajlabs.in"
+        }
+    except Exception as e:
+        return {"exists": False, "error": str(e)}
+
+@app.get("/radius/api/test-auth/diagnostics", tags=["Testing"])
+@app.get("/api/test-auth/diagnostics", tags=["Testing"])
+def get_tester_diagnostics(_: str = Depends(authenticate_admin)):
+    """Return live FreeRADIUS server certificate and recent authentication logs."""
+    cert_info = get_server_cert_info()
+    recent_logs = []
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, username, reply, reason, authdate, calling_station, called_station, eap_type 
+                FROM radpostauth 
+                ORDER BY id DESC LIMIT 5
+            """)
+            for r in cur.fetchall():
+                d = dict(r)
+                if d.get("authdate"):
+                    d["authdate"] = d["authdate"].isoformat()
+                recent_logs.append(d)
+        conn.close()
+    except Exception:
+        pass
+
+    return {
+        "server_cert": cert_info,
+        "recent_logs": recent_logs,
+        "radius_host": os.getenv("RADIUS_PUBLIC_HOST", "wifi.rajlabs.in"),
+        "radius_port": 1812
+    }
+
 # Live RADIUS Testing (radtest, or radclient when a device MAC is simulated)
 @app.post("/radius/api/test-auth", tags=["Testing"])
 @app.post("/api/test-auth", tags=["Testing"])
@@ -6129,8 +6214,6 @@ def test_radius_authentication(payload: AuthTestRequest, request: Request, _: st
     check_rate_limit(request, "test-auth", RL_TEST_AUTH_PER_MIN)
     validate_username(payload.username)
     nas_ip = validate_nas_ip(payload.nas_ip or "127.0.0.1")
-    # Server-side secret is authoritative — a client-supplied secret is only
-    # honored for advanced NAS setups; the UI no longer asks for it.
     secret = payload.secret or RADIUS_SECRET
     secret_source = "custom" if payload.secret else "server-default"
     if payload.calling_station_id:
@@ -6151,15 +6234,72 @@ def test_radius_authentication(payload: AuthTestRequest, request: Request, _: st
         result = subprocess.run(cmd, input=attrs, capture_output=True, text=True, timeout=5)
         output = result.stdout + result.stderr
         success, verdict = parse_radtest_output(output)
+        reply_attributes, reply_message = extract_reply_attributes(output)
         logger.info("Test-auth username=%s nas=%s mac=%s success=%s by=%s",
                     payload.username, nas_ip, payload.calling_station_id or "-", success, _)
+        
+        # Correlate with database and generate actionable diagnosis
+        postauth_record = None
+        user_diag = None
+        diagnosis = None
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, username, reply, reason, authdate, calling_station, called_station, eap_type 
+                    FROM radpostauth 
+                    WHERE username = %s 
+                    ORDER BY id DESC LIMIT 1
+                """, (payload.username,))
+                row = cur.fetchone()
+                if row:
+                    postauth_record = dict(row)
+                    if postauth_record.get("authdate"):
+                        postauth_record["authdate"] = postauth_record["authdate"].isoformat()
+
+                cur.execute("SELECT id, username, status, recharge_required_override FROM users WHERE username = %s", (payload.username,))
+                u_row = cur.fetchone()
+                cur.execute("SELECT groupname FROM radusergroup WHERE username = %s ORDER BY priority LIMIT 1", (payload.username,))
+                g_row = cur.fetchone()
+                cur.execute("SELECT require_verified FROM user_device_policy WHERE username = %s", (payload.username,))
+                dev_row = cur.fetchone()
+
+                user_diag = {
+                    "exists": bool(u_row),
+                    "status": u_row["status"] if u_row else None,
+                    "group": g_row["groupname"] if g_row else None,
+                    "device_lock": dev_row["require_verified"] if dev_row else False
+                }
+            conn.close()
+        except Exception:
+            pass
+
+        if success:
+            diagnosis = "Authentication succeeded! FreeRADIUS verified credentials against SQL radcheck and returned authorized session attributes."
+        else:
+            if not user_diag or not user_diag.get("exists"):
+                diagnosis = f"User '{payload.username}' does not exist in the database. Please create the user in the Users tab."
+            elif user_diag.get("status") == "DISABLED":
+                diagnosis = f"User account '{payload.username}' is marked as DISABLED. Re-enable the account to allow access."
+            elif user_diag.get("device_lock") and not payload.calling_station_id:
+                diagnosis = f"User has Device MAC Lockdown enabled, but no Calling-Station-Id (MAC address) was provided in the request."
+            elif "password" in (reply_message or "").lower() or "incorrect" in output.lower():
+                diagnosis = "Password mismatch. The cleartext password in radcheck does not match the tested password."
+            else:
+                diagnosis = reply_message or postauth_record.get("reason") if postauth_record else "Authentication rejected by FreeRADIUS policy."
+
         return {
             "success": success,
             "status": verdict,
             "output": output.strip(),
             "command": shown,
             "nas_ip": nas_ip,
-            "secret_source": secret_source
+            "secret_source": secret_source,
+            "reply_attributes": reply_attributes,
+            "reply_message": reply_message,
+            "diagnosis": diagnosis,
+            "postauth_record": postauth_record,
+            "user_diag": user_diag
         }
     except subprocess.TimeoutExpired:
         return {
@@ -6167,7 +6307,8 @@ def test_radius_authentication(payload: AuthTestRequest, request: Request, _: st
             "status": "Timeout",
             "output": "RADIUS authentication timed out. Make sure the FreeRADIUS daemon is running and listening on UDP 1812.",
             "nas_ip": nas_ip,
-            "secret_source": secret_source
+            "secret_source": secret_source,
+            "diagnosis": "The FreeRADIUS daemon did not respond within 5 seconds on port 1812. Check container status."
         }
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="radtest/radclient binary not found on server.")
