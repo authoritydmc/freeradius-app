@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS nas (
     description TEXT NOT NULL DEFAULT 'RADIUS Client'
 );
 
+-- NAS reload tracking for simultaneous use queries
+CREATE TABLE IF NOT EXISTS nasreload (
+    nasipaddress INET PRIMARY KEY,
+    reloadtime   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Accounting sessions (populated by FreeRADIUS rlm_sql).
 -- inet columns: the API selects nasipaddress::text / framedipaddress::text.
 CREATE TABLE IF NOT EXISTS radacct (

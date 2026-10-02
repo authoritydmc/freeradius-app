@@ -4722,10 +4722,9 @@ def create_or_update_group(payload: GroupCreateRequest, admin_user: str = Depend
             cur.execute("DELETE FROM radgroupreply WHERE groupname = %s", (payload.groupname,))
             cur.execute("DELETE FROM radgroupcheck WHERE groupname = %s", (payload.groupname,))
 
-            # 1. Simultaneous-Use (Check & Reply)
+            # 1. Simultaneous-Use (Check only)
             if payload.simultaneous_use is not None and payload.simultaneous_use > 0:
                 cur.execute("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', ':=', %s)", (payload.groupname, str(payload.simultaneous_use)))
-                cur.execute("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (%s, 'Simultaneous-Use', '=', %s)", (payload.groupname, str(payload.simultaneous_use)))
 
             # 2. Administrative Role, Recharge Exemption & Device Lock
             if payload.is_admin or payload.groupname == "admins":

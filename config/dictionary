@@ -1,0 +1,2 @@
+ATTRIBUTE	RajLabs-Recharge-Exempt		3000	integer
+ATTRIBUTE	RajLabs-Require-Device-Lock	3001	integer

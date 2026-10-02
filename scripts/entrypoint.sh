@@ -145,6 +145,9 @@ fi
 cp -f /app/config/clients.conf "${RAD_DIR}/clients.conf"
 cp -f /app/config/mods-available/sql "${RAD_DIR}/mods-available/sql"
 cp -f /app/config/sites-available/default "${RAD_DIR}/sites-available/default"
+if [ -f /app/config/dictionary ]; then
+  cp -f /app/config/dictionary "${RAD_DIR}/dictionary"
+fi
 if [ -f /app/config/policy.d/rajlabs ]; then
   cp -f /app/config/policy.d/rajlabs "${RAD_DIR}/policy.d/rajlabs"
 fi
