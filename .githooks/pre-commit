@@ -7,6 +7,7 @@ npm run lint
 
 echo "⚡ [pre-commit] 2/3 Running Vite Production Build..."
 npm run build
+git add "$(git rev-parse --show-toplevel)/api/static/dist" 2>/dev/null || true
 
 echo "🐍 [pre-commit] 3/3 Checking Python compilation..."
 cd "$(git rev-parse --show-toplevel)"
