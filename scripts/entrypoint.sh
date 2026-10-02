@@ -87,59 +87,93 @@ fi
 
 mkdir -p "${RAD_DIR}/certs/clients"
 
-# --- EAP server identity (CN + SAN) -------------------------------------
-# Stock `certs/bootstrap` output says CN "Example Server Certificate" with no
-# subjectAltName, so Android 7+ (which ignores CN and requires a SAN match)
-# pops a "domain" prompt nobody can answer, and iOS warns. Pin the identity
-# to EAP_SERVER_CN (default: RADIUS_PUBLIC_HOST); when the live server.pem
-# lacks it, re-issue the server cert from the EXISTING local CA (clients keep
-# trusting the same ca.pem). Never fatal: any failure keeps current files.
-EAP_SERVER_CN="${EAP_SERVER_CN:-${RADIUS_PUBLIC_HOST:-}}"
-if [ -n "${EAP_SERVER_CN}" ] && [ -f "${RAD_DIR}/certs/ca.pem" ] && [ -f "${RAD_DIR}/certs/ca.key" ] && [ -f "${RAD_DIR}/certs/server.pem" ] && [ -f "${RAD_DIR}/certs/server.key" ]; then
-  if printf '%s' "${EAP_SERVER_CN}" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$|:'; then
-    EAP_SAN="IP:${EAP_SERVER_CN}" ; EAP_SAN_MATCH="IP Address:${EAP_SERVER_CN}"
-  else
-    EAP_SAN="DNS:${EAP_SERVER_CN}" ; EAP_SAN_MATCH="DNS:${EAP_SERVER_CN}"
-  fi
-  if openssl x509 -in "${RAD_DIR}/certs/server.pem" -noout -ext subjectAltName 2>/dev/null | grep -q "${EAP_SAN_MATCH}"; then
-    echo "EAP server certificate already carries SAN ${EAP_SAN_MATCH}."
-  else
-    echo "EAP server certificate lacks SAN ${EAP_SAN_MATCH} — re-issuing from local CA..."
-    (
-      cd "${RAD_DIR}/certs" || exit 1
-      TS="$(date +%Y%m%d%H%M%S)"
-      cp -f server.pem "server.pem.bak.${TS}" 2>/dev/null || true
-      cp -f server.key "server.key.bak.${TS}" 2>/dev/null || true
-      KEYPASS_ARGS=""
-      if openssl rsa -in server.key -passin "pass:${CA_KEY_PASSWORD}" -noout >/dev/null 2>&1; then
-        KEYPASS_ARGS="-passin pass:${CA_KEY_PASSWORD}"
-      elif ! openssl rsa -in server.key -noout >/dev/null 2>&1; then
-        echo "Existing server.key unreadable — generating a fresh key..."
-        openssl genrsa -out server.key 2048
-      fi
-      # shellcheck disable=SC2086
-      if openssl req -new -key server.key ${KEYPASS_ARGS} -out /tmp/eap-server.csr \
-           -subj "/C=IN/ST=Delhi/O=RajLabs/CN=${EAP_SERVER_CN}" \
-        && printf "subjectAltName=%s\n" "${EAP_SAN}" > /tmp/eap-server.ext \
-        && openssl x509 -req -in /tmp/eap-server.csr \
-           -CA ca.pem -CAkey ca.key -passin "pass:${CA_KEY_PASSWORD}" \
-           -CAcreateserial -days 825 -sha256 -extfile /tmp/eap-server.ext \
-           -out server.pem \
-        && openssl verify -CAfile ca.pem server.pem >/dev/null \
-        && openssl x509 -in server.pem -noout -ext subjectAltName 2>/dev/null | grep -q "${EAP_SAN_MATCH}"; then
-        echo "EAP server certificate re-issued with SAN ${EAP_SAN_MATCH}."
-      else
-        echo "WARNING: server cert re-issue failed — restoring previous files." >&2
-        cp -f "server.pem.bak.${TS}" server.pem 2>/dev/null || true
-        cp -f "server.key.bak.${TS}" server.key 2>/dev/null || true
-      fi
-      rm -f /tmp/eap-server.csr /tmp/eap-server.ext
-    ) || echo "WARNING: EAP identity fixup failed; continuing with current server.pem." >&2
+# --- EAP server identity (Public ACME / Let's Encrypt or Local CA) --------
+# Auto-detect primary domain from env (COOLIFY_FQDN, COOLIFY_URL, RADIUS_PUBLIC_HOST)
+if [ -z "${EAP_SERVER_CN:-}" ]; then
+  if [ -n "${RADIUS_PUBLIC_HOST:-}" ]; then
+    EAP_SERVER_CN="${RADIUS_PUBLIC_HOST}"
+  elif [ -n "${COOLIFY_FQDN:-}" ]; then
+    EAP_SERVER_CN="$(printf '%s' "${COOLIFY_FQDN}" | tr ',' '\n' | grep -v '/' | head -n 1)"
+    if [ -z "${EAP_SERVER_CN}" ]; then
+      EAP_SERVER_CN="$(printf '%s' "${COOLIFY_FQDN}" | tr ',' '\n' | head -n 1 | cut -d'/' -f1)"
+    fi
   fi
 fi
+EAP_SERVER_CN="${EAP_SERVER_CN:-wifi.rajlabs.in}"
+
+# Check for mounted or provided public Let's Encrypt / ACME certificates
+ACME_IMPORTED=0
+if [ -n "${EAP_SERVER_CERT_BASE64:-}" ] && [ -n "${EAP_SERVER_KEY_BASE64:-}" ]; then
+  echo "Loading public Server Certificate from base64 environment variables..."
+  printf '%s' "${EAP_SERVER_CERT_BASE64}" | base64 -d > "${RAD_DIR}/certs/server.pem"
+  printf '%s' "${EAP_SERVER_KEY_BASE64}" | base64 -d > "${RAD_DIR}/certs/server.key"
+  chmod 644 "${RAD_DIR}/certs/server.pem"
+  chmod 600 "${RAD_DIR}/certs/server.key"
+  ACME_IMPORTED=1
+elif [ -f "/app/certs/server.pem" ] && [ -f "/app/certs/server.key" ]; then
+  echo "Importing public Server Certificate from /app/certs/..."
+  cp -f "/app/certs/server.pem" "${RAD_DIR}/certs/server.pem"
+  cp -f "/app/certs/server.key" "${RAD_DIR}/certs/server.key"
+  chmod 644 "${RAD_DIR}/certs/server.pem"
+  chmod 600 "${RAD_DIR}/certs/server.key"
+  ACME_IMPORTED=1
+elif [ -f "${RAD_DIR}/certs/acme/server.pem" ] && [ -f "${RAD_DIR}/certs/acme/server.key" ]; then
+  echo "Importing public Server Certificate from ${RAD_DIR}/certs/acme/..."
+  cp -f "${RAD_DIR}/certs/acme/server.pem" "${RAD_DIR}/certs/server.pem"
+  cp -f "${RAD_DIR}/certs/acme/server.key" "${RAD_DIR}/certs/server.key"
+  chmod 644 "${RAD_DIR}/certs/server.pem"
+  chmod 600 "${RAD_DIR}/certs/server.key"
+  ACME_IMPORTED=1
+fi
+
+if [ "${ACME_IMPORTED}" = "1" ]; then
+  echo "Public ACME Server Certificate loaded successfully."
+else
+  # Re-issue server cert with proper SAN (DNS:wifi.rajlabs.in, DNS:backend.rajlabs.in)
+  if [ -f "${RAD_DIR}/certs/ca.pem" ] && [ -f "${RAD_DIR}/certs/ca.key" ] && [ -f "${RAD_DIR}/certs/server.pem" ] && [ -f "${RAD_DIR}/certs/server.key" ]; then
+    EAP_SAN="DNS:${EAP_SERVER_CN},DNS:backend.rajlabs.in,DNS:wifi.rajlabs.in"
+    EAP_SAN_MATCH="DNS:${EAP_SERVER_CN}"
+    if openssl x509 -in "${RAD_DIR}/certs/server.pem" -noout -ext subjectAltName 2>/dev/null | grep -q "${EAP_SAN_MATCH}"; then
+      echo "EAP server certificate already carries SAN ${EAP_SAN_MATCH}."
+    else
+      echo "EAP server certificate lacks SAN ${EAP_SAN_MATCH} — re-issuing from local CA..."
+      (
+        cd "${RAD_DIR}/certs" || exit 1
+        TS="$(date +%Y%m%d%H%M%S)"
+        cp -f server.pem "server.pem.bak.${TS}" 2>/dev/null || true
+        cp -f server.key "server.key.bak.${TS}" 2>/dev/null || true
+        KEYPASS_ARGS=""
+        if openssl rsa -in server.key -passin "pass:${CA_KEY_PASSWORD}" -noout >/dev/null 2>&1; then
+          KEYPASS_ARGS="-passin pass:${CA_KEY_PASSWORD}"
+        elif ! openssl rsa -in server.key -noout >/dev/null 2>&1; then
+          echo "Existing server.key unreadable — generating a fresh key..."
+          openssl genrsa -out server.key 2048
+        fi
+        # shellcheck disable=SC2086
+        if openssl req -new -key server.key ${KEYPASS_ARGS} -out /tmp/eap-server.csr \
+             -subj "/C=IN/ST=Delhi/O=RajLabs/CN=${EAP_SERVER_CN}" \
+          && printf "subjectAltName=%s\n" "${EAP_SAN}" > /tmp/eap-server.ext \
+          && openssl x509 -req -in /tmp/eap-server.csr \
+             -CA ca.pem -CAkey ca.key -passin "pass:${CA_KEY_PASSWORD}" \
+             -CAcreateserial -days 825 -sha256 -extfile /tmp/eap-server.ext \
+             -out server.pem \
+          && openssl verify -CAfile ca.pem server.pem >/dev/null \
+          && openssl x509 -in server.pem -noout -ext subjectAltName 2>/dev/null | grep -q "${EAP_SAN_MATCH}"; then
+          echo "EAP server certificate re-issued with SAN ${EAP_SAN_MATCH}."
+        else
+          echo "WARNING: server cert re-issue failed — restoring previous files." >&2
+          cp -f "server.pem.bak.${TS}" server.pem 2>/dev/null || true
+          cp -f "server.key.bak.${TS}" server.key 2>/dev/null || true
+        fi
+        rm -f /tmp/eap-server.csr /tmp/eap-server.ext
+      ) || echo "WARNING: EAP identity fixup failed; continuing with current server.pem." >&2
+    fi
+  fi
+fi
+
 if [ -f "${RAD_DIR}/certs/server.pem" ]; then
   echo "Effective EAP server identity (tell users to type the DNS name as Domain on Android):"
-  openssl x509 -in "${RAD_DIR}/certs/server.pem" -noout -subject -ext subjectAltName 2>/dev/null || true
+  openssl x509 -in "${RAD_DIR}/certs/server.pem" -noout -subject -issuer -ext subjectAltName 2>/dev/null || true
 fi
 
 cp -f /app/config/clients.conf "${RAD_DIR}/clients.conf"
