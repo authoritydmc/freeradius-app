@@ -20,9 +20,11 @@ import {
   EyeOff, 
   Copy, 
   Smartphone,
-  RefreshCw
+  RefreshCw,
+  QrCode
 } from 'lucide-react';
 import { calculatePasswordStrength, fetchJson } from '../utils/api';
+import WifiQrModal from './WifiQrModal';
 
 export default function UsersTab({
   users: propUsers,
@@ -74,6 +76,9 @@ export default function UsersTab({
   const [deviceLoading, setDeviceLoading] = useState(false);
   const [newMac, setNewMac] = useState('');
   const [newMacDesc, setNewMacDesc] = useState('');
+
+  // Wi-Fi QR Access Pass Modal
+  const [qrModalUser, setQrModalUser] = useState(null);
 
   const loadData = async () => {
     try {
@@ -513,6 +518,13 @@ export default function UsersTab({
                 {/* Action Buttons */}
                 <td className="px-6 py-4 text-right space-x-1 whitespace-nowrap">
                   <button
+                    onClick={() => setQrModalUser(user)}
+                    title="Show / Send Wi-Fi QR Access Pass"
+                    className="p-1.5 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 rounded-lg transition-colors"
+                  >
+                    <QrCode className="w-4 h-4" />
+                  </button>
+                  <button
                     onClick={() => handleOpenDevicePolicy(user.username)}
                     title="Verified Device MAC Lock Policy"
                     className="p-1.5 text-sky-400 hover:text-sky-300 hover:bg-sky-500/10 rounded-lg transition-colors"
@@ -868,6 +880,16 @@ export default function UsersTab({
           </div>
         </div>
       )}
+
+      {/* ---------------------------------------------------- */}
+      {/* 4. WI-FI QR ACCESS PASS / SCAN / SEND MODAL */}
+      {/* ---------------------------------------------------- */}
+      <WifiQrModal
+        isOpen={Boolean(qrModalUser)}
+        onClose={() => setQrModalUser(null)}
+        user={qrModalUser}
+        onNotify={onNotify}
+      />
 
     </div>
   );
