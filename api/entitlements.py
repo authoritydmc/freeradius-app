@@ -457,13 +457,14 @@ def get_user_usage_stats(username: str) -> Dict[str, Any]:
         conn.close()
 
 def disconnect_active_radius_session(username: str, nas_ip: str = "127.0.0.1", session_id: Optional[str] = None):
-    """Sends RFC 5176 Disconnect-Request packet via radclient to terminate expired user session."""
-    cmd = f"echo 'User-Name = \"{username}\"' | radclient -r 1 {nas_ip}:3799 disconnect '{RADIUS_SECRET}'"
+    """Sends RFC 5176 Disconnect-Request packet via radclient to terminate expired user session (argv input mode)."""
+    lines = [f'User-Name = "{username}"']
     if session_id:
-        cmd = f"echo -e 'User-Name = \"{username}\"\\nAcct-Session-Id = \"{session_id}\"' | radclient -r 1 {nas_ip}:3799 disconnect '{RADIUS_SECRET}'"
-    
+        lines.append(f'Acct-Session-Id = "{session_id}"')
+    input_data = "\n".join(lines)
+    cmd = ["radclient", "-r", "1", f"{nas_ip}:3799", "disconnect", RADIUS_SECRET]
     try:
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=3)
+        res = subprocess.run(cmd, input=input_data, capture_output=True, text=True, timeout=3)
         return res.returncode == 0
     except Exception as e:
         logging.warning(f"Could not disconnect session for {username}: {e}")

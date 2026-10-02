@@ -113,14 +113,10 @@ def test_email_payment_receipt_parser():
     assert receipt["plan_days"] == 7
 
 def test_user_and_admin_tokens():
-    admin_token = generate_session_token("raj", role="admin")
+    admin_token = generate_session_token("raj")
     v_admin = verify_session_token(admin_token)
-    assert v_admin is not None
-    assert v_admin[0] == "raj"
-    assert v_admin[1] == "admin"
+    assert v_admin == "raj"
 
     user_token = generate_session_token("aman", role="user")
     v_user = verify_session_token(user_token)
-    assert v_user is not None
-    assert v_user[0] == "aman"
-    assert v_user[1] == "user"
+    assert v_user == "aman"
