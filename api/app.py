@@ -2463,6 +2463,33 @@ def ensure_plans_table():
                     ('7 Days Weekly Pass', 30.00, 'INR', 7, 604800, 86400, '7 Days high-speed broadband access (₹4.28/day — Save 57% vs Daily)'),
                     ('30 Days Monthly Unlimited', 51.35, 'INR', 30, 2592000, 86400, 'Best Value! Full 30 days unlimited Wi-Fi at ₹1.71/day (₹50 base + 2.7% PG gateway fee)')
                 """)
+            else:
+                # Migrate older default seeds if present
+                cur.execute("""
+                    UPDATE plans SET 
+                        name = '1 Day Daily Pass', 
+                        price = 10.00, 
+                        validity_days = 1, 
+                        validity_seconds = 86400, 
+                        description = 'Emergency 24-hour unlimited high-speed access (₹10/day)'
+                    WHERE (id = 1 AND price = 20.00) OR name = '1 Day Pass';
+
+                    UPDATE plans SET 
+                        name = '7 Days Weekly Pass', 
+                        price = 30.00, 
+                        validity_days = 7, 
+                        validity_seconds = 604800, 
+                        description = '7 Days high-speed broadband access (₹4.28/day — Save 57% vs Daily)'
+                    WHERE (id = 2 AND price = 100.00) OR name = '7 Days (Weekly)';
+
+                    UPDATE plans SET 
+                        name = '30 Days Monthly Unlimited', 
+                        price = 51.35, 
+                        validity_days = 30, 
+                        validity_seconds = 2592000, 
+                        description = 'Best Value! Full 30 days unlimited Wi-Fi at ₹1.71/day (₹50 base + 2.7% PG gateway fee)'
+                    WHERE (id = 3 AND price = 250.00) OR name = '30 Days (Monthly)';
+                """)
             conn.commit()
         conn.close()
     except Exception as e:
