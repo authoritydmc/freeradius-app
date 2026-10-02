@@ -521,6 +521,7 @@ def ensure_audit_table():
 
 def log_audit(admin_user: str, action: str, target_user: Optional[str] = None, detail: Optional[str] = None):
     try:
+        ensure_audit_table()
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute(
@@ -2063,6 +2064,8 @@ def update_user_password(username: str, payload: PasswordChangeRequest, admin_us
 
 @app.get("/radius/api/audit", tags=["Users"])
 @app.get("/api/audit", tags=["Users"])
+@app.get("/radius/api/audit-logs", tags=["Users"])
+@app.get("/api/audit-logs", tags=["Users"])
 def list_audit_log(limit: int = 50, _: str = Depends(authenticate_admin)):
     ensure_audit_table()
     conn = get_db_connection()
@@ -3537,7 +3540,14 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
                 "ca": "int-wifi"
             }
             
-            req_url = f"{signer_url}/api/v1/sign"
+            base = signer_url.rstrip("/")
+            if base.endswith("/api/v1"):
+                req_url = f"{base}/sign"
+            elif base.endswith("/api/v1/sign"):
+                req_url = base
+            else:
+                req_url = f"{base}/api/v1/sign"
+
             req = urllib.request.Request(
                 req_url,
                 data=json.dumps(payload_data).encode("utf-8"),
@@ -3547,8 +3557,8 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status in (200, 201):
                     res_json = json.loads(resp.read().decode("utf-8"))
-                    cert_out = res_json.get("certificate") or res_json.get("cert")
-                    chain_out = res_json.get("fullChain") or res_json.get("chain") or cert_out
+                    cert_out = res_json.get("certificate") or res_json.get("cert") or res_json.get("data", {}).get("certificate")
+                    chain_out = res_json.get("fullChain") or res_json.get("chain") or res_json.get("data", {}).get("fullChain") or cert_out
                     if cert_out:
                         logger.info("Certificate signed successfully via Central Rajlabs-CA Cert Signer for %s", username)
                         return cert_out, chain_out, "Central Rajlabs-CA PKI"
