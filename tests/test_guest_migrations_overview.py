@@ -54,6 +54,28 @@ def test_reject_reason_fallback_configured():
     assert "invalid password" in text
 
 
+def test_freeradius_control_attrs_are_dictionary_known():
+    """freeradius -C rejects unknown attributes, which boot-loops the
+    container. Every control: attribute our shipped configs touch must be a
+    stock-dictionary one (Tmp-String-N scratch space, Auth-Type, ...)."""
+    import re
+    known = {"Auth-Type"} | {f"Tmp-String-{i}" for i in range(9)} | {f"Tmp-Integer-{i}" for i in range(9)}
+    files = [
+        Path("config/sites-available/default"),
+        Path("config/mods-available/sql"),
+        Path("config/policy.d/rajlabs"),
+    ]
+    for f in files:
+        if not f.exists():
+            continue
+        text = f.read_text()
+        for m in re.finditer(r"&control:([A-Za-z0-9_\-]+)", text):
+            assert m.group(1) in known, f"{f}: unknown control attribute '{m.group(1)}' would fail freeradius -C"
+        for block in re.finditer(r"update\s+control\s*\{([^}]*)\}", text):
+            for m in re.finditer(r"([A-Za-z0-9_\-]+)\s*:=", block.group(1)):
+                assert m.group(1) in known, f"{f}: unknown control attribute '{m.group(1)}' would fail freeradius -C"
+
+
 def test_expiry_uses_utc_epoch_everywhere():
     import inspect
     from api.entitlements import activate_or_extend_subscription

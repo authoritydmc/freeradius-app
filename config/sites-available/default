@@ -108,8 +108,10 @@ server default {
                 reject
             }
         }
+        # NOTE: the flag must be a dictionary-known attribute (Tmp-String-0);
+        # custom control: names are rejected at parse time ("Unknown attribute").
         update control {
-            RajLabs-PostAuth-Logged := 'no'
+            Tmp-String-0 := 'no'
         }
         Post-Auth-Type REJECT {
             # Every reject leaves a human-readable reason in radpostauth.reason.
@@ -133,14 +135,14 @@ server default {
             }
             -sql
             update control {
-                RajLabs-PostAuth-Logged := 'yes'
+                Tmp-String-0 := 'yes'
             }
             attr_filter.access_reject
             eap
         }
         # Exactly one radpostauth row per attempt: rejects were already logged
         # above with their reason; accepts log here.
-        if (&control:RajLabs-PostAuth-Logged != 'yes') {
+        if (&control:Tmp-String-0 != 'yes') {
             -sql
         }
         exec
