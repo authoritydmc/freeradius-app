@@ -1872,8 +1872,17 @@ def get_stats(_: str = Depends(authenticate_admin)):
             group_count = cur.fetchone()["group_count"]
 
             try:
-                cur.execute("SELECT COUNT(DISTINCT callingstationid) AS d FROM radacct WHERE callingstationid IS NOT NULL AND callingstationid <> '';")
-                known_devices = cur.fetchone()["d"]
+                cur.execute("""
+                    SELECT COUNT(DISTINCT mac) AS d FROM (
+                        SELECT REPLACE(REPLACE(REPLACE(REPLACE(UPPER(callingstationid), ':', ''), '-', ''), ' ', ''), '.', '') AS mac
+                        FROM radacct WHERE callingstationid IS NOT NULL AND callingstationid <> ''
+                        UNION
+                        SELECT REPLACE(REPLACE(REPLACE(REPLACE(UPPER(calling_station), ':', ''), '-', ''), ' ', ''), '.', '') AS mac
+                        FROM radpostauth WHERE calling_station IS NOT NULL AND calling_station <> ''
+                    ) combined_macs
+                    WHERE mac ~ '^[0-9A-F]{12}$'
+                """)
+                known_devices = int(cur.fetchone()["d"])
             except Exception:
                 known_devices = 0
 
@@ -2299,16 +2308,27 @@ def get_user_overview(username: str, _: str = Depends(authenticate_admin)):
             except Exception:
                 pass
 
-            # Seen devices (from accounting Calling-Station-Id)
+            # Seen devices (from accounting radacct OR authentication radpostauth)
             seen_devices = []
             try:
                 cur.execute("""
-                    SELECT callingstationid AS mac, COUNT(*) AS sessions,
-                           MAX(acctstarttime) AS last_seen
-                    FROM radacct
-                    WHERE username = %s AND callingstationid IS NOT NULL AND callingstationid <> ''
-                    GROUP BY callingstationid ORDER BY last_seen DESC NULLS LAST LIMIT 20
-                """, (uname,))
+                    SELECT mac, MAX(sessions) AS sessions, MAX(last_seen) AS last_seen FROM (
+                        SELECT callingstationid AS mac, COUNT(*) AS sessions,
+                               MAX(acctstarttime) AS last_seen
+                        FROM radacct
+                        WHERE username = %s AND callingstationid IS NOT NULL AND callingstationid <> ''
+                        GROUP BY callingstationid
+                        UNION ALL
+                        SELECT calling_station AS mac, COUNT(*) AS sessions,
+                               MAX(authdate) AS last_seen
+                        FROM radpostauth
+                        WHERE username = %s AND calling_station IS NOT NULL AND calling_station <> ''
+                        GROUP BY calling_station
+                    ) all_dev
+                    WHERE mac IS NOT NULL AND mac <> ''
+                    GROUP BY mac
+                    ORDER BY last_seen DESC NULLS LAST LIMIT 20
+                """, (uname, uname))
                 for r in cur.fetchall():
                     ls = r.get("last_seen")
                     seen_devices.append({

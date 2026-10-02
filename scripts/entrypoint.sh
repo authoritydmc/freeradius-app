@@ -210,6 +210,10 @@ if [ -f /app/config/mods-available/eap ]; then
   cp -f /app/config/mods-available/eap "${RAD_DIR}/mods-available/eap"
   ln -sf "${RAD_DIR}/mods-available/eap" "${RAD_DIR}/mods-enabled/eap"
 fi
+if [ -f /app/config/sites-available/inner-tunnel ]; then
+  cp -f /app/config/sites-available/inner-tunnel "${RAD_DIR}/sites-available/inner-tunnel"
+  ln -sf "${RAD_DIR}/sites-available/inner-tunnel" "${RAD_DIR}/sites-enabled/inner-tunnel"
+fi
 if [ -f /app/config/dictionary ]; then
   cp -f /app/config/dictionary "${RAD_DIR}/dictionary"
 fi
@@ -222,6 +226,7 @@ ln -sf "${RAD_DIR}/sites-available/default" "${RAD_DIR}/sites-enabled/default"
 
 chown -R freerad:freerad "${RAD_DIR}"
 chmod 640 "${RAD_DIR}/clients.conf" "${RAD_DIR}/mods-available/sql" "${RAD_DIR}/sites-available/default"
+[ -f "${RAD_DIR}/sites-available/inner-tunnel" ] && chmod 640 "${RAD_DIR}/sites-available/inner-tunnel" || true
 [ -f "${RAD_DIR}/policy.d/rajlabs" ] && chmod 640 "${RAD_DIR}/policy.d/rajlabs" || true
 
 # Ensure FreeRADIUS authentication accepts/rejects log to container stdout
