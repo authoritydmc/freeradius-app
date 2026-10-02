@@ -86,6 +86,28 @@ def test_postauth_query_logs_no_password():
     assert "Chap-Password" not in query
 
 
+def test_radius_sql_interpolations_are_quote_guarded():
+    """Every %{attr} reaching SQL must sit inside replace(...''''...'''')
+    — rlm_sql does not escape expansions and PQexec runs stacked
+    statements, so a bare '%{User-Name}' is injectable (#20)."""
+    import re
+    for f in (Path("config/mods-available/sql"),
+              Path("config/sites-available/default")):
+        # Comments (own documentation) carry no executable interpolations.
+        text = "\n".join(l for l in f.read_text().splitlines()
+                         if not l.lstrip().startswith("#"))
+        # Strip guarded occurrences — replace('%{...}', ''''...) quote-doubling —
+        # then fail on any leftover interpolation inside SQL string context.
+        guarded = re.sub(r"replace\('%\{[^}]*\}',\s*'{4}", "", text)
+        for m in re.finditer(r"%\{(User-Name|User-Password|Chap-Password|Calling-Station-Id|Called-Station-Id|EAP-Type|reply:[^}]*)\}", guarded):
+            # Allowed only outside SQL strings: reply:Packet-Type etc. in
+            # non-SQL unlang is fine — flag it only inside single quotes.
+            line_start = guarded.rfind("\n", 0, m.start()) + 1
+            before = guarded[line_start:m.start()]
+            if before.count("'") % 2 == 1:
+                raise AssertionError(f"{f}: unguarded SQL interpolation '%{{{m.group(1)}}}'")
+
+
 def test_expiry_uses_utc_epoch_everywhere():
     import inspect
     from api.entitlements import activate_or_extend_subscription

@@ -100,8 +100,12 @@ server default {
         # EAP (which returns early from authorize) with the final User-Name.
         # Rejects here jump to Post-Auth-Type REJECT below, whose -sql logs
         # the Reply-Message into radpostauth.reason for the Auth History view.
-        if (&User-Name && "%{sql:SELECT CASE WHEN require_verified THEN 'yes' ELSE 'no' END FROM user_device_policy WHERE username='%{User-Name}'}" == 'yes') {
-            if (!&Calling-Station-Id || "%{sql:SELECT COUNT(*) FROM verified_devices WHERE username='%{User-Name}' AND mac=REPLACE(REPLACE(REPLACE(REPLACE(UPPER('%{Calling-Station-Id}'), ':', ''), '-', ''), ' ', ''), '.', '')}" == '0') {
+        # NOTE: User-Name / Calling-Station-Id are supplicant-controlled.
+        # They enter SQL below only through replace(...''''...''''') which
+        # doubles single quotes (same guard as postauth_query) — never add a
+        # bare '%{...}' interpolation here.
+        if (&User-Name && "%{sql:SELECT CASE WHEN require_verified THEN 'yes' ELSE 'no' END FROM user_device_policy WHERE username=replace('%{User-Name}', '''', '''''')}" == 'yes') {
+            if (!&Calling-Station-Id || "%{sql:SELECT COUNT(*) FROM verified_devices WHERE username=replace('%{User-Name}', '''', '''''') AND mac=REPLACE(REPLACE(REPLACE(REPLACE(UPPER(replace('%{Calling-Station-Id}', '''', '''''')), ':', ''), '-', ''), ' ', ''), '.', '')}" == '0') {
                 update reply {
                     Reply-Message := "Rejected: device MAC not verified for this user. Ask the admin to verify your device, or test your login at https://wifi.rajlabs.in"
                 }

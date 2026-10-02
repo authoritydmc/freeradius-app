@@ -49,9 +49,11 @@ sql {
     # sections call sql as "-sql" so a missing column on old DBs is ignored,
     # never fatal.
     #
-    # SECURITY: the tried password is deliberately NOT logged (pass = '').
-    # MS-CHAP/PEAP attempts would otherwise persist real user secrets —
-    # including mistyped passwords for unrelated accounts — in the DB and
-    # every backup. The API never selects this column either.
-    postauth_query = "INSERT INTO ${postauth_table} (username, pass, reply, reason, eap_type, calling_station, called_station, authdate) VALUES ('%{User-Name}', '', '%{reply:Packet-Type}', '%{reply:Reply-Message}', '%{EAP-Type}', '%{Calling-Station-Id}', '%{Called-Station-Id}', '%S')"
+    # SECURITY: every %{...} value here is attacker-influenced (outer EAP
+    # identity, MACs, AP IDs are all supplicant-controlled pre-auth), and
+    # rlm_sql does not escape expansions — a single quote would break out of
+    # the string (PQexec runs stacked statements). Each value goes through
+    # SQL-side replace(...''''...''''') which doubles quotes: content is
+    # preserved, breakout is impossible. Do NOT add bare '%{...}' values.
+    postauth_query = "INSERT INTO ${postauth_table} (username, pass, reply, reason, eap_type, calling_station, called_station, authdate) VALUES (replace('%{User-Name}', '''', ''''''), '', replace('%{reply:Packet-Type}', '''', ''''''), replace('%{reply:Reply-Message}', '''', ''''''), replace('%{EAP-Type}', '''', ''''''), replace('%{Calling-Station-Id}', '''', ''''''), replace('%{Called-Station-Id}', '''', ''''''), '%S')"
 }
