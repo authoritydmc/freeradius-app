@@ -622,7 +622,11 @@ def _is_token_revoked(token: str) -> bool:
 
 def verify_session_token(token: str) -> Optional[str]:
     try:
-        raw = base64.urlsafe_b64decode(token.encode()).decode()
+        raw_bytes = base64.urlsafe_b64decode(token.encode())
+        # Strict validation: re-encoded must equal input token to prevent trailing garbage bypass in Python < 3.14
+        if base64.urlsafe_b64encode(raw_bytes).decode() != token:
+            return None
+        raw = raw_bytes.decode("utf-8")
         parts = raw.split(":")
         if len(parts) == 3:
             username, timestamp_str, sig = parts
@@ -3254,7 +3258,14 @@ if os.path.isdir(STATIC_DIR):
 @app.get("/radius", response_class=HTMLResponse, tags=["Dashboard"])
 @app.get("/radius/", response_class=HTMLResponse, tags=["Dashboard"])
 @app.get("/", response_class=HTMLResponse, tags=["Dashboard"])
-def get_dashboard():
+def get_dashboard(request: Request):
+    host = request.headers.get("host", "").lower()
+    # If accessed directly via wifi.rajlabs.in at root, serve captive portal
+    if "wifi." in host and request.url.path in ("/", ""):
+        portal_path = os.path.join(STATIC_DIR, "portal.html")
+        if os.path.exists(portal_path):
+            with open(portal_path, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read())
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path):
         with open(index_path, "r", encoding="utf-8") as f:
