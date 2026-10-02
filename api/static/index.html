@@ -231,79 +231,197 @@
     <header class="bg-slate-900/90 backdrop-blur-xl border-b border-slate-800 sticky top-0 z-50">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex items-center justify-between h-16">
-          <div class="flex items-center gap-3.5">
-            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20 shrink-0">
               <i class="fa-solid fa-shield-halved text-lg"></i>
             </div>
-            <div>
-              <span class="text-base font-bold tracking-tight bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">RajLabs FreeRADIUS</span>
-              <span class="ml-2 text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Enterprise AAA</span>
+            <div class="truncate">
+              <div class="flex items-center gap-2">
+                <span class="text-base font-bold tracking-tight bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent truncate">RajLabs FreeRADIUS</span>
+                <span class="hidden xs:inline-block text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 whitespace-nowrap">AAA</span>
+              </div>
             </div>
           </div>
           
-          <div class="flex items-center gap-3">
+          <div class="flex items-center gap-2 sm:gap-3">
             <!-- Health Status -->
-            <div class="flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium border"
+            <div class="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium border"
                  :class="health.status === 'healthy' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'">
               <span class="w-2 h-2 rounded-full animate-ping" :class="health.status === 'healthy' ? 'bg-emerald-400' : 'bg-amber-400'"></span>
-              <span x-text="health.status === 'healthy' ? 'RADIUS Online' : 'System Degraded'"></span>
+              <span x-text="health.status === 'healthy' ? 'Online' : 'Degraded'"></span>
             </div>
 
             <!-- Download Root CA -->
-            <a href="/radius/api/certs/ca" download class="hidden sm:flex text-xs items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 transition-colors border border-indigo-800/60">
+            <a href="/radius/api/certs/ca" download title="Download Root CA Certificate" class="hidden md:flex text-xs items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 transition-colors border border-indigo-800/60">
               <i class="fa-solid fa-certificate"></i> Root CA
             </a>
 
             <!-- Captive Portal Link -->
-            <a href="/radius/portal" target="_blank" class="hidden sm:flex text-xs items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors border border-slate-700">
+            <a href="/radius/portal" target="_blank" title="Open Self-Service Portal" class="hidden md:flex text-xs items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors border border-slate-700">
               <i class="fa-solid fa-wifi"></i> Portal
             </a>
 
+            <!-- Quick Settings Button -->
+            <button @click="activeTab = 'settings'; mobileMenuOpen = false; fetchSettings()" title="Open System Settings & Cert-Signer API"
+                    :class="activeTab === 'settings' ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'"
+                    class="flex text-xs items-center gap-1.5 px-3 py-1.5 rounded-xl transition-all border shadow-sm">
+              <i class="fa-solid fa-sliders text-indigo-400"></i>
+              <span class="hidden sm:inline font-semibold">Settings</span>
+            </button>
+
             <!-- User Badge & Logout -->
-            <div class="flex items-center gap-2 pl-2 border-l border-slate-800">
-              <span class="text-xs font-semibold px-2.5 py-1 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1.5">
+            <div class="flex items-center gap-1.5 sm:gap-2 pl-2 border-l border-slate-800">
+              <span class="text-xs font-semibold px-2 sm:px-2.5 py-1 rounded-lg bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1.5">
                 <i class="fa-solid fa-user-shield text-[10px]"></i>
-                <span x-text="currentUser"></span>
+                <span class="max-w-[70px] sm:max-w-none truncate" x-text="currentUser"></span>
               </span>
-              <button @click="logout()" title="Logout" class="p-1.5 text-slate-400 hover:text-rose-400 transition-colors">
+              <button @click="logout()" title="Logout" class="p-2 text-slate-400 hover:text-rose-400 transition-colors">
                 <i class="fa-solid fa-right-from-bracket"></i>
               </button>
             </div>
+
+            <!-- Mobile Hamburger Toggle -->
+            <button @click="mobileMenuOpen = !mobileMenuOpen" type="button" aria-label="Toggle navigation menu"
+                    class="md:hidden p-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 hover:text-white focus:outline-none">
+              <i :class="mobileMenuOpen ? 'fa-solid fa-xmark text-lg text-indigo-400' : 'fa-solid fa-bars text-lg'"></i>
+            </button>
           </div>
         </div>
       </div>
 
-      <!-- Navigation Tabs -->
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 border-t border-slate-800/60">
-        <nav class="flex space-x-6 overflow-x-auto">
-          <button @click="activeTab = 'status'; refreshAll()" :class="activeTab === 'status' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+      <!-- Mobile Dropdown Menu -->
+      <div x-show="mobileMenuOpen" x-transition.opacity.duration.200ms
+           class="md:hidden border-t border-slate-800 bg-slate-900/98 backdrop-blur-2xl px-4 py-4 space-y-2 shadow-2xl max-h-[80vh] overflow-y-auto">
+        
+        <div class="text-[11px] font-bold text-slate-400 uppercase tracking-wider px-2 pt-1 pb-2 flex items-center justify-between">
+          <span>Navigation Menu</span>
+          <span class="text-emerald-400 text-[10px] font-normal flex items-center gap-1">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> RADIUS Active
+          </span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <button @click="activeTab = 'status'; mobileMenuOpen = false; refreshAll()"
+                  :class="activeTab === 'status' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all">
+            <i class="fa-solid fa-heart-pulse text-indigo-400"></i>
+            <span class="text-xs">Status</span>
+          </button>
+
+          <button @click="activeTab = 'users'; mobileMenuOpen = false; fetchUsers()"
+                  :class="activeTab === 'users' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center justify-between transition-all">
+            <div class="flex items-center gap-2.5">
+              <i class="fa-solid fa-users text-cyan-400"></i>
+              <span class="text-xs">Users</span>
+            </div>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300" x-text="stats.total_users || 0"></span>
+          </button>
+
+          <button @click="activeTab = 'certs'; mobileMenuOpen = false; fetchCerts(); fetchSignerStatus()"
+                  :class="activeTab === 'certs' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all">
+            <i class="fa-solid fa-id-card-clip text-purple-400"></i>
+            <span class="text-xs">EAP-TLS Certs</span>
+          </button>
+
+          <button @click="activeTab = 'groups'; mobileMenuOpen = false; fetchGroups()"
+                  :class="activeTab === 'groups' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all">
+            <i class="fa-solid fa-layer-group text-amber-400"></i>
+            <span class="text-xs">Policies</span>
+          </button>
+
+          <button @click="activeTab = 'nas'; mobileMenuOpen = false; fetchNas()"
+                  :class="activeTab === 'nas' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all">
+            <i class="fa-solid fa-network-wired text-emerald-400"></i>
+            <span class="text-xs">NAS Clients</span>
+          </button>
+
+          <button @click="activeTab = 'sessions'; mobileMenuOpen = false; fetchSessions()"
+                  :class="activeTab === 'sessions' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center justify-between transition-all">
+            <div class="flex items-center gap-2.5">
+              <i class="fa-solid fa-signal text-emerald-400"></i>
+              <span class="text-xs">Sessions</span>
+            </div>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300" x-text="stats.active_sessions || 0"></span>
+          </button>
+
+          <button @click="activeTab = 'devices'; mobileMenuOpen = false; fetchDevices()"
+                  :class="activeTab === 'devices' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center justify-between transition-all">
+            <div class="flex items-center gap-2.5">
+              <i class="fa-solid fa-mobile-screen-button text-sky-400"></i>
+              <span class="text-xs">Devices</span>
+            </div>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-300" x-text="stats.known_devices || 0"></span>
+          </button>
+
+          <button @click="activeTab = 'test-auth'; mobileMenuOpen = false"
+                  :class="activeTab === 'test-auth' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all">
+            <i class="fa-solid fa-vial-circle-check text-rose-400"></i>
+            <span class="text-xs">RADIUS Tester</span>
+          </button>
+
+          <button @click="activeTab = 'logs'; mobileMenuOpen = false; fetchLogs(); fetchAudit()"
+                  :class="activeTab === 'logs' ? 'bg-indigo-600/30 border-indigo-500 text-white font-bold' : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'"
+                  class="p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all">
+            <i class="fa-solid fa-list-check text-slate-400"></i>
+            <span class="text-xs">Auth Logs</span>
+          </button>
+
+          <button @click="activeTab = 'settings'; mobileMenuOpen = false; fetchSettings()"
+                  :class="activeTab === 'settings' ? 'bg-indigo-600 border-indigo-400 text-white font-bold shadow-lg shadow-indigo-600/30' : 'bg-slate-950 border-indigo-500/30 text-indigo-300 hover:border-indigo-400'"
+                  class="p-3 rounded-2xl border text-left flex items-center gap-2.5 transition-all">
+            <i class="fa-solid fa-sliders text-indigo-400"></i>
+            <span class="text-xs font-semibold">Settings & CA</span>
+          </button>
+        </div>
+
+        <div class="pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+          <a href="/radius/api/certs/ca" download class="flex items-center gap-2 text-indigo-400 hover:text-indigo-300 font-semibold p-2">
+            <i class="fa-solid fa-certificate"></i> Download Root CA
+          </a>
+          <a href="/radius/portal" target="_blank" class="flex items-center gap-2 text-slate-300 hover:text-white p-2 font-semibold">
+            <i class="fa-solid fa-wifi text-indigo-400"></i> User Portal →
+          </a>
+        </div>
+      </div>
+
+      <!-- Desktop & Horizontal Swipe Navigation Tabs -->
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 border-t border-slate-800/60 overflow-hidden">
+        <nav class="flex space-x-4 sm:space-x-6 overflow-x-auto py-1 scrollbar-none" style="-webkit-overflow-scrolling: touch;">
+          <button @click="activeTab = 'status'; refreshAll()" :class="activeTab === 'status' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-heart-pulse"></i> Status
           </button>
-          <button @click="activeTab = 'users'; fetchUsers()" :class="activeTab === 'users' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'users'; fetchUsers()" :class="activeTab === 'users' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-users"></i> Users (<span x-text="stats.total_users || 0"></span>)
           </button>
-          <button @click="activeTab = 'certs'; fetchCerts(); fetchSignerStatus()" :class="activeTab === 'certs' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'certs'; fetchCerts(); fetchSignerStatus()" :class="activeTab === 'certs' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-id-card-clip"></i> EAP-TLS Certificates
           </button>
-          <button @click="activeTab = 'groups'; fetchGroups()" :class="activeTab === 'groups' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'groups'; fetchGroups()" :class="activeTab === 'groups' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-layer-group"></i> Group Policies
           </button>
-          <button @click="activeTab = 'nas'; fetchNas()" :class="activeTab === 'nas' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'nas'; fetchNas()" :class="activeTab === 'nas' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-network-wired"></i> NAS Clients
           </button>
-          <button @click="activeTab = 'sessions'; fetchSessions()" :class="activeTab === 'sessions' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'sessions'; fetchSessions()" :class="activeTab === 'sessions' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-signal"></i> Active Sessions (<span x-text="stats.active_sessions || 0"></span>)
           </button>
-          <button @click="activeTab = 'devices'; fetchDevices()" :class="activeTab === 'devices' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'devices'; fetchDevices()" :class="activeTab === 'devices' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-mobile-screen-button"></i> Devices (<span x-text="stats.known_devices || 0"></span>)
           </button>
-          <button @click="activeTab = 'test-auth'" :class="activeTab === 'test-auth' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'test-auth'" :class="activeTab === 'test-auth' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-vial-circle-check"></i> RADIUS Tester
           </button>
-          <button @click="activeTab = 'logs'; fetchLogs(); fetchAudit()" :class="activeTab === 'logs' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'logs'; fetchLogs(); fetchAudit()" :class="activeTab === 'logs' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-list-check"></i> Auth History
           </button>
-          <button @click="activeTab = 'settings'; fetchSettings()" :class="activeTab === 'settings' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+          <button @click="activeTab = 'settings'; fetchSettings()" :class="activeTab === 'settings' ? 'border-indigo-500 text-indigo-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-2.5 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap touch-manipulation">
             <i class="fa-solid fa-sliders"></i> System Settings
           </button>
         </nav>
@@ -1089,6 +1207,8 @@
             </tbody>
           </table>
         </div>
+      </section>
+
       <!-- TAB: SYSTEM SETTINGS -->
       <section x-show="activeTab === 'settings'" class="space-y-6">
         <div class="flex flex-wrap gap-3 justify-between items-center">
@@ -1771,6 +1891,7 @@
         contactAdminModal: { show: false, username: '' },
 
         showCertSignerKey: false,
+        mobileMenuOpen: false,
         systemSettings: {
           admin_contact_phone: '+919999999999',
           admin_contact_name: 'Network Administrator',
