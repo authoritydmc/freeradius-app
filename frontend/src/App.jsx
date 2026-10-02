@@ -7,6 +7,7 @@ import NasTab from './components/NasTab';
 import SessionsTab from './components/SessionsTab';
 import DevicesTab from './components/DevicesTab';
 import CertsTab from './components/CertsTab';
+import PaymentsTab from './components/PaymentsTab';
 import TesterTab from './components/TesterTab';
 import LogsTab from './components/LogsTab';
 import SettingsTab from './components/SettingsTab';
@@ -211,6 +212,12 @@ export default function App() {
           <CertsTab 
             signerStatus={signerStatus}
             onNotify={showToast} 
+          />
+        )}
+        {activeTab === 'payments' && (
+          <PaymentsTab 
+            onNotify={showToast} 
+            onJumpSettings={() => setActiveTab('settings')}
           />
         )}
         {activeTab === 'tester' && <TesterTab onNotify={showToast} />}

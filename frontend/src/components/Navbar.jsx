@@ -15,8 +15,8 @@ import {
   Menu, 
   X, 
   Wifi, 
-  Download, 
-  UserCheck 
+  UserCheck,
+  CreditCard
 } from 'lucide-react';
 
 export default function Navbar({ 
@@ -38,6 +38,7 @@ export default function Navbar({
     { id: 'nas', label: 'NAS Clients', icon: Network },
     { id: 'sessions', label: 'Sessions', icon: Radio, badge: stats?.active_sessions, highlight: stats?.active_sessions > 0 },
     { id: 'devices', label: 'Devices', icon: Smartphone, badge: stats?.known_devices },
+    { id: 'payments', label: 'Payments & Recon', icon: CreditCard, highlightColor: 'text-emerald-400' },
     { id: 'tester', label: 'RADIUS Tester', icon: CheckCircle2 },
     { id: 'logs', label: 'Auth Logs', icon: FileText },
     { id: 'settings', label: 'Settings', icon: Sliders, highlightColor: 'text-indigo-400' },

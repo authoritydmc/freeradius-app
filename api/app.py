@@ -1218,6 +1218,49 @@ class SystemSettingsUpdateRequest(BaseModel):
     cert_signer_api_key: Optional[str] = None
     wifi_ssid: Optional[str] = None
     wifi_auth_type: Optional[str] = None
+    # Payment Gateways & Email Reconciliation
+    payment_active_gateway: Optional[str] = None
+    razorpay_key_id: Optional[str] = None
+    razorpay_key_secret: Optional[str] = None
+    razorpay_webhook_secret: Optional[str] = None
+    cashfree_app_id: Optional[str] = None
+    cashfree_secret_key: Optional[str] = None
+    cashfree_env: Optional[str] = None
+    payu_merchant_key: Optional[str] = None
+    payu_merchant_salt: Optional[str] = None
+    email_imap_host: Optional[str] = None
+    email_imap_port: Optional[int] = None
+    email_imap_user: Optional[str] = None
+    email_imap_password: Optional[str] = None
+    email_imap_folder: Optional[str] = None
+
+class ManualPaymentActivateRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    plan_id: Optional[int] = None
+    validity_days: Optional[int] = None
+    amount: float = Field(default=0.0, ge=0)
+    utr: Optional[str] = None
+    note: Optional[str] = None
+    gateway: Optional[str] = "MANUAL_ADMIN"
+
+class EmailScanRequest(BaseModel):
+    folder: Optional[str] = "INBOX"
+    limit: Optional[int] = 30
+    auto_activate: Optional[bool] = True
+
+class GatewayTestRequest(BaseModel):
+    gateway: str
+    key_id: Optional[str] = None
+    key_secret: Optional[str] = None
+    app_id: Optional[str] = None
+    secret_key: Optional[str] = None
+    env: Optional[str] = "TEST"
+    imap_host: Optional[str] = None
+    imap_port: Optional[int] = 993
+    imap_user: Optional[str] = None
+    imap_password: Optional[str] = None
+    imap_folder: Optional[str] = "INBOX"
+
 
 
 
@@ -2288,6 +2331,90 @@ def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = D
                     VALUES ('wifi_auth_type', %s, 'Default Wi-Fi Authentication Security Type', CURRENT_TIMESTAMP)
                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
                 """, (payload.wifi_auth_type.strip(),))
+            if payload.payment_active_gateway is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('payment_active_gateway', %s, 'Active Payment Gateway Mode', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.payment_active_gateway.strip(),))
+            if payload.razorpay_key_id is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('razorpay_key_id', %s, 'Razorpay API Key ID', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.razorpay_key_id.strip(),))
+            if payload.razorpay_key_secret is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('razorpay_key_secret', %s, 'Razorpay API Key Secret', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.razorpay_key_secret.strip(),))
+            if payload.razorpay_webhook_secret is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('razorpay_webhook_secret', %s, 'Razorpay Webhook Secret', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.razorpay_webhook_secret.strip(),))
+            if payload.cashfree_app_id is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('cashfree_app_id', %s, 'Cashfree App ID', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.cashfree_app_id.strip(),))
+            if payload.cashfree_secret_key is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('cashfree_secret_key', %s, 'Cashfree Secret Key', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.cashfree_secret_key.strip(),))
+            if payload.cashfree_env is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('cashfree_env', %s, 'Cashfree Environment (TEST/PROD)', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.cashfree_env.strip().upper(),))
+            if payload.payu_merchant_key is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('payu_merchant_key', %s, 'PayU Merchant Key', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.payu_merchant_key.strip(),))
+            if payload.payu_merchant_salt is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('payu_merchant_salt', %s, 'PayU Merchant Salt', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.payu_merchant_salt.strip(),))
+            if payload.email_imap_host is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('email_imap_host', %s, 'Email IMAP Host for Bank Note Reconciliation', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.email_imap_host.strip(),))
+            if payload.email_imap_port is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('email_imap_port', %s, 'Email IMAP Port', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (str(payload.email_imap_port),))
+            if payload.email_imap_user is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('email_imap_user', %s, 'Email IMAP Username/Address', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.email_imap_user.strip(),))
+            if payload.email_imap_password is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('email_imap_password', %s, 'Email IMAP Password / App Password', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.email_imap_password.strip(),))
+            if payload.email_imap_folder is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('email_imap_folder', %s, 'Email IMAP Folder', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.email_imap_folder.strip(),))
             conn.commit()
 
 
@@ -2405,10 +2532,396 @@ def delete_plan(plan_id: int, admin_user: str = Depends(authenticate_admin)):
             if not row:
                 raise HTTPException(status_code=404, detail="Plan not found")
             conn.commit()
-            log_audit(admin_user, "plan_delete", row["name"], f"id={plan_id}")
             return {"status": "success", "message": f"Plan '{row['name']}' deleted successfully"}
     finally:
         conn.close()
+
+
+# ============================================================================
+# Payments, Gateways & Email Reconciliation Management
+# ============================================================================
+@app.get("/radius/api/payments", tags=["Payments"])
+@app.get("/api/payments", tags=["Payments"])
+def list_payments(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    status_filter: Optional[str] = None,
+    gateway_filter: Optional[str] = None,
+    query: Optional[str] = None,
+    _: str = Depends(authenticate_admin)
+):
+    """List payment transactions with associated user, plan, gateway, and financial analytics."""
+    from api.db_init import init_all_tables
+    init_all_tables()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            where_clauses = ["1=1"]
+            params = []
+            if status_filter:
+                where_clauses.append("p.status = %s")
+                params.append(status_filter.upper())
+            if gateway_filter:
+                where_clauses.append("p.gateway ILIKE %s")
+                params.append(f"%{gateway_filter}%")
+            if query:
+                where_clauses.append("(u.username ILIKE %s OR p.gateway_payment_id ILIKE %s OR p.gateway_order_id ILIKE %s OR p.raw_reference ILIKE %s)")
+                q = f"%{query.strip()}%"
+                params.extend([q, q, q, q])
+
+            where_str = " AND ".join(where_clauses)
+
+            # 1. Total counts
+            cur.execute(f"""
+                SELECT COUNT(*) as count 
+                FROM payments p
+                LEFT JOIN users u ON p.user_id = u.id
+                WHERE {where_str}
+            """, tuple(params))
+            total_count = cur.fetchone()["count"]
+
+            # 2. Paginated rows
+            cur.execute(f"""
+                SELECT 
+                    p.id, p.user_id, COALESCE(u.username, 'Unknown User') as username,
+                    p.plan_id, COALESCE(pl.name, 'Custom Pass') as plan_name,
+                    p.gateway, p.gateway_order_id, p.gateway_payment_id,
+                    p.amount, p.currency, p.status, p.verified_at,
+                    p.raw_reference, p.created_at,
+                    s.id as subscription_id, s.status as subscription_status, s.expires_at as subscription_expires_at
+                FROM payments p
+                LEFT JOIN users u ON p.user_id = u.id
+                LEFT JOIN plans pl ON p.plan_id = pl.id
+                LEFT JOIN subscriptions s ON s.payment_id = p.id
+                WHERE {where_str}
+                ORDER BY p.created_at DESC
+                LIMIT %s OFFSET %s
+            """, tuple(params + [limit, offset]))
+            payments_rows = cur.fetchall()
+
+            # 3. Aggregated financial metrics
+            cur.execute("""
+                SELECT 
+                    COALESCE(SUM(CASE WHEN status = 'SUCCESS' THEN amount ELSE 0 END), 0) as total_revenue,
+                    COUNT(CASE WHEN status = 'SUCCESS' THEN 1 END) as successful_count,
+                    COUNT(CASE WHEN status = 'PENDING' THEN 1 END) as pending_count,
+                    COUNT(CASE WHEN status = 'FAILED' THEN 1 END) as failed_count
+                FROM payments
+            """)
+            stats_row = cur.fetchone()
+
+            # 4. Gateway distribution
+            cur.execute("""
+                SELECT gateway, COUNT(*) as count, COALESCE(SUM(amount), 0) as total_amount
+                FROM payments
+                WHERE status = 'SUCCESS'
+                GROUP BY gateway
+            """)
+            gateway_stats = cur.fetchall()
+
+            return {
+                "total": total_count,
+                "limit": limit,
+                "offset": offset,
+                "metrics": {
+                    "total_revenue": float(stats_row["total_revenue"]),
+                    "successful_count": stats_row["successful_count"],
+                    "pending_count": stats_row["pending_count"],
+                    "failed_count": stats_row["failed_count"],
+                    "gateway_distribution": gateway_stats
+                },
+                "payments": payments_rows
+            }
+    finally:
+        conn.close()
+
+
+@app.post("/radius/api/payments/manual-activate", tags=["Payments"])
+@app.post("/api/payments/manual-activate", tags=["Payments"])
+def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: str = Depends(authenticate_admin)):
+    """1-Click manual top-up & plan activation via UTR, Note, or Cash collection."""
+    from api.entitlements import process_verified_payment
+    uname = validate_username(payload.username)
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Check or auto-provision in users table
+            cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1", (uname,))
+            u_row = cur.fetchone()
+            if not u_row:
+                cur.execute("""
+                    INSERT INTO users (username, password_hash, status)
+                    VALUES (%s, %s, 'ACTIVE')
+                    RETURNING id
+                """, (uname, generate_session_secret(24)))
+                user_id = cur.fetchone()["id"]
+            else:
+                user_id = u_row["id"]
+            conn.commit()
+
+        # Generate unique payment ref if UTR not supplied
+        payment_ref = payload.utr.strip() if payload.utr and payload.utr.strip() else f"MANUAL-{uname}-{int(time.time())}"
+        
+        result = process_verified_payment(
+            gateway=payload.gateway or "MANUAL_ADMIN",
+            gateway_payment_id=payment_ref,
+            gateway_order_id=payload.note or f"Manual activation by {admin_user}",
+            user_id=user_id,
+            plan_id=payload.plan_id,
+            amount=payload.amount,
+            currency="INR",
+            raw_reference=f"Manual Admin Top-up by {admin_user}: note={payload.note or ''}",
+            actor_type="ADMIN",
+            ip="127.0.0.1"
+        )
+        log_audit(admin_user, "MANUAL_PAYMENT_ACTIVATED", uname, f"amount={payload.amount} ref={payment_ref} plan_id={payload.plan_id}")
+        return {
+            "status": "success",
+            "message": f"Plan successfully activated for user '{uname}' (Ref: {payment_ref})",
+            "details": result
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/radius/api/payments/email/test", tags=["Payments"])
+@app.post("/api/payments/email/test", tags=["Payments"])
+def test_email_imap(payload: GatewayTestRequest, _: str = Depends(authenticate_admin)):
+    """Test IMAP connection to Gmail / Bank mail server."""
+    from api.payment_engine import test_imap_connection
+    host = payload.imap_host
+    port = payload.imap_port or 993
+    user = payload.imap_user
+    pwd = payload.imap_password
+
+    # If not passed in body, lookup from DB
+    if not (host and user and pwd):
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT key, value FROM system_settings WHERE key IN ('email_imap_host', 'email_imap_port', 'email_imap_user', 'email_imap_password')")
+                smap = {r["key"]: r["value"] for r in cur.fetchall()}
+                host = host or smap.get("email_imap_host")
+                port = port or int(smap.get("email_imap_port", 993))
+                user = user or smap.get("email_imap_user")
+                pwd = pwd or smap.get("email_imap_password")
+        finally:
+            conn.close()
+
+    res = test_imap_connection(host, port, user, pwd)
+    return res
+
+
+@app.post("/radius/api/payments/email/scan", tags=["Payments"])
+@app.post("/api/payments/email/scan", tags=["Payments"])
+def scan_email_payments(payload: EmailScanRequest, admin_user: str = Depends(authenticate_admin)):
+    """Scan IMAP mailbox for bank alert emails, parse UPI notes/UTRs, and auto-activate plans."""
+    from api.payment_engine import scan_bank_emails_for_payments
+    from api.entitlements import process_verified_payment
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM system_settings WHERE key IN ('email_imap_host', 'email_imap_port', 'email_imap_user', 'email_imap_password', 'email_imap_folder')")
+            smap = {r["key"]: r["value"] for r in cur.fetchall()}
+            host = smap.get("email_imap_host")
+            port = int(smap.get("email_imap_port", 993))
+            user = smap.get("email_imap_user")
+            pwd = smap.get("email_imap_password")
+            folder = payload.folder or smap.get("email_imap_folder", "INBOX")
+    finally:
+        conn.close()
+
+    if not (host and user and pwd):
+        raise HTTPException(status_code=400, detail="IMAP settings not configured. Please set Gmail/IMAP host, username, and app password in Settings.")
+
+    scan_res = scan_bank_emails_for_payments(host, port, user, pwd, folder=folder, limit=payload.limit or 30)
+    if not scan_res.get("success"):
+        raise HTTPException(status_code=500, detail=scan_res.get("error", "Email scan failed"))
+
+    processed_list = []
+    if payload.auto_activate:
+        for item in scan_res.get("transactions", []):
+            if item.get("matched") and item.get("utr") and item.get("username"):
+                uname = item["username"]
+                utr = item["utr"]
+                amt = item.get("amount") or 0.0
+                plan_id = item.get("plan_id")
+                
+                try:
+                    c = get_db_connection()
+                    with c.cursor() as cur:
+                        cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1", (uname,))
+                        u_row = cur.fetchone()
+                        if not u_row:
+                            cur.execute("INSERT INTO users (username, password_hash, status) VALUES (%s, %s, 'ACTIVE') RETURNING id", (uname, generate_session_secret(24)))
+                            uid = cur.fetchone()["id"]
+                        else:
+                            uid = u_row["id"]
+                        
+                        # Match plan by price if plan_id not in note
+                        if not plan_id and amt > 0:
+                            cur.execute("SELECT id FROM plans WHERE price = %s LIMIT 1", (amt,))
+                            pl = cur.fetchone()
+                            if pl:
+                                plan_id = pl["id"]
+                        c.commit()
+                    c.close()
+
+                    p_res = process_verified_payment(
+                        gateway="EMAIL_IMAP",
+                        gateway_payment_id=f"UTR-{utr}",
+                        gateway_order_id=f"Note: {uname}",
+                        user_id=uid,
+                        plan_id=plan_id,
+                        amount=amt,
+                        currency="INR",
+                        raw_reference=f"Parsed from: {item.get('from', '')} | Subject: {item.get('subject', '')}",
+                        actor_type="WEBHOOK",
+                        ip="127.0.0.1"
+                    )
+                    processed_list.append({
+                        "utr": utr,
+                        "username": uname,
+                        "amount": amt,
+                        "status": p_res.get("status")
+                    })
+                except Exception as e:
+                    logger.warning("Failed to auto-process email payment for utr=%s user=%s: %s", utr, uname, e)
+
+    log_audit(admin_user, "EMAIL_PAYMENTS_SCANNED", "system", f"scanned={scan_res.get('scanned_count')} matched={scan_res.get('matched_count')} auto_activated={len(processed_list)}")
+    return {
+        "status": "success",
+        "scan_summary": scan_res,
+        "auto_processed": processed_list
+    }
+
+
+@app.post("/radius/api/payments/gateway/test", tags=["Payments"])
+@app.post("/api/payments/gateway/test", tags=["Payments"])
+def test_payment_gateway(payload: GatewayTestRequest, _: str = Depends(authenticate_admin)):
+    """Test Razorpay or Cashfree API credentials."""
+    from api.payment_engine import create_razorpay_order, create_cashfree_order
+    gw = payload.gateway.lower()
+
+    if gw in ("razorpay", "razor_pay"):
+        key_id = payload.key_id
+        key_secret = payload.key_secret
+        if not (key_id and key_secret):
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT key, value FROM system_settings WHERE key IN ('razorpay_key_id', 'razorpay_key_secret')")
+                    smap = {r["key"]: r["value"] for r in cur.fetchall()}
+                    key_id = key_id or smap.get("razorpay_key_id")
+                    key_secret = key_secret or smap.get("razorpay_key_secret")
+            finally:
+                conn.close()
+
+        if not (key_id and key_secret):
+            return {"ok": False, "error": "Razorpay Key ID and Secret Key are required."}
+
+        res = create_razorpay_order(key_id, key_secret, amount_inr=1.0, receipt=f"test_{int(time.time())}", notes={"test": "probe"})
+        if "id" in res:
+            return {"ok": True, "message": "Successfully connected and verified Razorpay API keys!", "order_id": res["id"]}
+        return {"ok": False, "error": res.get("error", "Failed to verify Razorpay keys")}
+
+    elif gw in ("cashfree", "cash_free"):
+        app_id = payload.app_id
+        secret = payload.secret_key
+        c_env = payload.env or "TEST"
+        if not (app_id and secret):
+            conn = get_db_connection()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT key, value FROM system_settings WHERE key IN ('cashfree_app_id', 'cashfree_secret_key', 'cashfree_env')")
+                    smap = {r["key"]: r["value"] for r in cur.fetchall()}
+                    app_id = app_id or smap.get("cashfree_app_id")
+                    secret = secret or smap.get("cashfree_secret_key")
+                    c_env = smap.get("cashfree_env", c_env)
+            finally:
+                conn.close()
+
+        if not (app_id and secret):
+            return {"ok": False, "error": "Cashfree App ID and Secret Key are required."}
+
+        res = create_cashfree_order(app_id, secret, order_id=f"test_{int(time.time())}", amount_inr=1.0, customer_id="test_probe", env=c_env)
+        if "order_id" in res or "payment_session_id" in res:
+            return {"ok": True, "message": "Successfully connected and verified Cashfree credentials!", "order": res}
+        return {"ok": False, "error": res.get("error", "Failed to verify Cashfree keys")}
+
+    return {"ok": False, "error": f"Unknown gateway type: {payload.gateway}"}
+
+
+# ----------------------------------------------------------------------------
+# Webhooks for Payment Gateways
+# ----------------------------------------------------------------------------
+@app.post("/radius/api/webhooks/razorpay", tags=["Payments"])
+@app.post("/api/webhooks/razorpay", tags=["Payments"])
+async def razorpay_webhook(request: Request):
+    """Handle incoming Razorpay payment webhooks."""
+    from api.entitlements import process_verified_payment
+    from api.payment_engine import verify_razorpay_signature
+
+    body_bytes = await request.body()
+    sig = request.headers.get("x-razorpay-signature", "")
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM system_settings WHERE key = 'razorpay_webhook_secret' LIMIT 1")
+            row = cur.fetchone()
+            sec = row["value"] if row else ""
+    finally:
+        conn.close()
+
+    try:
+        event = json.loads(body_bytes.decode())
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    if sec and sig:
+        expected = hmac.new(sec.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, sig):
+            return JSONResponse(status_code=401, content={"error": "Invalid webhook signature"})
+
+    event_type = event.get("event")
+    if event_type == "payment.captured":
+        pay_entity = event.get("payload", {}).get("payment", {}).get("entity", {})
+        pay_id = pay_entity.get("id")
+        order_id = pay_entity.get("order_id")
+        amount = float(pay_entity.get("amount", 0)) / 100.0
+        notes = pay_entity.get("notes", {})
+        username = notes.get("username")
+        plan_id = int(notes.get("plan_id")) if notes.get("plan_id") else None
+
+        if username and pay_id:
+            c = get_db_connection()
+            with c.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1", (username,))
+                u_row = cur.fetchone()
+                uid = u_row["id"] if u_row else None
+                if not uid:
+                    cur.execute("INSERT INTO users (username, password_hash, status) VALUES (%s, %s, 'ACTIVE') RETURNING id", (username, generate_session_secret(24)))
+                    uid = cur.fetchone()["id"]
+                c.commit()
+            c.close()
+
+            process_verified_payment(
+                gateway="RAZORPAY",
+                gateway_payment_id=pay_id,
+                gateway_order_id=order_id,
+                user_id=uid,
+                plan_id=plan_id,
+                amount=amount,
+                currency="INR",
+                raw_reference=json.dumps(pay_entity),
+                actor_type="WEBHOOK",
+                ip=request.client.host if request.client else "127.0.0.1"
+            )
+
+    return {"status": "ok"}
+
 
 
 @app.get("/radius/api/certs/signer-status", tags=["Certificates"])
