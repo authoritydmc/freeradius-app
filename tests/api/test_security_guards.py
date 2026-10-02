@@ -380,3 +380,23 @@ def test_client_ip_extraction_cloudflare_and_forwarded():
     assert app._client_ip(req_direct) == "192.168.1.55"
 
 
+def test_guest_user_generate_model_and_duration_map():
+    req = app.GuestUserGenerateRequest()
+    assert req.duration == "24h"
+    assert req.group == "guests"
+    assert req.prefix == "guest"
+
+    assert "1h" in app.GUEST_DURATION_MAP and app.GUEST_DURATION_MAP["1h"][0] == 3600
+    assert "24h" in app.GUEST_DURATION_MAP and app.GUEST_DURATION_MAP["24h"][0] == 86400
+    assert "1d" in app.GUEST_DURATION_MAP and app.GUEST_DURATION_MAP["1d"][0] == 86400
+    assert "7d" in app.GUEST_DURATION_MAP and app.GUEST_DURATION_MAP["7d"][0] == 604800
+    assert "30d" in app.GUEST_DURATION_MAP and app.GUEST_DURATION_MAP["30d"][0] == 2592000
+
+
+def test_guest_user_routes_registered():
+    routes = {r.path for r in app.app.routes}
+    assert "/radius/api/users/guest" in routes
+    assert "/api/users/guest" in routes
+
+
+

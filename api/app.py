@@ -12,6 +12,9 @@ import hashlib
 import tempfile
 import json
 import logging
+import asyncio
+import string
+import datetime
 import urllib.request
 import urllib.error
 from xml.sax.saxutils import escape as _xml_escape
@@ -851,6 +854,21 @@ def authenticate_admin(request: Request) -> str:
         headers={"WWW-Authenticate": 'Bearer realm="RajLabs FreeRADIUS Admin Area"'}
     )
 
+async def _periodic_expiry_worker_loop():
+    """Background worker loop: checks database for expired subscriptions and sends RFC 5176 CoA disconnects."""
+    logger.info("Background session expiry worker started (RFC 5176 CoA / DB Entitlements).")
+    while True:
+        try:
+            await asyncio.sleep(60)
+            from api.entitlements import run_periodic_expiry_worker
+            count = run_periodic_expiry_worker()
+            if count:
+                logger.info("Periodic expiry worker: disconnected/expired %s past-due user session(s)", count)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Periodic expiry worker check error: %s", e)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Fail closed on published default secrets (issue #5) before touching the DB.
@@ -867,6 +885,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Database connection failed during startup: %s", e)
     try:
+        from api.db_init import init_all_tables
+        init_all_tables()
+    except Exception as e:
+        logger.warning("DB schema initialization check: %s", e)
+    try:
         ensure_audit_table()
     except Exception as e:
         logger.warning("Audit table init failed: %s", e)
@@ -878,7 +901,16 @@ async def lifespan(app: FastAPI):
         ensure_device_tables()
     except Exception as e:
         logger.warning("Device tables init failed: %s", e)
-    yield
+    
+    expiry_task = asyncio.create_task(_periodic_expiry_worker_loop())
+    try:
+        yield
+    finally:
+        expiry_task.cancel()
+        try:
+            await expiry_task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(
     title="RajLabs FreeRADIUS Enterprise Management API",
@@ -1023,6 +1055,12 @@ class UserCreateRequest(BaseModel):
     attributes: Optional[Dict[str, str]] = None
     # Static client IP: None = leave existing pinning untouched, "" = remove it (DHCP), value = pin it.
     framed_ip: Optional[str] = None
+
+class GuestUserGenerateRequest(BaseModel):
+    duration: Optional[str] = "24h" # "1h", "6h", "12h", "24h" (default), "3d", "7d", "30d"
+    group: Optional[str] = "guests"
+    prefix: Optional[str] = "guest"
+    note: Optional[str] = None
 
 class PasswordChangeRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=128)
@@ -1343,6 +1381,7 @@ def list_users(_: str = Depends(authenticate_admin)):
                         "group": row["groupname"],
                         "has_certificate": os.path.exists(cert_path),
                         "password_type": None,
+                        "expiration": None,
                         "active_sessions": 0,
                         "last_auth": None,
                         "check_attributes": [],
@@ -1350,6 +1389,8 @@ def list_users(_: str = Depends(authenticate_admin)):
                     }
                 if "Password" in row["attribute"] and not users_map[u]["password_type"]:
                     users_map[u]["password_type"] = row["attribute"]
+                if row["attribute"].lower() == "expiration":
+                    users_map[u]["expiration"] = row["value"]
                 users_map[u]["check_attributes"].append({
                     "id": row["id"],
                     "attribute": row["attribute"],
@@ -1593,6 +1634,123 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
             return {"status": "success", "created": not existed,
                     "message": f"User '{payload.username}' {'created' if not existed else 'updated'} successfully",
                     "warnings": warnings}
+    finally:
+        conn.close()
+
+GUEST_DURATION_MAP = {
+    "1h": (3600, "1 Hour"),
+    "6h": (21600, "6 Hours"),
+    "12h": (43200, "12 Hours"),
+    "24h": (86400, "1 Day (24 Hours)"),
+    "1d": (86400, "1 Day (24 Hours)"),
+    "3d": (259200, "3 Days"),
+    "7d": (604800, "7 Days (1 Week)"),
+    "30d": (2592000, "30 Days (1 Month)")
+}
+
+@app.post("/radius/api/users/guest", tags=["Users"])
+@app.post("/api/users/guest", tags=["Users"])
+def generate_guest_user(payload: Optional[GuestUserGenerateRequest] = None, admin_user: str = Depends(authenticate_admin)):
+    """1-Click Guest User Generator with configurable validity (default: 1 day / 24 hours).
+    
+    Sets FreeRADIUS protocol-level Expiration in radcheck, Session-Timeout in radreply,
+    associates group policy, and records active entitlement in subscriptions table.
+    """
+    if payload is None:
+        payload = GuestUserGenerateRequest()
+    
+    dur_key = (payload.duration or "24h").strip().lower()
+    validity_sec, dur_label = GUEST_DURATION_MAP.get(dur_key, (86400, "1 Day (24 Hours)"))
+    group_name = (payload.group or "guests").strip()
+    prefix = (payload.prefix or "guest").strip().lower()
+    if not re.match(r'^[a-zA-Z0-9_\-]+$', prefix):
+        prefix = "guest"
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # 1. Generate unique random guest username
+            username = None
+            for _ in range(30):
+                suffix = "".join(secrets.choice(string.digits) for _ in range(4))
+                candidate = f"{prefix}-{suffix}"
+                cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (candidate,))
+                if not cur.fetchone():
+                    username = candidate
+                    break
+            if not username:
+                username = f"{prefix}-{uuid.uuid4().hex[:6]}"
+            
+            # 2. Generate secure policy-compliant password
+            password = generate_secure_password(length=14, use_symbols=True, exclude_ambiguous=True)
+            
+            # 3. Compute timestamps and FreeRADIUS standard Expiration format ("03 Oct 2026 01:14:00")
+            now = datetime.datetime.now(datetime.timezone.utc)
+            expires_at = now + datetime.timedelta(seconds=validity_sec)
+            expiration_str = expires_at.strftime("%d %b %Y %H:%M:%S")
+            
+            # 4. Insert into FreeRADIUS radcheck (Cleartext-Password & Expiration check attribute)
+            cur.execute("DELETE FROM radcheck WHERE username = %s", (username,))
+            cur.execute("""
+                INSERT INTO radcheck (username, attribute, op, value)
+                VALUES (%s, 'Cleartext-Password', ':=', %s)
+            """, (username, password))
+            cur.execute("""
+                INSERT INTO radcheck (username, attribute, op, value)
+                VALUES (%s, 'Expiration', ':=', %s)
+            """, (username, expiration_str))
+            
+            # 5. Assign policy group in radusergroup
+            cur.execute("DELETE FROM radusergroup WHERE username = %s", (username,))
+            cur.execute("""
+                INSERT INTO radusergroup (username, groupname, priority)
+                VALUES (%s, %s, 1)
+            """, (username, group_name))
+            
+            # 6. Session-Timeout in radreply
+            session_timeout = min(validity_sec, 86400)
+            cur.execute("DELETE FROM radreply WHERE username = %s AND attribute = 'Session-Timeout'", (username,))
+            cur.execute("""
+                INSERT INTO radreply (username, attribute, op, value)
+                VALUES (%s, 'Session-Timeout', '=', %s)
+            """, (username, str(session_timeout)))
+            
+            # 7. Record in central users & subscriptions tables (best-effort)
+            try:
+                cur.execute("SELECT id FROM groups WHERE name = %s", (group_name,))
+                g_row = cur.fetchone()
+                g_id = g_row["id"] if g_row else None
+                cur.execute("""
+                    INSERT INTO users (username, password_hash, group_id, status)
+                    VALUES (%s, %s, %s, 'ACTIVE')
+                    ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, status = 'ACTIVE'
+                    RETURNING id
+                """, (username, password, g_id))
+                u_row = cur.fetchone()
+                if u_row:
+                    uid = u_row["id"]
+                    cur.execute("""
+                        INSERT INTO subscriptions (user_id, starts_at, expires_at, status)
+                        VALUES (%s, %s, %s, 'ACTIVE')
+                    """, (uid, now, expires_at))
+            except Exception as sub_err:
+                logger.debug("Central subscription write skipped: %s", sub_err)
+            
+            conn.commit()
+            log_audit(admin_user, "guest_user_create", username, f"duration={dur_key} ({dur_label}) expires={expires_at.isoformat()}")
+            
+            return {
+                "status": "success",
+                "username": username,
+                "password": password,
+                "group": group_name,
+                "duration": dur_key,
+                "duration_label": dur_label,
+                "validity_seconds": validity_sec,
+                "expires_at": expires_at.isoformat(),
+                "expiration_str": expiration_str,
+                "message": f"Guest user '{username}' created successfully with {dur_label} access (expires {expiration_str})."
+            }
     finally:
         conn.close()
 
