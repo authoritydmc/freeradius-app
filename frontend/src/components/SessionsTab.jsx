@@ -12,6 +12,7 @@ export default function SessionsTab({ onNotify }) {
   const [activeOnly, setActiveOnly] = useState(true);
   const [search, setSearch] = useState('');
   const [disconnectingId, setDisconnectingId] = useState(null);
+  const [gaps, setGaps] = useState([]);
 
   const loadSessions = async () => {
     try {
@@ -25,8 +26,18 @@ export default function SessionsTab({ onNotify }) {
     }
   };
 
+  const loadGaps = async () => {
+    try {
+      const res = await fetchJson('accounting/gaps?days=7');
+      setGaps(res?.gaps || []);
+    } catch {
+      setGaps([]);
+    }
+  };
+
   useEffect(() => {
     loadSessions();
+    loadGaps();
   }, [activeOnly]);
 
   const handleDisconnect = async (session) => {
@@ -115,6 +126,20 @@ export default function SessionsTab({ onNotify }) {
       </div>
 
       {/* Sessions Table */}
+      {gaps.length > 0 && (
+        <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-2">
+          <div className="flex items-center gap-2 text-amber-300 font-bold text-sm">
+            <AlertCircle className="w-4 h-4" />
+            <span>{gaps.length} user{gaps.length === 1 ? '' : 's'} authenticated but never sent accounting</span>
+          </div>
+          <p className="text-xs text-amber-200/80">
+            {gaps.slice(0, 5).map(g => g.username).join(', ')}{gaps.length > 5 ? ` +${gaps.length - 5} more` : ''} got
+            Access-Accept (UDP 1812) in the last 7 days, yet have zero session rows — the AP is not sending
+            Accounting (UDP 1813). On the controller/AP check: accounting server IP set, accounting port 1813,
+            same shared secret as auth, UDP 1813 allowed through firewalls, and interim updates enabled.
+          </p>
+        </div>
+      )}
       <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[760px] text-left text-sm text-slate-300">

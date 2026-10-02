@@ -225,12 +225,21 @@ export default function CertsTab({
 
         <div className="flex flex-wrap items-center gap-2.5">
           <a
-            href="/radius/api/certs/ca"
-            download
+            href="/radius/api/certs/ca?format=crt"
+            download="RajLabs_Root_CA.crt"
+            title="DER .crt — required by Android Wi-Fi installer"
+            className="px-4 py-2 bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-800/60 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-sm"
+          >
+            <Download className="w-4 h-4" />
+            <span>Root CA for Android (.crt)</span>
+          </a>
+          <a
+            href="/radius/api/certs/ca?format=pem"
+            download="RajLabs_Root_CA.pem"
             className="px-4 py-2 bg-indigo-950/70 hover:bg-indigo-900/80 text-indigo-300 border border-indigo-800/60 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-sm"
           >
             <Download className="w-4 h-4" />
-            <span>Download Root CA (.pem)</span>
+            <span>Root CA (.pem)</span>
           </a>
 
           <button

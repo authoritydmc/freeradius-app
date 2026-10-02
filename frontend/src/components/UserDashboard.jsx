@@ -244,7 +244,7 @@ export default function UserDashboard({ user, onLogout, onNotify }) {
             />
           </div>
           <div>
-            <label className="block text-slate-300 mb-1 font-medium">New password <span className="text-slate-500 font-normal">(min 12 chars: Aa 0 $)</span></label>
+            <label className="block text-slate-300 mb-1 font-medium">New password <span className="text-slate-500 font-normal">(min 10 chars, any 3 of Aa 0 $ — e.g. 9876543210Ram@)</span></label>
             <div className="relative">
               <input
                 type={showPw ? 'text' : 'password'} required value={pwForm.new_password}

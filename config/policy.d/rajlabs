@@ -1,0 +1,15 @@
+# RajLabs site policies (shipped in config/policy.d/rajlabs, installed to
+# /etc/freeradius/3.0/policy.d/rajlabs by scripts/entrypoint.sh).
+#
+# EAP exchanges cannot carry a useful Reply-Message to most phone
+# supplicants, and some clients choke on unexpected text attributes, so
+# strip it from the on-the-wire reply AFTER postauth_query has logged it
+# into radpostauth.reason (logging always runs before this policy).
+
+policy remove_reply_message_if_eap {
+	if (EAP-Message) {
+		update reply {
+			Reply-Message !* ANY
+		}
+	}
+}

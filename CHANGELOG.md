@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Android CA trust + .p12 install flow**: Root CA now downloadable as `.crt` (DER, `?format=crt`) for Android's Wi-Fi certificate installer alongside `.pem`; new public `GET /radius/api/public/ca-info` exposes the SHA-256 fingerprint so phones can verify before trusting. PKCS#12 bundles are exported with legacy PBE-SHA1-3DES first (fallback to defaults) so OEM KeyChain imports accept them. Portal certificate downloads now use POST (password in body, never in URL/history).
+- **Relaxed password policy**: min length 12 → 10, requires any 3 of 4 classes (upper/lower/digit/symbol) so `mobile-number + Word + symbol` (e.g. `9876543210Ram@`, `9876543210ram@`) is accepted. Policy endpoint, strength meter, generators, and hints updated.
+- **Recharge no longer breaks logins**: `sync_user_radius_attributes` preserved the radcheck password only by accident before — it overwrote it with the central placeholder, so every subscription start/recharge locked the user out until a manual password reset. It now preserves live credentials (seeds only when missing), and all password-write paths mirror the real password centrally.
+- **Group-level exempt now applies**: group save mirrors `recharge_required` into the central `groups` table (the engine never read the RADIUS flag), resolves exempt via live RADIUS membership as fallback, and immediately re-syncs all members so stale Reject rows disappear.
+- **Reject reasons always recorded**: `remove_reply_message_if_eap` is now actually defined (shipped `config/policy.d/rajlabs`, previously referenced but missing); post-auth logs exactly one radpostauth row per attempt with EAP method + device MAC + AP/SSID context (migration 005); `anonymous` outer-identity and generic fallbacks name the cause. Requires container rebuild + restart.
+- **EAP server identity**: boot re-issues `server.pem` from the existing CA when it lacks a SAN for `EAP_SERVER_CN` (default `RADIUS_PUBLIC_HOST`), so Android stops asking for an unknown domain; the effective CN/SAN is printed at boot and served via `public-config.eap.domain_hint`, which the portal shows as the exact Domain string to type.
+- **Simultaneous-Use is clearable**: the field no longer snaps empty back to 1 — blank/0 means no concurrent-device limit (backend skips the row, and the wipe-and-rewrite save removes a previously set limit).
+
+### Added
+- **wifi.rajlabs.in mobile-first explainer** in the portal Setup tab: what the site is, PEAP (easiest) vs EAP-TLS (most secure), and per-OS (Android/iOS/Windows/Linux) join steps.
+- **Failure-to-portal path**: every reject Reply-Message points to `https://wifi.rajlabs.in` (the 802.1X equivalent of a redirect — the protocol has no HTTP redirect); the auth-event dossier has an "Open captive portal" button with `?user=` deep-link prefill, and the portal pre-fills the login username from it.
+- **`GET /radius/api/accounting/gaps`**: lists users accepted recently with zero accounting rows (AP not sending UDP 1813); Sessions tab shows them in an amber banner with the AP-side checklist.
+- **Devices tab shows login-seen stations**: MACs from recent auth attempts (new radpostauth context) appear with an "Auth only — no accounting" badge even before the AP sends accounting; also fixed Last-IP never displaying (backend sends `last_ip`).
+
+---
+
 ## [2.3.0] - 2026-10-02
 
 ### Added

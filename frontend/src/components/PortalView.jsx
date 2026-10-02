@@ -44,10 +44,24 @@ export default function PortalView() {
   const [verifyingPayment, setVerifyingPayment] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState(null);
   const [osTab, setOsTab] = useState('android'); // 'android', 'ios', 'windows', 'linux'
+  const [caInfo, setCaInfo] = useState(null);
+  const [downloading, setDownloading] = useState('');
 
   useEffect(() => {
     fetchJson('public-config').then(setConfig).catch(() => {});
     fetchJson('plans').then(setPlans).catch(() => {});
+    // Public CA fingerprint (no auth) — shown so users verify before trusting.
+    fetchJson('public/ca-info').catch(() => fetchJson('certs/ca/info').catch(() => null)).then(setCaInfo).catch(() => {});
+    // Allow admins/APs to deep-link a rejected user straight into the
+    // login test: https://wifi.rajlabs.in/radius/portal?user=guest-9185
+    try {
+      const u = new URLSearchParams(window.location.search).get('user');
+      if (u) {
+        setLoginForm(prev => ({ ...prev, username: u }));
+        setPayerUsername(u);
+        setEnrollForm(prev => ({ ...prev, username: prev.username || u }));
+      }
+    } catch {}
   }, []);
 
   // Sync authSession to enrollForm or payerUsername
@@ -171,6 +185,39 @@ export default function PortalView() {
     navigator.clipboard.writeText(upiId);
     setCopiedUpi(true);
     setTimeout(() => setCopiedUpi(false), 2000);
+  };
+
+  // POST-based blob download: keeps the account password in the request
+  // body (never in the URL / browser history / proxy logs).
+  const downloadBlob = async (kind) => {
+    if (!enrollForm.username || !enrollForm.password) return;
+    setDownloading(kind);
+    try {
+      const endpoint = kind === 'p12' ? 'portal/download-cert' : 'portal/download-mobileconfig';
+      const res = await apiRequest(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ username: enrollForm.username, password: enrollForm.password })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.message || `Download failed (HTTP ${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = kind === 'p12'
+        ? `RajLabs_${enrollForm.username}_Certificate.p12`
+        : `RajLabs_${enrollForm.username}_WiFi.mobileconfig`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      setEnrollError(err.message || 'Download failed.');
+    } finally {
+      setDownloading('');
+    }
   };
 
   const handleVerifyUtr = (e) => {
@@ -825,24 +872,29 @@ export default function PortalView() {
                   </div>
                 )}
 
-                {/* Download Actions */}
+                {/* Download Actions (POST — password stays out of the URL) */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
-                  <a
-                    href={`/radius/api/portal/download-mobileconfig?username=${encodeURIComponent(enrollForm.username)}&password=${encodeURIComponent(enrollForm.password)}`}
-                    className="flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-750 border border-slate-700 text-white rounded-xl text-xs font-semibold shadow transition cursor-pointer"
+                  <button
+                    onClick={() => downloadBlob('mobileconfig')}
+                    disabled={downloading === 'mobileconfig'}
+                    className="flex items-center justify-center gap-2 p-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white rounded-xl text-xs font-semibold shadow transition cursor-pointer disabled:opacity-50"
                   >
                     <Apple className="w-4 h-4 text-slate-200" />
-                    <span>Download Apple Profile</span>
-                  </a>
+                    <span>{downloading === 'mobileconfig' ? 'Preparing…' : 'Download Apple Profile'}</span>
+                  </button>
 
-                  <a
-                    href={`/radius/api/portal/download-cert?username=${encodeURIComponent(enrollForm.username)}&password=${encodeURIComponent(enrollForm.password)}`}
-                    className="flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition cursor-pointer"
+                  <button
+                    onClick={() => downloadBlob('p12')}
+                    disabled={downloading === 'p12'}
+                    className="flex items-center justify-center gap-2 p-3 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-indigo-500/20 transition cursor-pointer disabled:opacity-50"
                   >
                     <Download className="w-4 h-4" />
-                    <span>Download .p12 Bundle</span>
-                  </a>
+                    <span>{downloading === 'p12' ? 'Preparing…' : 'Download .p12 Bundle'}</span>
+                  </button>
                 </div>
+                <p className="text-[11px] text-slate-500 text-center">
+                  The .p12 opens with the bundle password above. The Apple profile needs no password — it carries the certificate inside.
+                </p>
 
                 <div className="text-center pt-2">
                   <button
@@ -918,24 +970,65 @@ export default function PortalView() {
               </div>
             </div>
 
+            {/* What is wifi.rajlabs.in? — mobile-first explainer */}
+            <div className="p-5 bg-indigo-500/5 rounded-2xl border border-indigo-500/20 space-y-2">
+              <h4 className="font-bold text-indigo-300 text-sm flex items-center gap-2">
+                <Globe className="w-4 h-4" /> What is wifi.rajlabs.in?
+              </h4>
+              <p className="text-xs text-slate-300">
+                This is your Wi-Fi home page — open it on your <strong>phone browser</strong> (mobile data or any Wi-Fi) to
+                buy a plan, pay via UPI, get your username/password, and set up the <strong>{ssid}</strong> network.
+                It is <strong>not</strong> the Wi-Fi network itself: after you register here, you still join <strong>{ssid}</strong> once
+                from your phone's Wi-Fi settings below.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                <div className="p-2.5 bg-slate-950 rounded-xl border border-slate-800">
+                  <span className="font-bold text-emerald-400">Easiest (most phones): </span>
+                  <span className="text-slate-300">join {ssid} with PEAP + your username/password — no certificates needed.</span>
+                </div>
+                <div className="p-2.5 bg-slate-950 rounded-xl border border-slate-800">
+                  <span className="font-bold text-violet-400">Most secure: </span>
+                  <span className="text-slate-300">EAP-TLS with the .p12 certificate from the Enroll tab + the Root CA below.</span>
+                </div>
+              </div>
+            </div>
+
             {/* Root CA Direct Download Card */}
-            <div className="p-5 bg-slate-950 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="p-5 bg-slate-950 rounded-2xl border border-slate-800 flex flex-col gap-4">
               <div className="space-y-1">
                 <h4 className="font-bold text-slate-100 text-sm flex items-center gap-2">
-                  <span>Download Root Authority Certificate (ca.pem)</span>
+                  <span>Download Root Authority Certificate</span>
                 </h4>
                 <p className="text-xs text-slate-400">
-                  Required by Android, Windows, macOS, and Linux to verify the RADIUS server identity without security warnings.
+                  Your phone shows “CA certificate required” because it must verify our server before sending your login
+                  (this blocks fake hotspots). Install the CA <strong>once</strong>, then it trusts {ssid} forever.
+                  Android needs the <strong>.crt</strong> file — iPhone/Windows/Linux can use either.
                 </p>
+                {caInfo?.sha256_fingerprint && (
+                  <p className="text-[11px] text-slate-500">
+                    Verify after install — SHA-256 fingerprint: <code className="text-amber-300 font-mono break-all">{caInfo.sha256_fingerprint}</code>
+                    {caInfo?.not_after && <span> · valid until {caInfo.not_after}</span>}
+                  </p>
+                )}
               </div>
-              <a
-                href="/radius/api/certs/ca"
-                download="RajLabs_Root_CA.pem"
-                className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-violet-500/20 transition whitespace-nowrap cursor-pointer shrink-0"
-              >
-                <Download className="w-4 h-4" />
-                <span>Download ca.pem</span>
-              </a>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href="/radius/api/certs/ca?format=crt"
+                  download="RajLabs_Root_CA.crt"
+                  className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-emerald-500/20 transition whitespace-nowrap cursor-pointer shrink-0"
+                >
+                  <Smartphone className="w-4 h-4" />
+                  <span>Android: Download .crt</span>
+                </a>
+                <a
+                  href="/radius/api/certs/ca?format=pem"
+                  download="RajLabs_Root_CA.pem"
+                  className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer shrink-0"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Others: Download .pem</span>
+                </a>
+              </div>
             </div>
 
             {/* OS Navigation Tabs */}
@@ -976,18 +1069,24 @@ export default function PortalView() {
                 {osTab === 'android' && (
                   <div className="space-y-2">
                     <h5 className="font-bold text-emerald-400 text-xs flex items-center gap-1.5">
-                      <Smartphone className="w-4 h-4" /> Android 11+ Wi-Fi & Certificate Setup Guide:
+                      <Smartphone className="w-4 h-4" /> Android 11+ — connect to {ssid} from wifi.rajlabs.in:
                     </h5>
+                    <p className="text-[11px] text-slate-400">
+                      Why the extra step? Your downloaded .p12 holds <strong>your</strong> identity, but Android keeps
+                      Wi-Fi server trust separate — so the Root CA must be installed once under “Wi-Fi certificate”.
+                      Without it Android refuses to connect or warns about the network.
+                    </p>
                     <ol className="list-decimal list-inside space-y-1.5 text-slate-300 pl-1">
-                      <li>Click <strong>Download ca.pem</strong> above.</li>
-                      <li>Go to <strong>Settings → Security & Privacy → More Security Settings → Install from device storage → Wi-Fi Certificate</strong>.</li>
-                      <li>Select the downloaded <code className="text-indigo-300">ca.pem</code> file and name it <strong className="text-white">RajLabs CA</strong>.</li>
-                      <li>Connect to SSID <strong>{ssid}</strong>:
+                      <li>Tap <strong>Android: Download .crt</strong> above (if Chrome renamed it, rename back to <code className="text-indigo-300">RajLabs_Root_CA.crt</code>).</li>
+                      <li>Open <strong>Settings → Security &amp; privacy → More security settings → Install from device storage → Wi-Fi certificate</strong> (on some phones: Settings → Security → Encryption &amp; credentials → Install a certificate → Wi-Fi certificate).</li>
+                      <li>Pick the .crt file, name it <strong className="text-white">RajLabs CA</strong>, tap OK. Match the fingerprint shown above if asked.</li>
+                      <li>Go to <strong>Settings → Network &amp; internet → Wi-Fi</strong>, tap <strong>{ssid}</strong>:
                         <ul className="list-disc list-inside pl-4 text-slate-400 text-[11px] mt-1 space-y-0.5">
-                          <li>EAP method: <strong>EAP-TLS</strong> (if certificate generated) or <strong>PEAP / MSCHAPv2</strong>.</li>
-                          <li>CA certificate: Select <strong>RajLabs CA</strong>.</li>
-                          <li>Online Certificate Status: <strong>Don't validate</strong> or <strong>Validate</strong>.</li>
-                          <li>Domain: <code className="text-indigo-300">rajlabs.in</code> (or your server domain).</li>
+                          <li><strong>No certificate?</strong> EAP method <strong>PEAP</strong>, Phase-2 <strong>MSCHAPv2</strong>, enter your wifi.rajlabs.in username + password.</li>
+                          <li><strong>With .p12?</strong> EAP method <strong>TLS</strong>: tap the downloaded .p12 first, enter its bundle password to install, then pick your user certificate here.</li>
+                          <li>CA certificate: select <strong>RajLabs CA</strong> (never “Do not validate”).</li>
+                          <li>Domain: <code className="text-indigo-300">{config?.eap?.domain_hint || 'rajlabs.in'}</code> — type it exactly as shown (it must match the server certificate).</li>
+                          <li>Anonymous identity / Online status: leave default, then Connect.</li>
                         </ul>
                       </li>
                     </ol>

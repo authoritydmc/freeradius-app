@@ -108,6 +108,10 @@ CREATE TABLE IF NOT EXISTS radpostauth (
     reply     TEXT NOT NULL DEFAULT '',
     authdate  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE radpostauth ADD COLUMN IF NOT EXISTS reason TEXT;
+ALTER TABLE radpostauth ADD COLUMN IF NOT EXISTS eap_type TEXT;
+ALTER TABLE radpostauth ADD COLUMN IF NOT EXISTS calling_station TEXT;
+ALTER TABLE radpostauth ADD COLUMN IF NOT EXISTS called_station TEXT;
 CREATE INDEX IF NOT EXISTS idx_radpostauth_username ON radpostauth (username);
 CREATE INDEX IF NOT EXISTS idx_radpostauth_authdate ON radpostauth (authdate);
 
@@ -147,5 +151,6 @@ CREATE TABLE IF NOT EXISTS verified_devices (
 );
 CREATE INDEX IF NOT EXISTS idx_verified_devices_mac ON verified_devices (mac);
 
--- Reject reason for the Auth History view (written by postauth_query).
+-- Reject reason + diagnostics context for the Auth History view
+-- (written by postauth_query: reason, eap/mac/ap context).
 ALTER TABLE radpostauth ADD COLUMN IF NOT EXISTS reason TEXT;

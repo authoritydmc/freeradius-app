@@ -103,30 +103,48 @@ server default {
         if (&User-Name && "%{sql:SELECT CASE WHEN require_verified THEN 'yes' ELSE 'no' END FROM user_device_policy WHERE username='%{User-Name}'}" == 'yes') {
             if (!&Calling-Station-Id || "%{sql:SELECT COUNT(*) FROM verified_devices WHERE username='%{User-Name}' AND mac=REPLACE(REPLACE(REPLACE(REPLACE(UPPER('%{Calling-Station-Id}'), ':', ''), '-', ''), ' ', ''), '.', '')}" == '0') {
                 update reply {
-                    Reply-Message := "Rejected: device MAC not verified for this user"
+                    Reply-Message := "Rejected: device MAC not verified for this user. Ask the admin to verify your device, or test your login at https://wifi.rajlabs.in"
                 }
                 reject
             }
         }
-        -sql
-        exec
-        remove_reply_message_if_eap
+        update control {
+            RajLabs-PostAuth-Logged := 'no'
+        }
         Post-Auth-Type REJECT {
-            # Always log a human-readable reject reason into radpostauth.reason.
+            # Every reject leaves a human-readable reason in radpostauth.reason.
             # Specific policies (device lockdown, subscription sync) already set
-            # Reply-Message; fall back to a generic credential/expiry message so
-            # "password invalid / user unknown / no subscription / expired" never
-            # shows as empty in the Auth History view.
-            if (!&reply:Reply-Message) {
+            # Reply-Message; the fallbacks below cover the rest. The captive
+            # portal URL doubles as the "redirect on failure": 802.1X has no
+            # HTTP redirect, so the rejection itself tells the user where to
+            # test their password and recharge (supplicants that display
+            # Reply-Message show it; the dashboard Tester shows it always).
+            if (&User-Name =~ /^anonymous$/i) {
+                if (!&reply:Reply-Message) {
+                    update reply {
+                        Reply-Message := "Rejected: phone hid the real username inside the encrypted tunnel (outer identity 'anonymous'). Re-check the Wi-Fi password, or test your login and recharge at https://wifi.rajlabs.in"
+                    }
+                }
+            }
+            elsif (!&reply:Reply-Message) {
                 update reply {
-                    Reply-Message := "Rejected: authentication failed (invalid password, unknown user, expired or no active subscription)"
+                    Reply-Message := "Rejected: authentication failed (wrong password, unknown user, expired or no active subscription). Test your login and recharge at https://wifi.rajlabs.in"
                 }
             }
             -sql
+            update control {
+                RajLabs-PostAuth-Logged := 'yes'
+            }
             attr_filter.access_reject
             eap
-            remove_reply_message_if_eap
         }
+        # Exactly one radpostauth row per attempt: rejects were already logged
+        # above with their reason; accepts log here.
+        if (&control:RajLabs-PostAuth-Logged != 'yes') {
+            -sql
+        }
+        exec
+        remove_reply_message_if_eap
     }
 
     pre-proxy {

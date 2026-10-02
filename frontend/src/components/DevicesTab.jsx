@@ -30,7 +30,7 @@ export default function DevicesTab({ onNotify }) {
     (d.mac || '').toLowerCase().includes(search.toLowerCase()) ||
     (d.vendor || '').toLowerCase().includes(search.toLowerCase()) ||
     (d.username || '').toLowerCase().includes(search.toLowerCase()) ||
-    (d.ip || '').toLowerCase().includes(search.toLowerCase())
+    (d.last_ip || d.ip || '').toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -78,7 +78,11 @@ export default function DevicesTab({ onNotify }) {
         <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-12 text-center text-slate-400">
           <Smartphone className="w-12 h-12 mx-auto mb-3 text-slate-600 opacity-60" />
           <h3 className="text-base font-semibold text-slate-300">No Station Devices Discovered</h3>
-          <p className="text-xs text-slate-500 mt-1">Devices connecting to your Wi-Fi APs will be indexed automatically from Calling-Station-Id.</p>
+          <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+            Full device rows need RADIUS accounting (UDP 1813) from your APs — if phones can connect but nothing
+            appears here, the AP is sending authentication only. Check Sessions for the exact missing-accounting
+            list, and enable the accounting server + interim updates on the controller.
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -127,13 +131,20 @@ export default function DevicesTab({ onNotify }) {
 
                     <div className="flex items-center justify-between text-slate-300">
                       <span className="text-slate-400">Last Assigned IP:</span>
-                      <span className="font-mono text-cyan-300">{dev.ip || '—'}</span>
+                      <span className="font-mono text-cyan-300">{dev.last_ip || dev.ip || '—'}</span>
                     </div>
 
                     <div className="flex items-center justify-between text-slate-300">
                       <span className="text-slate-400">Total Sessions:</span>
-                      <span className="font-mono text-slate-200">{dev.sessions || 1}</span>
+                      <span className="font-mono text-slate-200">{dev.sessions ?? 0}</span>
                     </div>
+
+                    {dev.source === 'auth' && (
+                      <div className="flex items-center gap-1.5 text-[11px] text-amber-300 bg-amber-500/10 p-1.5 rounded-lg border border-amber-500/20 mt-2">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>Seen at login only ({dev.auth_attempts || 1} attempt{(dev.auth_attempts || 1) === 1 ? '' : 's'}) — no accounting from AP yet</span>
+                      </div>
+                    )}
 
                     <div className="flex items-center justify-between text-slate-300">
                       <span className="text-slate-400">Data Transferred:</span>

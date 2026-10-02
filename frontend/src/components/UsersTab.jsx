@@ -150,11 +150,19 @@ export default function UsersTab({
   const users = propUsers || internalUsers;
   const groups = propGroups || internalGroups;
 
-  // Generate random password helper
+  // Generate random password helper (crypto RNG, backend-aligned charset)
   const generateRandomPass = () => {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%&*";
+    const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^*-_=+";
+    const len = 14;
+    const buf = new Uint32Array(len);
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      crypto.getRandomValues(buf);
+      let pass = "";
+      for (let i = 0; i < len; i++) pass += chars.charAt(buf[i] % chars.length);
+      return pass;
+    }
     let pass = "";
-    for (let i = 0; i < 14; i++) {
+    for (let i = 0; i < len; i++) {
       pass += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return pass;
@@ -991,7 +999,7 @@ export default function UsersTab({
               {!isEditing && (
                 <div>
                   <label className="block text-slate-300 mb-1 font-medium">
-                    Password <span className="text-slate-500 font-normal">(min 12 chars: Aa 0 $)</span>
+                    Password <span className="text-slate-500 font-normal">(min 10 chars, any 3 of Aa 0 $ — e.g. 9876543210Ram@)</span>
                   </label>
                   <div className="flex gap-1.5">
                     <div className="relative flex-1">

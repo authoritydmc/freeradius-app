@@ -1,0 +1,198 @@
+"""Guards for the subscription/exempt/accounting fixes.
+
+- sync_user_radius_attributes must never clobber a working radcheck password
+  (recharge used to break logins until a manual password reset).
+- Group exempt must resolve via RADIUS membership/flags, not only the cached
+  central users.group_id.
+- Group save must mirror central groups + re-sync members.
+"""
+import os
+import sys
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "api"))
+
+import app
+import access_engine
+
+
+class FakeCursor:
+    def __init__(self, handler, log):
+        self._handler = handler
+        self._log = log
+        self._rows = []
+
+    def execute(self, q, p=None):
+        flat = " ".join(str(q).split())
+        self._log.append((flat[:160], p))
+        self._rows = self._handler(flat, p) or []
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class FakeConn:
+    def __init__(self, handler, log=None):
+        self._handler = handler
+        self.log = log if log is not None else []
+
+    def cursor(self):
+        return FakeCursor(self._handler, self.log)
+
+    def commit(self):
+        self.log.append(("COMMIT", None))
+
+    def close(self):
+        pass
+
+
+def _user_row(**kw):
+    base = {
+        "id": 7, "username": "ram", "password_hash": "9876543210Ram@",
+        "email": None, "phone": None, "group_id": None,
+        "recharge_required_override": None, "status": "ACTIVE",
+        "group_name": None, "group_recharge_required": None,
+        "group_max_session_seconds": None, "bandwidth_down_kbps": None,
+        "bandwidth_up_kbps": None, "vlan_id": None,
+    }
+    base.update(kw)
+    return base
+
+
+def test_sync_allow_preserves_existing_password():
+    """ALLOW must not delete/rewrite a working radcheck password."""
+    pw_exists = {"yes": True}
+
+    def handler(q, p):
+        if "FROM users u" in q:
+            return [_user_row(group_recharge_required=False)]  # exempt -> ALLOW
+        if "FROM subscriptions s" in q:
+            return []
+        if "attribute LIKE" in q and "SELECT 1 FROM radcheck" in q:
+            return [{"1": 1}] if pw_exists["yes"] else []
+        return []
+
+    conn = FakeConn(handler)
+    access_engine.sync_user_radius_attributes("ram", conn=conn)
+    stmts = [s for s, _ in conn.log]
+    assert any("Auth-Type" in s and s.startswith("DELETE") for s in stmts)
+    assert not any("%%Password" in s and s.startswith("DELETE") for s in stmts), \
+        "sync must not delete existing password rows"
+    assert not any("Cleartext-Password" in s and s.startswith("INSERT") for s in stmts), \
+        "sync must not rewrite an existing password"
+
+
+def test_sync_allow_seeds_missing_password():
+    """ALLOW seeds a credential only when radcheck has none."""
+
+    def handler(q, p):
+        if "FROM users u" in q:
+            return [_user_row(group_recharge_required=False)]
+        if "FROM subscriptions s" in q:
+            return []
+        if "attribute LIKE" in q and "SELECT 1 FROM radcheck" in q:
+            return []
+        return []
+
+    conn = FakeConn(handler)
+    access_engine.sync_user_radius_attributes("ram", conn=conn)
+    inserts = [ (s, p) for s, p in conn.log if "Cleartext-Password" in s and s.startswith("INSERT")]
+    assert len(inserts) == 1
+    assert inserts[0][1][1] == "9876543210Ram@"
+
+
+def test_exempt_falls_back_to_radius_group_flag():
+    """Group exempt works even when central users.group_id is stale/missing."""
+
+    def handler(q, p):
+        if "FROM users u" in q:
+            return [_user_row()]  # group_id NULL -> join yields None
+        if "FROM radusergroup" in q:
+            return [{"groupname": "vip"}]
+        if "FROM groups WHERE UPPER(name)" in q:
+            return []  # no central row for custom group
+        if "FROM radgroupreply WHERE groupname" in q:
+            return [{"attribute": "RajLabs-Recharge-Exempt", "value": "1"}]
+        if "FROM subscriptions s" in q:
+            return []
+        return []
+
+    conn = FakeConn(handler)
+    ctx = access_engine.get_user_full_context("ram", conn=conn)
+    assert ctx["group_recharge_required"] is False
+    decision = access_engine.get_access_decision(ctx)
+    assert decision["decision"] == "ALLOW"
+
+
+def test_group_save_mirrors_central_and_resyncs(monkeypatch):
+    """Saving a group writes central groups + re-syncs members immediately."""
+    synced = []
+
+    def handler(q, p):
+        if "SELECT DISTINCT username FROM radusergroup" in q:
+            return [{"username": "u1"}]
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(access_engine, "sync_user_radius_attributes",
+                        lambda uname, conn=None: synced.append(uname))
+
+    payload = app.GroupCreateRequest(groupname="vip", recharge_required=False)
+    res = app.create_or_update_group(payload, "admin")
+    assert res["status"] == "success"
+    assert "re-synced" in res["message"]
+    assert any("INSERT INTO groups" in s for s, _ in conn.log), \
+        "group save must mirror the central groups table"
+    assert synced == ["u1"]
+
+
+def test_new_routes_registered():
+    paths = {getattr(r, "path", "") for r in app.app.routes}
+    assert "/radius/api/accounting/gaps" in paths
+    assert "/radius/api/public/ca-info" in paths
+
+
+def test_simultaneous_use_nullable_means_no_limit():
+    """Blank Simultaneous-Use must validate as null (backend then skips the row)."""
+    req = app.GroupCreateRequest(groupname="vip", simultaneous_use=None)
+    assert req.simultaneous_use is None
+    req2 = app.GroupCreateRequest(groupname="vip", simultaneous_use=2)
+    assert req2.simultaneous_use == 2
+
+
+def test_devices_include_auth_seen_macs(monkeypatch):
+    """Devices tab lists login-seen MACs even with zero accounting rows."""
+    import datetime
+
+    def handler(q, p):
+        if "FROM radpostauth" in q:
+            return [{
+                "mac": "AABBCCDDEEFF",
+                "attempts": 3,
+                "last_seen": datetime.datetime(2026, 10, 2, 12, 0, 0),
+                "username": "ram",
+                "ap": "AA:BB:CC:DD:EE:FF:RajLabs-Enterprise",
+            }]
+        return []  # no radacct rows at all
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    out = app.list_devices(username=None, limit=200, _="admin")
+    assert len(out) == 1
+    dev = out[0]
+    assert dev["source"] == "auth"
+    assert dev["mac"] == "AA:BB:CC:DD:EE:FF"
+    assert dev["sessions"] == 0
+    assert dev["auth_attempts"] == 3
+    assert dev["username"] == "ram"

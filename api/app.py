@@ -328,6 +328,40 @@ def safe_client_path(username: str, suffix: str) -> str:
     return p
 
 
+def export_pkcs12_bundle(crt_path: str, key_path: str, out_path: str,
+                         friendly_name: str, password: str,
+                         chain_path: Optional[str] = None) -> None:
+    """Export a .p12 with Android-compatible legacy PBE when possible.
+
+    Why: OpenSSL 3 defaults to AES-256-CBC + SHA256 for PKCS#12. Most
+    modern Android versions read that fine, but several OEM file-manager
+    / KeyChain import paths only accept the legacy PBE-SHA1-3DES
+    encryption. Trying legacy first (falling back to defaults) makes the
+    same bundle install on both old and new phones without user confusion.
+    """
+    base = ["openssl", "pkcs12", "-export",
+            "-in", crt_path, "-inkey", key_path,
+            "-out", out_path, "-name", friendly_name,
+            "-password", f"pass:{password}"]
+    if chain_path and os.path.exists(chain_path):
+        # insert -certfile <chain> right after -inkey <key>
+        idx = base.index("-inkey") + 2
+        base[idx:idx] = ["-certfile", chain_path]
+    attempts = [
+        base + ["-certpbe", "PBE-SHA1-3DES", "-keypbe", "PBE-SHA1-3DES", "-nomaciter"],
+        base,
+    ]
+    last_err = ""
+    for cmd in attempts:
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+            return
+        except subprocess.CalledProcessError as e:
+            last_err = ((e.stderr or b"").decode("utf-8", "replace") if e.stderr else str(e))
+            continue
+    raise subprocess.CalledProcessError(1, attempts[0], stderr=last_err.encode())
+
+
 def repackage_p12_for_mobileconfig(username: str) -> tuple[bytes, str]:
     """Build a fresh .p12 (random password) from stored key/crt/chain for Apple profiles.
 
@@ -343,16 +377,13 @@ def repackage_p12_for_mobileconfig(username: str) -> tuple[bytes, str]:
     with tempfile.NamedTemporaryFile(suffix=".p12", delete=False) as tmp:
         tmp_path = tmp.name
     try:
-        cmd = ["openssl", "pkcs12", "-export", "-in", crt_path, "-inkey", key_path,
-               "-out", tmp_path, "-name", f"RajLabs RADIUS - {username}",
-               "-password", f"pass:{fresh_pass}"]
-        if os.path.exists(chain_path):
-            cmd[cmd.index("-inkey") + 2:cmd.index("-inkey") + 2] = ["-certfile", chain_path]
-        subprocess.run(cmd, check=True, capture_output=True)
+        export_pkcs12_bundle(crt_path, key_path, tmp_path,
+                             f"RajLabs RADIUS - {username}", fresh_pass,
+                             chain_path if os.path.exists(chain_path) else None)
         with open(tmp_path, "rb") as f:
             return f.read(), fresh_pass
     except subprocess.CalledProcessError as e:
-        err = (e.stderr or b"").decode("utf-8", "replace") if e.stderr else str(e)
+        err = (e.stderr or b"").decode("utf-8", "replace") if getattr(e, "stderr", None) else str(e)
         raise HTTPException(status_code=500, detail=f"Failed to package Apple profile: {err}")
     finally:
         try:
@@ -464,9 +495,13 @@ def build_mobileconfig(username: str, ssid: str, p12_bytes: bytes, p12_password:
 
 # ----------------------------------------------------------------------------
 # Password policy & secure generation (single source of truth, mirrored in UI)
+# Relaxed (Oct 2026): min 10 chars + any 3 of 4 classes, so that
+#   mobile-number + Word + symbol  (e.g. 9876543210Ram@, 9876543210ram@)
+# works without forcing an extra character class.
 # ----------------------------------------------------------------------------
-PASSWORD_MIN_LENGTH = 12
+PASSWORD_MIN_LENGTH = 10
 PASSWORD_MAX_LENGTH = 128
+PASSWORD_MIN_CLASSES = 3
 PASSWORD_SYMBOLS = "!@#$%^*-_=+"
 _PASSWORD_AMBIGUOUS = set("l1IoO0|`'\"")
 
@@ -494,7 +529,13 @@ def password_strength(password: str) -> Dict[str, Any]:
     return {"entropy_bits": entropy, "strength": label}
 
 def validate_password_policy(password: str, username: Optional[str] = None):
-    """Raises HTTPException 422 on policy violation."""
+    """Raises HTTPException 422 on policy violation.
+
+    Relaxed rule: 10-128 chars + at least 3 of 4 classes
+    (upper, lower, digit, symbol). This lets
+    mobile-number + word + symbol pass, e.g. both
+    9876543210Ram@ (4/4) and 9876543210ram@ (digit+lower+symbol).
+    """
     if not password or not (PASSWORD_MIN_LENGTH <= len(password) <= PASSWORD_MAX_LENGTH):
         raise HTTPException(status_code=422, detail=f"Password must be {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters long.")
     if username and password.strip().lower() == username.strip().lower():
@@ -503,8 +544,18 @@ def validate_password_policy(password: str, username: Optional[str] = None):
     has_upper = any(c.isupper() for c in password)
     has_digit = any(c.isdigit() for c in password)
     has_symbol = any(not c.isalnum() for c in password)
-    if not (has_lower and has_upper and has_digit and has_symbol):
-        raise HTTPException(status_code=422, detail="Password must include upper-case, lower-case, digit and symbol characters.")
+    classes = sum([has_lower, has_upper, has_digit, has_symbol])
+    if classes < PASSWORD_MIN_CLASSES:
+        missing = []
+        if not has_lower:
+            missing.append("lower-case")
+        if not has_upper:
+            missing.append("upper-case")
+        if not has_digit:
+            missing.append("digit")
+        if not has_symbol:
+            missing.append("symbol")
+        raise HTTPException(status_code=422, detail=f"Password must include at least {PASSWORD_MIN_CLASSES} of: upper-case, lower-case, digit, symbol (missing: {', '.join(missing)}).")
 
 def generate_secure_password(length: int = 16, use_symbols: bool = True, exclude_ambiguous: bool = True) -> str:
     length = max(PASSWORD_MIN_LENGTH, min(int(length or 16), 64))
@@ -1190,6 +1241,23 @@ def upsert_user_contact(cur, username: str, phone: Optional[str] = None,
             """, (username, generate_session_secret(24), gid))
     except Exception as e:
         logger.debug("central user contact upsert skipped for %s: %s", username, e)
+
+def sync_central_password(cur, username: str, password: str) -> None:
+    """Mirror the live Wi-Fi password into central users.password_hash.
+
+    Best-effort (never fails the caller): the access-engine sync reads this
+    column when it must seed a missing radcheck credential, so it has to be
+    the real password — never a onboarding placeholder. All password-write
+    paths (create, profile update, admin reset, self-service change) call this.
+    """
+    try:
+        cur.execute("""
+            INSERT INTO users (username, password_hash, status)
+            VALUES (%s, %s, 'ACTIVE')
+            ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash
+        """, (username, password))
+    except Exception as e:
+        logger.debug("central password mirror skipped for %s: %s", username, e)
 
 class GuestUserGenerateRequest(BaseModel):
     duration: Optional[str] = "24h" # "1h", "6h", "12h", "24h" (default), "3d", "7d", "30d"
@@ -2046,6 +2114,7 @@ def change_own_password(payload: SelfPasswordChangeRequest, request: Request, ca
                 "INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, %s, ':=', %s)",
                 (uname, attr, payload.new_password),
             )
+            sync_central_password(cur, uname, payload.new_password)
             conn.commit()
     finally:
         conn.close()
@@ -2070,10 +2139,12 @@ def get_password_policy(_: str = Depends(authenticate_admin)):
     return {
         "min_length": PASSWORD_MIN_LENGTH,
         "max_length": PASSWORD_MAX_LENGTH,
-        "require_upper": True,
-        "require_lower": True,
-        "require_digit": True,
-        "require_symbol": True,
+        "min_classes": PASSWORD_MIN_CLASSES,
+        "require_upper": False,
+        "require_lower": False,
+        "require_digit": False,
+        "require_symbol": False,
+        "description": f"Min {PASSWORD_MIN_LENGTH} chars with at least {PASSWORD_MIN_CLASSES} of: upper-case, lower-case, digit, symbol. Example: 9876543210Ram@",
         "default_generate_length": 16,
     }
 
@@ -2226,6 +2297,8 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
             upsert_user_contact(cur, payload.username, phone=phone,
                                 set_phone=payload.phone is not None,
                                 group_name=payload.group)
+            # Central password mirror (access-engine seeds from here when needed)
+            sync_central_password(cur, payload.username, payload.password)
 
             conn.commit()
             merged = dict(payload.attributes or {})
@@ -2259,6 +2332,7 @@ def update_user_profile(username: str, payload: UserUpdateRequest, admin_user: s
                     INSERT INTO radcheck (username, attribute, op, value)
                     VALUES (%s, %s, ':=', %s)
                 """, (uname, payload.password_type or "Cleartext-Password", payload.password))
+                sync_central_password(cur, uname, payload.password)
 
             # Update group membership
             if payload.group is not None:
@@ -2746,6 +2820,7 @@ def update_user_password(username: str, payload: PasswordChangeRequest, admin_us
                 INSERT INTO radcheck (username, attribute, op, value)
                 VALUES (%s, %s, ':=', %s)
             """, (username, payload.password_type, payload.password))
+            sync_central_password(cur, username, payload.password)
             conn.commit()
     finally:
         conn.close()
@@ -2873,6 +2948,7 @@ def get_public_config(request: Request):
         "portal_path": "/radius/portal",
         "wifi_ssid": wifi_ssid,
         "wifi_auth_type": wifi_auth_type,
+        "eap": _eap_server_info(),
         "signer_configured": bool(signer_url),
         "admin_contact": {
             "phone": phone,
@@ -4248,9 +4324,62 @@ def create_or_update_group(payload: GroupCreateRequest, _: str = Depends(authent
                     if k.strip() and v.strip():
                         cur.execute("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (%s, %s, ':=', %s)", (payload.groupname, k.strip(), v.strip()))
 
+            # Mirror into the central groups table: the access-decision engine
+            # reads groups.recharge_required (not radgroupreply), so without
+            # this the Groups UI "exempt" flag never took effect at RADIUS time.
+            try:
+                cur.execute("""
+                    INSERT INTO groups (name, description, recharge_required,
+                                        max_session_seconds, bandwidth_down_kbps,
+                                        bandwidth_up_kbps, vlan_id, is_admin)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (name) DO UPDATE SET
+                        description = COALESCE(NULLIF(EXCLUDED.description, ''), groups.description),
+                        recharge_required = EXCLUDED.recharge_required,
+                        max_session_seconds = COALESCE(EXCLUDED.max_session_seconds, groups.max_session_seconds),
+                        bandwidth_down_kbps = EXCLUDED.bandwidth_down_kbps,
+                        bandwidth_up_kbps = EXCLUDED.bandwidth_up_kbps,
+                        vlan_id = EXCLUDED.vlan_id,
+                        is_admin = EXCLUDED.is_admin,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (payload.groupname, payload.description,
+                      False if (payload.is_admin or payload.groupname == "admins" or payload.recharge_required is False) else True,
+                      (payload.session_timeout or 86400),
+                      payload.bandwidth_down_kbps, payload.bandwidth_up_kbps,
+                      (int(str(payload.vlan_id).strip()) if payload.vlan_id is not None and str(payload.vlan_id).strip().isdigit() else None),
+                      bool(payload.is_admin or payload.groupname == "admins")))
+            except Exception as e:
+                logger.debug("central groups mirror skipped for %s: %s", payload.groupname, e)
+
+            # Re-sync every member: group policy changes (exempt on/off,
+            # timeouts) only take effect once radcheck Auth-Type/Session-Timeout
+            # rows are rewritten. Previously stale Reject rows survived a
+            # group-level exempt, so "exempt" looked not applicable.
+            resynced, resync_errors = 0, 0
+            try:
+                cur.execute("SELECT DISTINCT username FROM radusergroup WHERE groupname = %s", (payload.groupname,))
+                members = [r["username"] for r in (cur.fetchall() or []) if r.get("username")]
+            except Exception:
+                members = []
             conn.commit()
+            if members:
+                try:
+                    from access_engine import sync_user_radius_attributes
+                except ImportError:
+                    from api.access_engine import sync_user_radius_attributes  # type: ignore
+                for uname in members:
+                    try:
+                        sync_user_radius_attributes(uname)
+                        resynced += 1
+                    except Exception as e:
+                        resync_errors += 1
+                        logger.debug("member resync skipped for %s: %s", uname, e)
+
             warnings = framed_ip_warnings(payload.extra_reply_attributes, f"Group '{payload.groupname}'")
-            return {"status": "success", "message": f"Policy Group '{payload.groupname}' saved successfully!",
+            msg = f"Policy Group '{payload.groupname}' saved successfully!"
+            if members:
+                msg += f" ({resynced} member(s) re-synced" + (f", {resync_errors} skipped" if resync_errors else "") + ")"
+            return {"status": "success", "message": msg,
                     "warnings": warnings}
     finally:
         conn.close()
@@ -4381,6 +4510,48 @@ def get_accounting(limit: int = 50, active_only: bool = False, username: Optiona
             params.append(limit)
             cur.execute(query, tuple(params))
             return cur.fetchall()
+    finally:
+        conn.close()
+
+@app.get("/radius/api/accounting/gaps", tags=["Logs & Accounting"])
+@app.get("/api/accounting/gaps", tags=["Logs & Accounting"])
+def get_accounting_gaps(days: int = 7, _: str = Depends(authenticate_admin)):
+    """Users accepted recently (radpostauth) but with zero accounting rows (radacct).
+
+    This is the "authenticated but no session/device" symptom: the NAS sent
+    Authentication (UDP 1812) but never sent Accounting (UDP 1813), so
+    Sessions, Devices, and usage stay empty. Almost always an AP-side gap —
+    accounting server IP/port unset, 1813 blocked, or secret mismatch.
+    """
+    try:
+        days = min(max(int(days or 7), 1), 30)
+    except (TypeError, ValueError):
+        days = 7
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.username,
+                       MAX(p.authdate) AS last_accept,
+                       COUNT(*) AS accept_count
+                FROM radpostauth p
+                WHERE p.reply = 'Access-Accept'
+                  AND p.authdate >= NOW() - (%s * INTERVAL '1 day')
+                  AND NOT EXISTS (SELECT 1 FROM radacct a WHERE a.username = p.username)
+                GROUP BY p.username
+                ORDER BY last_accept DESC
+                LIMIT 50
+            """, (days,))
+            rows = cur.fetchall()
+            gaps = []
+            for r in rows:
+                v = r.get("last_accept")
+                gaps.append({
+                    "username": r.get("username"),
+                    "last_accept": v.isoformat() if hasattr(v, "isoformat") else str(v),
+                    "accept_count": int(r.get("accept_count") or 0),
+                })
+            return {"days": days, "gaps": gaps}
     finally:
         conn.close()
 
@@ -4606,7 +4777,57 @@ def list_devices(username: Optional[str] = None, limit: int = 200,
                     "last_ip": lat.get("ip"),
                     "last_nas": lat.get("nas"),
                     "last_ap": lat.get("ap"),
+                    "source": "accounting",
                 })
+            # Auth-seen devices: stations that attempted authentication
+            # (radpostauth context, migration 005) but never produced an
+            # accounting row — typically the AP isn't sending UDP 1813.
+            # Without this the Devices tab stays empty with no clue why.
+            try:
+                cur.execute("""
+                    SELECT mac, attempts, last_seen, username, ap FROM (
+                        SELECT REPLACE(REPLACE(REPLACE(REPLACE(
+                                    UPPER(calling_station), ':', ''), '-', ''), ' ', ''), '.', '') AS mac,
+                               COUNT(*) AS attempts,
+                               MAX(authdate) AS last_seen,
+                               (array_agg(username ORDER BY authdate DESC))[1] AS username,
+                               (array_agg(called_station ORDER BY authdate DESC))[1] AS ap
+                        FROM radpostauth
+                        WHERE calling_station IS NOT NULL AND calling_station <> ''
+                          AND authdate >= NOW() - INTERVAL '7 days'
+                        GROUP BY 1
+                    ) s WHERE mac ~ '^[0-9A-F]{12}$'
+                    ORDER BY last_seen DESC LIMIT %s
+                """, (limit,))
+                have_mac = {r["mac"] for r in rows}
+                for r in cur.fetchall():
+                    mac = r.get("mac") or ""
+                    if not mac or mac in have_mac:
+                        continue
+                    if username and (r.get("username") or "") != username:
+                        continue
+                    ls = r.get("last_seen")
+                    out.append({
+                        "mac": pretty_mac(mac),
+                        "vendor": mac_vendor(mac),
+                        "username": r.get("username"),
+                        "sessions": 0,
+                        "online": 0,
+                        "first_seen": ls.isoformat() if hasattr(ls, "isoformat") else (str(ls) if ls else None),
+                        "last_seen": ls.isoformat() if hasattr(ls, "isoformat") else (str(ls) if ls else None),
+                        "up_bytes": 0,
+                        "down_bytes": 0,
+                        "up": format_bytes(0),
+                        "down": format_bytes(0),
+                        "total": format_bytes(0),
+                        "last_ip": None,
+                        "last_nas": None,
+                        "last_ap": r.get("ap"),
+                        "source": "auth",
+                        "auth_attempts": int(r.get("attempts") or 0),
+                    })
+            except Exception:
+                pass  # pre-005 databases simply skip this section
             return out
     finally:
         conn.close()
@@ -4617,18 +4838,27 @@ def list_devices(username: Optional[str] = None, limit: int = 200,
 def get_auth_logs(limit: int = 50, username: Optional[str] = None, result: Optional[str] = None, _: str = Depends(authenticate_admin)):
     """RADIUS authentication attempts. NOTE: the `pass` column (attempted passwords)
     is deliberately never selected — it must not leak through the API.
-    `reason` carries the rule that rejected the attempt (e.g. unverified device)."""
+    `reason` carries the rule that rejected the attempt (e.g. unverified device);
+    `eap_type`/`calling_station`/`called_station` carry device/AP context so
+    outer-identity ("anonymous") rows stay diagnosable."""
     try:
         select_reason = ", reason"
+        select_ctx = ", eap_type, calling_station, called_station"
         conn = get_db_connection()
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM information_schema.columns "
-                        "WHERE table_name = 'radpostauth' AND column_name = 'reason'")
-            if not cur.fetchone():
+            cur.execute("SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'radpostauth' AND column_name IN ('reason', 'eap_type', 'calling_station', 'called_station')")
+            have = {r.get("column_name") for r in (cur.fetchall() or [])}
+            if "reason" not in have:
                 select_reason = ""
+            for col in ("eap_type", "calling_station", "called_station"):
+                if col not in have:
+                    select_ctx = ""
+                    break
         conn.close()
     except Exception:
         select_reason = ""
+        select_ctx = ""
         try:
             conn.close()
         except Exception:
@@ -4636,7 +4866,7 @@ def get_auth_logs(limit: int = 50, username: Optional[str] = None, result: Optio
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
-            query = f"SELECT id, username, reply, authdate{select_reason} FROM radpostauth WHERE 1=1"
+            query = f"SELECT id, username, reply, authdate{select_reason}{select_ctx} FROM radpostauth WHERE 1=1"
             params: List[Any] = []
             if username:
                 query += " AND username ILIKE %s"
@@ -4668,6 +4898,9 @@ def get_auth_logs(limit: int = 50, username: Optional[str] = None, result: Optio
                     "reason": reason or None,
                     "rule": reason or ("Authenticated OK" if event == "accept" else "Rejected (no reason recorded — see server logs)"),
                     "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else None),
+                    "eap_type": (r.get("eap_type") or "").strip() or None,
+                    "calling_station": (r.get("calling_station") or "").strip() or None,
+                    "called_station": (r.get("called_station") or "").strip() or None,
                 })
             return out
     finally:
@@ -4697,15 +4930,110 @@ def disconnect_session(payload: DisconnectSessionRequest, _: str = Depends(authe
 # ==============================================================================
 # PKI & EAP-TLS CERTIFICATE MANAGEMENT
 # ==============================================================================
+def _eap_server_info() -> Dict[str, Any]:
+    """Live EAP server identity from server.pem (public, no secrets).
+
+    Returns {server_cn, server_san[], domain_hint}: the EXACT domain string
+    phones must type into the Android "Domain" field. Falls back to
+    RADIUS_PUBLIC_HOST / request-independent env when the cert is unreadable,
+    so the portal never shows a blank domain.
+    """
+    info: Dict[str, Any] = {"server_cn": "", "server_san": [], "domain_hint": ""}
+    try:
+        server_path = os.path.join(CERTS_DIR, "server.pem")
+        if os.path.exists(server_path):
+            res = subprocess.run(
+                ["openssl", "x509", "-in", server_path, "-noout", "-subject", "-ext", "subjectAltName"],
+                capture_output=True, text=True, timeout=10)
+            out = res.stdout or ""
+            for line in out.splitlines():
+                s = line.strip()
+                if s.startswith("subject="):
+                    m = re.search(r"CN\s*=\s*([^,/\n]+)", s)
+                    if m:
+                        info["server_cn"] = m.group(1).strip().strip('"')
+                elif s.startswith("DNS:") or "DNS:" in s or "IP Address:" in s:
+                    for part in s.split(","):
+                        part = part.strip()
+                        if part.startswith("DNS:"):
+                            info["server_san"].append(part[4:])
+                        elif part.startswith("IP Address:"):
+                            info["server_san"].append(part[11:])
+    except Exception as e:
+        logger.debug("EAP server info parse failed: %s", e)
+    dns_names = [s for s in info["server_san"] if s and not re.match(r"^\d+\.\d+\.\d+\.\d+$", s) and ":" not in s]
+    info["domain_hint"] = (dns_names[0] if dns_names else "") or info["server_cn"] or (RADIUS_PUBLIC_HOST or "")
+    return info
+
+
+def _resolve_ca_path() -> str:
+    for name in ("ca.pem", "ca.crt", "ca.cer"):
+        p = os.path.join(CERTS_DIR, name)
+        if os.path.exists(p):
+            return p
+    raise HTTPException(status_code=404, detail="CA certificate not found. Run cert bootstrap first.")
+
+
+def _ca_info_dict() -> Dict[str, Any]:
+    """Public CA fingerprint info so phones can verify before trusting."""
+    ca_path = _resolve_ca_path()
+    info: Dict[str, Any] = {"filename": os.path.basename(ca_path)}
+    try:
+        res = subprocess.run(
+            ["openssl", "x509", "-in", ca_path, "-noout",
+             "-subject", "-issuer", "-dates", "-fingerprint", "-sha256"],
+            capture_output=True, text=True, timeout=10)
+        for line in (res.stdout or "").splitlines():
+            if line.startswith("subject="):
+                info["subject"] = line[8:].strip()
+            elif line.startswith("issuer="):
+                info["issuer"] = line[7:].strip()
+            elif line.startswith("notBefore="):
+                info["not_before"] = line[10:].strip()
+            elif line.startswith("notAfter="):
+                info["not_after"] = line[9:].strip()
+            elif "Fingerprint=" in line:
+                info["sha256_fingerprint"] = line.split("=", 1)[1].strip()
+    except Exception as e:
+        logger.debug("CA info parse failed: %s", e)
+    return info
+
+
 @app.get("/radius/api/certs/ca", tags=["Certificates"])
 @app.get("/api/certs/ca", tags=["Certificates"])
-def download_ca_cert():
-    ca_path = os.path.join(CERTS_DIR, "ca.pem")
-    if not os.path.exists(ca_path):
-        ca_path = os.path.join(CERTS_DIR, "ca.crt")
-    if not os.path.exists(ca_path):
-        raise HTTPException(status_code=404, detail="CA certificate not found. Run cert bootstrap first.")
-    return FileResponse(ca_path, media_type="application/x-x509-ca-cert", filename="RajLabs_FreeRADIUS_Root_CA.pem")
+def download_ca_cert(format: str = "pem"):
+    """Download the Root CA in the format the phone expects.
+
+    Why this exists: Android's Wi-Fi certificate installer does not
+    reliably recognise `.pem`. Samsung/Pixel pickers want `.crt`/`.cer`
+    (DER). So `?format=crt|der` converts on the fly; default `pem` keeps
+    old links working. Filenames match the format to avoid rename steps.
+    """
+    ca_path = _resolve_ca_path()
+    fmt = (format or "pem").lower().strip().lstrip(".")
+    if fmt in ("pem", "crt-pem", "cer-pem"):
+        filename = "RajLabs_Root_CA.crt" if fmt != "pem" else "RajLabs_FreeRADIUS_Root_CA.pem"
+        return FileResponse(ca_path, media_type="application/x-x509-ca-cert", filename=filename)
+    if fmt in ("crt", "cer", "der"):
+        try:
+            res = subprocess.run(
+                ["openssl", "x509", "-in", ca_path, "-outform", "DER"],
+                capture_output=True, timeout=10, check=True)
+            return Response(content=res.stdout,
+                            media_type="application/x-x509-ca-cert",
+                            headers={"Content-Disposition": 'attachment; filename="RajLabs_Root_CA.crt"'})
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail=f"CA DER conversion failed: {e}")
+    raise HTTPException(status_code=422, detail="format must be one of: pem, crt, der, cer.")
+
+
+@app.get("/radius/api/certs/ca/info", tags=["Certificates"])
+@app.get("/api/certs/ca/info", tags=["Certificates"])
+@app.get("/radius/api/public/ca-info", tags=["Captive Portal"])
+@app.get("/api/public/ca-info", tags=["Captive Portal"])
+def get_ca_info():
+    """Public (no auth): CA subject + SHA256 fingerprint for trust verification."""
+    return _ca_info_dict()
 
 @app.get("/radius/api/certs", tags=["Certificates"])
 @app.get("/api/certs", tags=["Certificates"])
@@ -4983,13 +5311,9 @@ def issue_client_certificate(payload: IssueCertRequest, request: Request, admin_
         with open(ca_chain_file, "w") as f:
             f.write(ca_chain_pem)
 
-        # 4. Package as PKCS#12 bundle (.p12)
-        subprocess.run([
-            "openssl", "pkcs12", "-export",
-            "-in", user_crt, "-inkey", user_key, "-certfile", ca_chain_file,
-            "-out", user_p12, "-name", f"RajLabs RADIUS - {uname}",
-            "-password", f"pass:{p12_pass}"
-        ], check=True, capture_output=True)
+        # 4. Package as PKCS#12 bundle (.p12) — legacy PBE for Android KeyChain compat
+        export_pkcs12_bundle(user_crt, user_key, user_p12,
+                             f"RajLabs RADIUS - {uname}", p12_pass, ca_chain_file)
 
         # Private key material: owner/group read only (never world-readable).
         for _p in (user_key, user_p12, user_crt):
@@ -5402,13 +5726,9 @@ def portal_enroll_certificate(payload: PortalEnrollCertRequest, request: Request
         with open(ca_chain_file, "w") as f:
             f.write(ca_chain_pem)
 
-        # 3. Package as PKCS#12 bundle (.p12)
-        subprocess.run([
-            "openssl", "pkcs12", "-export",
-            "-in", user_crt, "-inkey", user_key, "-certfile", ca_chain_file,
-            "-out", user_p12, "-name", f"RajLabs RADIUS - {uname}",
-            "-password", f"pass:{p12_pass}"
-        ], check=True, capture_output=True)
+        # 3. Package as PKCS#12 bundle (.p12) — legacy PBE for Android KeyChain compat
+        export_pkcs12_bundle(user_crt, user_key, user_p12,
+                             f"RajLabs RADIUS - {uname}", p12_pass, ca_chain_file)
         for _p in (user_key, user_p12, user_crt):
             try:
                 os.chmod(_p, 0o600)

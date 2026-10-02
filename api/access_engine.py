@@ -134,7 +134,16 @@ def get_access_decision(user_info: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 def get_user_full_context(username: str, conn=None) -> Optional[Dict[str, Any]]:
-    """Retrieves full user context including group, overrides, and latest active subscription."""
+    """Retrieves full user context including group, overrides, and latest active subscription.
+
+    Group policy resolution (first hit wins):
+      1. central users.group_id -> groups (preferred, admin-maintained)
+      2. RADIUS radusergroup membership -> central groups by name
+         (covers users whose central group_id is stale/missing)
+      3. RADIUS radgroupreply RajLabs-Recharge-Exempt / Administrative-User flag
+         (covers policy groups created only in RADIUS tables)
+      4. default: recharge required.
+    """
     should_close = False
     if conn is None:
         conn = get_db_connection()
@@ -143,7 +152,7 @@ def get_user_full_context(username: str, conn=None) -> Optional[Dict[str, Any]]:
     try:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT 
+                SELECT
                     u.id, u.username, u.password_hash, u.email, u.phone,
                     u.group_id, u.recharge_required_override, u.status,
                     g.name as group_name, g.recharge_required as group_recharge_required,
@@ -159,9 +168,21 @@ def get_user_full_context(username: str, conn=None) -> Optional[Dict[str, Any]]:
 
             user_data = dict(user_row)
 
+            if user_data.get("group_recharge_required") is None:
+                # Fallback: resolve via live RADIUS membership, not the cached group_id.
+                fallback_name, fallback_recharge, fallback_max = _resolve_group_policy(cur, username)
+                if fallback_name is not None:
+                    user_data["group_name"] = user_data.get("group_name") or fallback_name
+                if fallback_recharge is not None:
+                    user_data["group_recharge_required"] = fallback_recharge
+                else:
+                    user_data["group_recharge_required"] = True
+                if fallback_max is not None and not user_data.get("group_max_session_seconds"):
+                    user_data["group_max_session_seconds"] = fallback_max
+
             # Fetch active subscription if any
             cur.execute("""
-                SELECT 
+                SELECT
                     s.id as subscription_id, s.user_id, s.plan_id, s.starts_at, s.expires_at, s.status,
                     p.name as plan_name, p.price as plan_price, p.validity_seconds,
                     p.max_session_seconds as plan_max_session_seconds
@@ -177,6 +198,43 @@ def get_user_full_context(username: str, conn=None) -> Optional[Dict[str, Any]]:
     finally:
         if should_close:
             conn.close()
+
+
+def _resolve_group_policy(cur, username: str):
+    """Best-effort (group_name, recharge_required, max_session_seconds) for a user.
+
+    Never raises: any lookup failure yields (None, None, None) so the caller
+    falls back to recharge-required.
+    """
+    try:
+        cur.execute("SELECT groupname FROM radusergroup WHERE username = %s ORDER BY priority ASC LIMIT 1", (username,))
+        row = cur.fetchone()
+        group_name = (row.get("groupname") or "").strip() if row else ""
+        if not group_name:
+            return None, None, None
+        try:
+            cur.execute("SELECT recharge_required, max_session_seconds FROM groups WHERE UPPER(name) = UPPER(%s) LIMIT 1", (group_name,))
+            grow = cur.fetchone()
+            if grow and grow.get("recharge_required") is not None:
+                return group_name, bool(grow.get("recharge_required")), grow.get("max_session_seconds")
+        except Exception:
+            pass
+        # RADIUS-native exempt markers (written by the Groups admin UI).
+        try:
+            cur.execute("SELECT attribute, value FROM radgroupreply WHERE groupname = %s", (group_name,))
+            exempt = False
+            for r in (cur.fetchall() or []):
+                if r.get("attribute") == "RajLabs-Recharge-Exempt" and (r.get("value") or "") == "1":
+                    exempt = True
+                if r.get("attribute") == "Service-Type" and (r.get("value") or "") == "Administrative-User":
+                    exempt = True
+            if exempt:
+                return group_name, False, None
+        except Exception:
+            pass
+        return group_name, None, None
+    except Exception:
+        return None, None, None
 
 def sync_user_radius_attributes(username: str, conn=None):
     """
@@ -197,13 +255,20 @@ def sync_user_radius_attributes(username: str, conn=None):
         
         with conn.cursor() as cur:
             if decision["decision"] == "ALLOW":
-                # Ensure credentials are present in radcheck
+                # Clear any stale reject marker. Credentials are deliberately
+                # PRESERVED: radcheck holds the live Wi-Fi password (written by
+                # user create / password reset flows). Overwriting it here with
+                # users.password_hash used to break logins after every
+                # recharge, because central rows created at onboarding carry a
+                # random placeholder — users then had to "reset password" to
+                # get back online. Only seed a password when none exists.
                 cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute = 'Auth-Type'", (username,))
-                cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (username,))
-                cur.execute("""
-                    INSERT INTO radcheck (username, attribute, op, value)
-                    VALUES (%s, 'Cleartext-Password', ':=', %s)
-                """, (username, user_ctx["password_hash"]))
+                cur.execute("SELECT 1 FROM radcheck WHERE username = %s AND attribute LIKE '%%Password' LIMIT 1", (username,))
+                if not cur.fetchone() and user_ctx.get("password_hash"):
+                    cur.execute("""
+                        INSERT INTO radcheck (username, attribute, op, value)
+                        VALUES (%s, 'Cleartext-Password', ':=', %s)
+                    """, (username, user_ctx["password_hash"]))
 
                 # Ensure group assignment
                 group_name = user_ctx["group_name"] or "PAID"

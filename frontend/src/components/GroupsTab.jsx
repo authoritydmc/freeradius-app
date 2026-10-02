@@ -70,7 +70,9 @@ export default function GroupsTab({ onNotify }) {
     const gName = group.groupname || group.name || '';
     const isAdmin = Boolean(group.is_admin || gName === 'admins' || gName === 'admin');
     const rateLimit = group.rate_limit || group.reply_attributes?.find?.(a => a.attribute === 'Mikrotik-Rate-Limit')?.value || '';
-    const simUse = parseInt(group.simultaneous_use || group.check_attributes?.find?.(a => a.attribute === 'Simultaneous-Use')?.value) || 1;
+    const simUseRaw = group.simultaneous_use ?? group.check_attributes?.find?.(a => a.attribute === 'Simultaneous-Use')?.value ?? '';
+    const simUseParsed = parseInt(simUseRaw);
+    const simUse = simUseRaw === '' || Number.isNaN(simUseParsed) ? '' : simUseParsed;
     const sessTimeout = parseInt(group.session_timeout || group.reply_attributes?.find?.(a => a.attribute === 'Session-Timeout')?.value) || 0;
     const idleTimeout = parseInt(group.idle_timeout || group.reply_attributes?.find?.(a => a.attribute === 'Idle-Timeout')?.value) || 600;
     const vlanId = group.vlan_id || group.reply_attributes?.find?.(a => a.attribute === 'Tunnel-Private-Group-ID')?.value || '';
@@ -117,7 +119,10 @@ export default function GroupsTab({ onNotify }) {
         rate_limit: form.rate_limit || '',
         session_timeout: parseInt(form.session_timeout) || 0,
         idle_timeout: parseInt(form.idle_timeout) || 600,
-        simultaneous_use: parseInt(form.simultaneous_use) || 1,
+        // '' / 0 / negative = no concurrent-device limit (backend skips the row).
+        simultaneous_use: form.simultaneous_use === '' || form.simultaneous_use === null || form.simultaneous_use === undefined
+          ? null
+          : (parseInt(form.simultaneous_use) > 0 ? parseInt(form.simultaneous_use) : null),
         vlan_id: form.vlan_id && form.vlan_id.toString().trim() ? parseInt(form.vlan_id) : null,
         is_admin: form.is_admin || form.groupname === 'admins' || form.groupname === 'admin',
         recharge_required: form.recharge_required,
@@ -243,7 +248,7 @@ export default function GroupsTab({ onNotify }) {
                 const isRechargeRequired = !isAdmin && group.recharge_required !== false;
                 const rate = group.rate_limit || group.reply_attributes?.find?.(a => a.attribute === 'Mikrotik-Rate-Limit')?.value || '—';
                 const sess = group.session_timeout ? `${group.session_timeout}s` : '—';
-                const sim = group.simultaneous_use || group.check_attributes?.find?.(a => a.attribute === 'Simultaneous-Use')?.value || '1';
+                const sim = group.simultaneous_use ?? group.check_attributes?.find?.(a => a.attribute === 'Simultaneous-Use')?.value ?? 'No limit';
                 const macLock = group.require_device_verification || group.reply_attributes?.some?.(a => a.attribute === 'RajLabs-Require-Device-Lock' && a.value === '1');
                 return (
                   <tr key={groupName} className="hover:bg-slate-800/40 transition-colors">
@@ -395,12 +400,13 @@ export default function GroupsTab({ onNotify }) {
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Simultaneous Use</label>
+                  <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Simultaneous Use <span className="text-slate-500 font-normal normal-case">(devices per user — blank = no limit)</span></label>
                   <input
                     type="number"
-                    min="1"
+                    min="0"
+                    placeholder="Blank = no limit"
                     value={form.simultaneous_use}
-                    onChange={e => setForm({ ...form, simultaneous_use: parseInt(e.target.value) || 1 })}
+                    onChange={e => setForm({ ...form, simultaneous_use: e.target.value === '' ? '' : parseInt(e.target.value) })}
                     className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
                   />
                 </div>

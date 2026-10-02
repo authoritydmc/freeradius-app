@@ -27,13 +27,20 @@ def no_db(monkeypatch):
 # --- password policy / generation -------------------------------------------
 
 def test_password_policy_rejects_weak():
-    for bad in ["short1A!", "alllowercase123!", "ALLUPPER123!", "NoDigitsHere!!", "NoSymbol12345"]:
+    for bad in ["short1A!", "alllowercase123", "ALLUPPER123", "NoDigitsOrSymbol", "1234567890!!"]:
         with pytest.raises(HTTPException):
             app.validate_password_policy(bad, "someuser")
 
 
 def test_password_policy_accepts_strong():
     app.validate_password_policy("Str0ng!Passw0rd#42", "someuser")
+
+
+def test_password_policy_accepts_mobile_word_symbol():
+    # Relaxed rule: mobile-number + word + symbol passes (3 of 4 classes).
+    app.validate_password_policy("9876543210Ram@", "someuser")
+    app.validate_password_policy("9876543210ram@", "someuser")
+    app.validate_password_policy("9876543210RAM@", "someuser")
 
 
 def test_password_policy_rejects_username_equal():

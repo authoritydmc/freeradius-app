@@ -110,6 +110,7 @@ export default function TesterTab({ onNotify, initialUsername = '' }) {
                 className="w-full px-3 py-2 bg-slate-950 border border-slate-750 rounded-xl text-sm text-slate-200 focus:outline-none focus:border-violet-500 font-mono"
               />
               <p className="text-[11px] text-slate-500">Server uses its own configured RADIUS secret — no need to enter it.</p>
+              <p className="text-[11px] text-slate-500">Auth-only check (UDP 1812): a green Accept proves the password works but creates no session/device rows — those need real AP accounting on UDP 1813.</p>
             </div>
 
             <div className="space-y-1">
