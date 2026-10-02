@@ -99,6 +99,12 @@ export function formatDuration(seconds) {
   return parts.join(' ') || '0s';
 }
 
+// Canonical user-facing base URL for Wi-Fi users (captive portal, recharge,
+// onboarding links). The backend serves the portal at this host's root.
+export const WIFI_PORTAL_BASE_URL = 'https://wifi.rajlabs.in';
+export const portalUrlFor = (path = '/radius/portal') =>
+  `${WIFI_PORTAL_BASE_URL}${path}`;
+
 export function formatDateTime(input, opts = {}) {
   if (input == null || input === '') return '—';
   try {

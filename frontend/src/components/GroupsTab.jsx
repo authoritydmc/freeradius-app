@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Users, Plus, Trash2, Edit3, Shield, Gauge, Wifi, RefreshCw,
-  Search, CheckCircle2, AlertCircle, Layers, Clock, Zap, CreditCard, Sparkles, Smartphone
+import {
+  Plus, Trash2, Edit3, Shield, RefreshCw,
+  Search, Layers, CreditCard, Smartphone
 } from 'lucide-react';
 import { fetchJson } from '../utils/api';
 
@@ -207,7 +207,7 @@ export default function GroupsTab({ onNotify }) {
         </div>
       </div>
 
-      {/* Groups Grid */}
+      {/* Groups Table (compact rows) */}
       {loading && groups.length === 0 ? (
         <div className="flex items-center justify-center p-12 text-slate-400">
           <RefreshCw className="w-6 h-6 animate-spin text-indigo-400 mr-3" />
@@ -220,127 +220,76 @@ export default function GroupsTab({ onNotify }) {
           <p className="text-xs text-slate-500 mt-1">Create groups like 'admins', 'vip', 'staff', or 'guests' to enforce RADIUS policies.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {filteredGroups.map(group => {
-            const groupName = group.groupname || group.name || '';
-            const isAdmin = group.is_admin || groupName === 'admins' || groupName === 'admin';
-            const isRechargeRequired = !isAdmin && group.recharge_required !== false;
-
-            return (
-              <div 
-                key={groupName}
-                className="bg-slate-900/70 border border-slate-800/90 hover:border-slate-700 rounded-2xl p-5 flex flex-col justify-between transition group shadow-lg"
-              >
-                <div>
-                  <div className="flex items-start justify-between gap-3 mb-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className={`p-2 rounded-xl ${isAdmin ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'}`}>
-                        {isAdmin ? <Shield className="w-5 h-5" /> : <Users className="w-5 h-5" />}
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-slate-100 flex items-center gap-1.5 text-base">
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl">
+          <div className="table-scroll overflow-x-auto rounded-2xl" style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <table className="w-full min-w-[760px] text-left text-xs">
+            <thead className="bg-slate-950/60 text-slate-400 uppercase border-b border-slate-800 text-[10px] tracking-wider">
+              <tr>
+                <th className="px-4 py-3 whitespace-nowrap">Group</th>
+                <th className="px-4 py-3 whitespace-nowrap">Users</th>
+                <th className="px-4 py-3 whitespace-nowrap">Recharge</th>
+                <th className="px-4 py-3 whitespace-nowrap">Rate Limit</th>
+                <th className="px-4 py-3 whitespace-nowrap">Session / Devices</th>
+                <th className="px-4 py-3 whitespace-nowrap">Extras</th>
+                <th className="px-4 py-3 text-right whitespace-nowrap">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80">
+              {filteredGroups.map(group => {
+                const groupName = group.groupname || group.name || '';
+                const isAdmin = group.is_admin || groupName === 'admins' || groupName === 'admin';
+                const isRechargeRequired = !isAdmin && group.recharge_required !== false;
+                const rate = group.rate_limit || group.reply_attributes?.find?.(a => a.attribute === 'Mikrotik-Rate-Limit')?.value || '—';
+                const sess = group.session_timeout ? `${group.session_timeout}s` : '—';
+                const sim = group.simultaneous_use || group.check_attributes?.find?.(a => a.attribute === 'Simultaneous-Use')?.value || '1';
+                const macLock = group.require_device_verification || group.reply_attributes?.some?.(a => a.attribute === 'RajLabs-Require-Device-Lock' && a.value === '1');
+                return (
+                  <tr key={groupName} className="hover:bg-slate-800/40 transition-colors">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <div className="flex items-center gap-2">
+                        <span className={`font-mono font-bold px-2 py-0.5 rounded-lg border text-[11px] ${isAdmin ? 'bg-amber-500/10 text-amber-300 border-amber-500/20' : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20'}`}>
                           {groupName}
-                          {isAdmin && (
-                            <span className="px-1.5 py-0.5 text-[10px] uppercase font-bold tracking-wider rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                              Admin
-                            </span>
-                          )}
-                        </h3>
-                        <p className="text-xs text-slate-400 line-clamp-1">{group.description || 'No description'}</p>
+                        </span>
+                        {group.description && <span className="text-slate-500 truncate max-w-[180px]" title={group.description}>{group.description}</span>}
                       </div>
-                    </div>
-
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => handleOpenEdit(group)}
-                        className="p-1.5 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition"
-                        title="Edit Policy Group"
-                      >
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap font-mono text-slate-300">
+                      {group.user_count !== undefined ? group.user_count : '—'}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {isRechargeRequired ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">Paid</span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Free</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap font-mono text-indigo-300">{rate}</td>
+                    <td className="px-4 py-3 whitespace-nowrap font-mono text-slate-300">{sess} / {sim}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="flex items-center gap-1">
+                        {group.vlan_id && <span className="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 border border-violet-500/20 text-[10px] font-mono">VLAN {group.vlan_id}</span>}
+                        {macLock && <span className="px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20 text-[10px] font-bold">MAC🔒</span>}
+                        {!group.vlan_id && !macLock && <span className="text-slate-600">—</span>}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <button onClick={() => handleOpenEdit(group)} title="Edit Policy Group" className="p-1.5 text-slate-400 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition">
                         <Edit3 className="w-4 h-4" />
                       </button>
                       <button
-                        onClick={() => handleDelete(groupName)}
-                        disabled={groupName === 'admins'}
+                        onClick={() => handleDelete(groupName)} disabled={groupName === 'admins'}
+                        title={groupName === 'admins' ? "Default 'admins' system group cannot be deleted" : 'Delete Group'}
                         className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition disabled:opacity-30 disabled:hover:bg-transparent"
-                        title={groupName === 'admins' ? "Default 'admins' system group cannot be deleted" : "Delete Group"}
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
-                    </div>
-                  </div>
-
-                  {/* Attributes Badges */}
-                  <div className="space-y-2 mt-4 pt-3 border-t border-slate-800/80 text-xs">
-                    {/* Recharge requirement policy status */}
-                    <div className="flex items-center justify-between text-slate-300">
-                      <span className="flex items-center gap-1.5 text-slate-400">
-                        <CreditCard className="w-3.5 h-3.5 text-pink-400" /> Recharge Policy:
-                      </span>
-                      {isRechargeRequired ? (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                          Paid Plan Required
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          Recharge Exempt / Free
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="flex items-center justify-between text-slate-300">
-                      <span className="flex items-center gap-1.5 text-slate-400">
-                        <Gauge className="w-3.5 h-3.5 text-indigo-400" /> Rate Limit:
-                      </span>
-                      <span className="font-mono text-indigo-300 font-medium">
-                        {group.rate_limit || group.reply_attributes?.find?.(a => a.attribute === 'Mikrotik-Rate-Limit')?.value || 'Unlimited'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-slate-300">
-                      <span className="flex items-center gap-1.5 text-slate-400">
-                        <Clock className="w-3.5 h-3.5 text-cyan-400" /> Max Session:
-                      </span>
-                      <span className="font-mono text-slate-300">
-                        {group.session_timeout ? `${group.session_timeout}s` : 'Unlimited'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-slate-300">
-                      <span className="flex items-center gap-1.5 text-slate-400">
-                        <Zap className="w-3.5 h-3.5 text-emerald-400" /> Concurrent Devices:
-                      </span>
-                      <span className="font-mono text-slate-300">
-                        {group.simultaneous_use || group.check_attributes?.find?.(a => a.attribute === 'Simultaneous-Use')?.value || '1'}
-                      </span>
-                    </div>
-                    {group.vlan_id && (
-                      <div className="flex items-center justify-between text-slate-300">
-                        <span className="flex items-center gap-1.5 text-slate-400">
-                          <Wifi className="w-3.5 h-3.5 text-violet-400" /> Dynamic VLAN ID:
-                        </span>
-                        <span className="font-mono text-violet-300 font-semibold">{group.vlan_id}</span>
-                      </div>
-                    )}
-                    {(group.require_device_verification || group.reply_attributes?.some?.(a => a.attribute === 'RajLabs-Require-Device-Lock' && a.value === '1')) && (
-                      <div className="flex items-center justify-between text-slate-300">
-                        <span className="flex items-center gap-1.5 text-slate-400">
-                          <Smartphone className="w-3.5 h-3.5 text-sky-400" /> Hardware MAC Lock:
-                        </span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30">
-                          Enforced by Default
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-500">
-                  <span>{group.user_count !== undefined ? `${group.user_count} assigned users` : 'Active Policy'}</span>
-                  <span className="text-emerald-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> Enforced
-                  </span>
-                </div>
-              </div>
-            );
-          })}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
         </div>
       )}
 

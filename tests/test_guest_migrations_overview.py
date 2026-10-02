@@ -148,6 +148,30 @@ def test_group_restricted_plans():
     assert "visiblePlans" in dash
 
 
+def test_password_qr_auth_and_compact_groups():
+    import inspect
+    from api.app import update_user_password
+    # Reset flow hits the real endpoint (PUT .../password), never a missing route
+    users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
+    assert "users/${encodeURIComponent(resetUsername)}/password" in users_tab
+    assert "reset-password" not in users_tab
+    # Reset modal: copy button + new-password labeling + Save & QR
+    assert "Copy new password" in users_tab
+    assert "only hashes are stored" in users_tab
+    assert "Save & QR" in users_tab
+    # Table test-auth prompts for the secret and runs a real verdict
+    assert "Test Auth:" in users_tab and "runAuthTest" in users_tab
+    assert "body: JSON.stringify({ username, password: '' })" not in users_tab
+    # QR embeds the known password (reset handoff passes it through)
+    qr = Path("frontend/src/components/WifiQrModal.jsx").read_text(encoding="utf-8")
+    assert "user?.password" in qr
+    # Groups tab is compact rows, not bulky cards
+    groups = Path("frontend/src/components/GroupsTab.jsx").read_text(encoding="utf-8")
+    assert "min-w-[760px]" in groups
+    assert "md:grid-cols-2 lg:grid-cols-3" not in groups
+    assert "app.put" in inspect.getsource(update_user_password)
+
+
 def test_cert_handoff_popup_and_upstream_revoke():
     import inspect
     from api.app import (
@@ -184,3 +208,22 @@ def test_phone_onboarding():
     assert "OnboardModal" in users_tab and "phone" in users_tab
     cred = Path("frontend/src/components/CredResultModal.jsx").read_text(encoding="utf-8")
     assert "wa.me/${phoneDigits}" in cred
+
+
+def test_onboarding_invite_with_password_and_wifi_url():
+    api_js = Path("frontend/src/utils/api.js").read_text(encoding="utf-8")
+    assert "WIFI_PORTAL_BASE_URL" in api_js
+    assert "wifi.rajlabs.in" in api_js
+    modal = Path("frontend/src/components/OnboardModal.jsx").read_text(encoding="utf-8")
+    # Password included when known, markup-highlighted, wifi-domain links
+    assert "initialPassword" in modal
+    assert "*Password:*" in modal
+    assert "portalUrlFor" in modal
+    assert "window.location.origin" not in modal
+    # Creation handoff prefills it; credential card uses the same domain
+    users_tab = Path("frontend/src/components/UsersTab.jsx").read_text(encoding="utf-8")
+    assert "lastCreatedCreds" in users_tab
+    cred = Path("frontend/src/components/CredResultModal.jsx").read_text(encoding="utf-8")
+    assert "portalUrlFor" in cred and "window.location.origin" not in cred
+    qr = Path("frontend/src/components/WifiQrModal.jsx").read_text(encoding="utf-8")
+    assert "portalUrlFor" in qr

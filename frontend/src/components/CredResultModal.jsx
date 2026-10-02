@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { portalUrlFor } from '../utils/api';
 import { 
   CheckCircle2, 
   Copy, 
@@ -26,14 +27,12 @@ export default function CredResultModal({ data, cred, onClose, onCopy }) {
   const password = activeCred.password || '';
   const validity = activeCred.validity || '';
   const phoneDigits = String(activeCred.phone || '').replace(/\D/g, '');
-  const portalUrl = typeof window !== 'undefined' ? `${window.location.origin}/radius/portal` : '/radius/portal';
-
-  // Standard Wi-Fi direct connect string (scannable by iOS and Android cameras)
+  const portalUrl = portalUrlFor();
   const wifiString = password
     ? `WIFI:T:WPA;S:${ssid};P:${password};;`
     : `WIFI:T:nopass;S:${ssid};;`;
 
-  const shareText = `RajLabs Wi-Fi Network Access\nSSID: ${ssid}\nUsername: ${username}\nPassword: ${password}${validity ? `\nValidity: ${validity}` : ''}\nPortal: ${portalUrl}\n(Scan the QR code to connect directly)`;
+  const shareText = `🎉 *Welcome to ${ssid} Wi-Fi!*\n\n📶 *Network:* \`${ssid}\`\n👤 *Username:* \`${username}\`\n🔑 *Password:* \`${password}\`${validity ? `\n⏳ *Validity:* ${validity}` : ''}\n\n💳 *Recharge:* ${portalUrl}\n— _RajLabs Network Team_`;
 
   const handleDownloadTxt = () => {
     const blob = new Blob([shareText + `\nIssued on ${new Date().toISOString()}\n`], { type: 'text/plain' });

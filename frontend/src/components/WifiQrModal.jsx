@@ -1,5 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { portalUrlFor } from '../utils/api';
 import { 
   Wifi, 
   Download, 
@@ -33,18 +34,27 @@ export default function WifiQrModal({
   const effectiveGroup = user?.group || 'staff';
   const effectiveHasCert = Boolean(user?.has_certificate);
   const effectiveExpiry = user?.expiration || '';
+  // Password may arrive via prop or via the user object (e.g. right after a
+  // password reset, when the fresh secret is still known). Sync on open/user.
+  const incomingPass = password || user?.password || '';
 
   const [activeTab, setActiveTab] = useState('portal'); // 'portal' | 'wifi' | 'cert'
   const [customSsid, setCustomSsid] = useState(ssid);
-  const [customPass, setCustomPass] = useState(password);
+  const [customPass, setCustomPass] = useState(incomingPass);
   const [copied, setCopied] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const qrRef = useRef(null);
 
+  useEffect(() => {
+    if (isOpen) {
+      setCustomSsid(ssid);
+      setCustomPass(incomingPass);
+    }
+  }, [isOpen, effectiveUsername]);
+
   if (!isOpen) return null;
 
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const portalUrl = `${origin}/radius/portal?user=${encodeURIComponent(effectiveUsername)}`;
+  const portalUrl = `${portalUrlFor()}?user=${encodeURIComponent(effectiveUsername)}`;
   const certProfileUrl = `${origin}/radius/api/certs/${encodeURIComponent(effectiveUsername)}/mobileconfig`;
   
   // Standard Wi-Fi barcode format: WIFI:T:WPA;S:MySSID;P:MyPassword;;
@@ -257,7 +267,13 @@ ${customPass ? `🔑 Password: ${customPass}\n` : ''}${effectiveExpiry ? `⏳ Ex
 
           {/* Wi-Fi SSID / Passphrase override (only in Direct SSID tab) */}
           {activeTab === 'wifi' && (
-            <div className="grid grid-cols-2 gap-2 text-xs bg-slate-950 p-2.5 rounded-xl border border-slate-800 print:hidden">
+            <div className="text-xs bg-slate-950 p-2.5 rounded-xl border border-slate-800 print:hidden space-y-2">
+              <p className="text-[11px] text-slate-400">
+                {customPass
+                  ? 'QR embeds this password — scanning joins directly.'
+                  : 'No password set: enter it below so the QR joins directly (stored passwords are hashed and cannot be read back).'}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="block text-slate-400 mb-0.5 text-[10px]">SSID</label>
                 <input
@@ -269,14 +285,15 @@ ${customPass ? `🔑 Password: ${customPass}\n` : ''}${effectiveExpiry ? `⏳ Ex
                 />
               </div>
               <div>
-                <label className="block text-slate-400 mb-0.5 text-[10px]">PSK / Password</label>
+                <label className="block text-slate-400 mb-0.5 text-[10px]">Password (embeds in QR)</label>
                 <input
                   type="text"
                   value={customPass}
                   onChange={(e) => setCustomPass(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-750 rounded-lg px-2 py-1 text-white font-mono text-xs focus:border-indigo-500 outline-none"
-                  placeholder="Optional PSK"
+                  placeholder="User Wi-Fi password"
                 />
+              </div>
               </div>
             </div>
           )}

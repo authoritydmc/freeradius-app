@@ -89,8 +89,13 @@ export default function UsersTab({
   // Wi-Fi QR Access Pass Modal
   const [qrModalUser, setQrModalUser] = useState(null);
 
+  // Inline RADIUS auth test (username + password -> real verdict)
+  const [authTest, setAuthTest] = useState(null); // {username, password, result, loading}
+
   // Onboarding invite (WhatsApp/SMS)
   const [onboardUser, setOnboardUser] = useState(null);
+  // Fresh secret from the last in-session creation (lets invites include it)
+  const [lastCreatedCreds, setLastCreatedCreds] = useState(null);
 
   // Subscriber dossier popup (subscription + stats + devices + history)
   const [detailUser, setDetailUser] = useState(null);
@@ -190,6 +195,7 @@ export default function UsersTab({
         });
         onNotify?.(res.message || `User '${userForm.username}' saved successfully!`, 'success');
         if (!isEditing && onShowCredModal) {
+          setLastCreatedCreds({ username: userForm.username, password: userForm.password });
           onShowCredModal({
             username: userForm.username,
             password: userForm.password,
@@ -216,23 +222,29 @@ export default function UsersTab({
     setResetModalOpen(true);
   };
 
-  const handleSaveReset = async () => {
+  const handleSaveReset = async (showQr = false) => {
     setResetSaving(true);
     try {
       if (propOnResetPassword) {
         await propOnResetPassword(resetUsername, resetPassword, resetDisconnect);
       } else {
-        const res = await fetchJson(`users/${resetUsername}/reset-password`, {
-          method: 'POST',
+        const res = await fetchJson(`users/${encodeURIComponent(resetUsername)}/password`, {
+          method: 'PUT',
           body: JSON.stringify({
             password: resetPassword,
-            disconnect: resetDisconnect
+            disconnect_active: resetDisconnect
           })
         });
         onNotify?.(res.message || `Password reset for '${resetUsername}'!`, 'success');
         loadData();
       }
+      const savedUser = resetUsername;
+      const savedPass = resetPassword;
       setResetModalOpen(false);
+      if (showQr) {
+        // Fresh secret is still known: open a QR that joins directly
+        setQrModalUser({ username: savedUser, password: savedPass });
+      }
     } catch (err) {
       onNotify?.(err.message || 'Failed to reset password', 'error');
     } finally {
@@ -320,18 +332,33 @@ export default function UsersTab({
       propOnTestAuth(username);
       return;
     }
+    // Real test needs the secret: prompt for it (stored passwords are hashes).
+    setAuthTest({ username, password: '', result: null, loading: false });
+  };
+
+  const runAuthTest = async (e) => {
+    e?.preventDefault();
+    if (!authTest?.password) {
+      onNotify?.('Enter the user password to test', 'warning');
+      return;
+    }
+    setAuthTest(prev => ({ ...prev, loading: true, result: null }));
     try {
       const res = await fetchJson('test-auth', {
         method: 'POST',
-        body: JSON.stringify({ username, password: '' })
+        body: JSON.stringify({ username: authTest.username, password: authTest.password })
       });
+      setAuthTest(prev => ({ ...prev, result: res }));
       if (res.success) {
-        onNotify?.(`Test Auth for '${username}': Access-Accept!`, 'success');
+        onNotify?.(`Test Auth for '${authTest.username}': Access-Accept!`, 'success');
       } else {
-        onNotify?.(`Test Auth for '${username}': ${res.status || 'Access-Reject'}`, 'warning');
+        onNotify?.(`Test Auth for '${authTest.username}': ${res.status || 'Access-Reject'}`, 'warning');
       }
     } catch (err) {
+      setAuthTest(prev => ({ ...prev, result: { success: false, status: 'Error', output: err.message } }));
       onNotify?.(err.message || 'Test auth request failed', 'error');
+    } finally {
+      setAuthTest(prev => (prev ? { ...prev, loading: false } : prev));
     }
   };
 
@@ -963,23 +990,40 @@ export default function UsersTab({
             )}
 
             <div className="space-y-3.5 text-xs">
+              <p className="-mb-1 text-[11px] text-slate-500">
+                The current password can't be displayed (only hashes are stored) — this generates a
+                <span className="text-amber-300 font-semibold"> new password that replaces it on save</span>.
+              </p>
               <div>
-                <label className="block text-slate-300 mb-1 font-medium">New Password</label>
+                <label className="block text-slate-300 mb-1 font-medium">New auto-generated password</label>
                 <div className="flex gap-1.5">
                   <div className="relative flex-1">
                     <input 
                       type={showResetPass ? 'text' : 'password'} 
                       value={resetPassword} 
                       onChange={(e) => setResetPassword(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-amber-500 outline-none font-mono"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 pr-16 text-white focus:border-amber-500 outline-none font-mono"
                     />
-                    <button 
-                      type="button" 
-                      onClick={() => setShowResetPass(!showResetPass)}
-                      className="absolute right-2.5 top-2.5 text-slate-500 hover:text-white"
-                    >
-                      {showResetPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
+                    <div className="absolute right-2 top-2 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(resetPassword);
+                          onNotify?.('New password copied — save it to apply', 'success');
+                        }}
+                        title="Copy new password"
+                        className="text-slate-500 hover:text-white p-0.5"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                      <button 
+                        type="button" 
+                        onClick={() => setShowResetPass(!showResetPass)}
+                        className="text-slate-500 hover:text-white p-0.5"
+                      >
+                        {showResetPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                   <button 
                     type="button" 
@@ -1020,15 +1064,77 @@ export default function UsersTab({
                 </button>
                 <button 
                   type="button" 
-                  onClick={handleSaveReset}
+                  onClick={() => handleSaveReset(false)}
                   disabled={resetSaving}
                   className="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold disabled:opacity-50 shadow-lg shadow-amber-600/20"
                 >
-                  {resetSaving ? 'Saving...' : 'Save New Password'}
+                  {resetSaving ? 'Saving...' : 'Save'}
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => handleSaveReset(true)}
+                  disabled={resetSaving}
+                  title="Save, then open a Wi-Fi QR with the new password"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold disabled:opacity-50 shadow-lg shadow-indigo-600/20 flex items-center gap-1.5"
+                >
+                  <QrCode className="w-4 h-4" />
+                  <span>{resetSaving ? 'Saving...' : 'Save & QR'}</span>
                 </button>
               </div>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* ---------------------------------------------------- */}
+      {/* 3b. TEST RADIUS AUTH (password prompt + live verdict) */}
+      {/* ---------------------------------------------------- */}
+      {authTest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-indigo-500/30 rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Play className="w-5 h-5 text-indigo-400" />
+                <span>Test Auth: <code className="text-indigo-300">{authTest.username}</code></span>
+              </h3>
+              <button onClick={() => setAuthTest(null)} className="text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={runAuthTest} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 mb-1 font-medium">User password to test with</label>
+                <input
+                  type="password"
+                  autoFocus
+                  value={authTest.password}
+                  onChange={(e) => setAuthTest({ ...authTest, password: e.target.value, result: null })}
+                  placeholder="Enter current password"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">Stored passwords are hashes — enter the real secret to get a true verdict.</p>
+              </div>
+              <button
+                type="submit"
+                disabled={authTest.loading}
+                className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {authTest.loading ? 'Testing…' : 'Run test'}
+              </button>
+            </form>
+
+            {authTest.result && (
+              <div className={`rounded-2xl border p-3.5 text-xs ${authTest.result.success ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-rose-500/10 border-rose-500/20'}`}>
+                <div className={`font-bold flex items-center gap-1.5 ${authTest.result.success ? 'text-emerald-300' : 'text-rose-300'}`}>
+                  <span>{authTest.result.success ? '✓ Access-Accept' : `✗ ${authTest.result.status || 'Access-Reject'}`}</span>
+                </div>
+                {authTest.result.output && (
+                  <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px] text-slate-300 max-h-40 overflow-y-auto">{authTest.result.output}</pre>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1251,6 +1357,7 @@ export default function UsersTab({
       {onboardUser && (
         <OnboardModal
           user={onboardUser}
+          initialPassword={lastCreatedCreds?.username === onboardUser.username ? lastCreatedCreds.password : ''}
           onClose={() => setOnboardUser(null)}
           onSavePhone={handleSaveOnboardPhone}
           onNotify={onNotify}

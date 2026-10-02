@@ -1,36 +1,39 @@
 import React, { useState, useEffect } from 'react';
 import { MessageCircle, Copy, Check, X, Send, Phone, Save } from 'lucide-react';
-import { fetchJson } from '../utils/api';
+import { fetchJson, portalUrlFor } from '../utils/api';
 
 export function toWaNumber(phone) {
   return String(phone || '').replace(/\D/g, '');
 }
 
-export function buildOnboardingMessage({ username, ssid, portalUrl, supportName, supportPhone, hasCertificate }) {
+export function buildOnboardingMessage({ username, password, ssid, portalUrl, supportName, supportPhone, hasCertificate }) {
   const lines = [
     `🎉 *Welcome to ${ssid} Wi-Fi!*`,
     ``,
     `Your account is ready. Save this message:`,
     ``,
-    `📶 *Network:* ${ssid}`,
-    `🔐 *Security:* WPA2-Enterprise`,
-    `👤 *Username:* ${username}`,
-    `🔑 *Password:* shared with you separately — keep it private`,
+    `📶 *Network:* \`${ssid}\``,
+    `🔐 *Security:* _WPA2-Enterprise_`,
+    `👤 *Username:* \`${username}\``,
+    password
+      ? `🔑 *Password:* \`${password}\``
+      : `🔑 *Password:* _shared with you separately — keep it private_`,
     ``,
     `*How to connect (phone):*`,
-    `1. Open Wi-Fi settings → tap ${ssid}`,
-    `2. EAP method: PEAP • Phase-2: MSCHAPV2`,
-    `3. Enter the username & password above`,
-    `4. Accept the certificate prompt if asked`,
+    `1️⃣ Open Wi-Fi settings → tap *${ssid}*`,
+    `2️⃣ EAP method: *PEAP* • Phase-2: *MSCHAPV2*`,
+    `3️⃣ Enter the username & password above`,
+    `4️⃣ _Accept the certificate prompt if asked_`,
     ...(hasCertificate ? [
-      `*Password-less option:* an EAP-TLS certificate is installed for you — choose EAP-TLS instead of a password where offered.`,
       ``,
+      `✅ *Password-less option:* an _EAP-TLS certificate_ is installed for you — choose *EAP-TLS* instead of a password where offered.`,
     ] : []),
-    `💳 *Recharge:* open ${portalUrl} → pick a plan → pay via UPI (note: wifi:${username})`,
     ``,
-    `📞 *Need help?* ${supportName || 'Support'}${supportPhone ? ` — ${supportPhone}` : ''}`,
+    `💳 *Recharge:* open ${portalUrl} → pick a plan → pay via UPI (note: \`wifi:${username}\`)`,
     ``,
-    `— RajLabs Network Team`,
+    `📞 *Need help?* ${supportName || 'Support'}${supportPhone ? ` — \`${supportPhone}\`` : ''}`,
+    ``,
+    `— _RajLabs Network Team_`,
   ];
   return lines.join('\n');
 }
@@ -38,25 +41,29 @@ export function buildOnboardingMessage({ username, ssid, portalUrl, supportName,
 /**
  * OnboardModal — 1-click WhatsApp/SMS onboarding invite with detailed,
  * styled login instructions. Phone can be added/fixed inline (saved to the
- * user record). Never includes the password (unknown post-creation).
+ * user record). Pass initialPassword when the secret is still known
+ * (e.g. right after creation) to include it in the invite.
  */
-export default function OnboardModal({ user, onClose, onSavePhone, onNotify }) {
+export default function OnboardModal({ user, initialPassword = '', onClose, onSavePhone, onNotify }) {
   const [phone, setPhone] = useState(user?.phone || '');
+  const [password, setPassword] = useState(initialPassword || '');
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [config, setConfig] = useState(null);
 
   useEffect(() => {
     setPhone(user?.phone || '');
+    setPassword(initialPassword || '');
     fetchJson('public-config').then(setConfig).catch(() => {});
   }, [user?.username]);
 
   if (!user) return null;
 
   const ssid = config?.wifi_ssid || 'RajLabs-Enterprise';
-  const portalUrl = typeof window !== 'undefined' ? `${window.location.origin}/radius/portal` : '/radius/portal';
+  const portalUrl = portalUrlFor();
   const message = buildOnboardingMessage({
     username: user.username,
+    password: password.trim() || '',
     ssid,
     portalUrl,
     supportName: config?.admin_contact?.name,
@@ -129,6 +136,17 @@ export default function OnboardModal({ user, onClose, onSavePhone, onNotify }) {
               <span>{saving ? '…' : 'Save'}</span>
             </button>
           </div>
+        </div>
+
+        <div>
+          <label className="block text-xs text-slate-300 mb-1 font-medium">
+            Wi-Fi password <span className="text-slate-500 font-normal">(included in the invite — prefilled right after creation)</span>
+          </label>
+          <input
+            type="text" value={password} onChange={e => setPassword(e.target.value)}
+            placeholder="Leave blank to say 'shared separately'"
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white focus:border-emerald-500 outline-none font-mono text-xs"
+          />
         </div>
 
         <div>
