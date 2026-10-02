@@ -799,7 +799,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RajLabs FreeRADIUS Enterprise Management API",
     description="Secured Enterprise REST API, EAP-TLS PKI & Dashboard for FreeRADIUS at backend.rajlabs.in/radius",
-    version="2.0.0",
+    version="2.3.0",
     docs_url=None,
     openapi_url=None,
     redoc_url=None,
@@ -978,6 +978,14 @@ class VerifiedDeviceAdd(BaseModel):
     mac: str = Field(..., min_length=1, max_length=32)
     label: Optional[str] = Field(default=None, max_length=64)
 
+class SystemSettingsUpdateRequest(BaseModel):
+    admin_contact_phone: Optional[str] = None
+    admin_contact_name: Optional[str] = None
+    upi_vpa: Optional[str] = None
+    upi_merchant_name: Optional[str] = None
+    default_voucher_code: Optional[str] = None
+    currency: Optional[str] = None
+
 class IssueCertRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
     cert_password: Optional[str] = None
@@ -1120,7 +1128,7 @@ def get_swagger_documentation(_: str = Depends(authenticate_admin)):
 @app.get("/radius/openapi.json", include_in_schema=False)
 def get_open_api_endpoint(_: str = Depends(authenticate_admin)):
     from fastapi.openapi.utils import get_openapi
-    return get_openapi(title="RajLabs FreeRADIUS API", version="2.0.0", routes=app.routes)
+    return get_openapi(title="RajLabs FreeRADIUS API", version="2.3.0", routes=app.routes)
 
 # Protected Statistics & Dashboard Overview
 @app.get("/radius/api/stats", tags=["Stats"])
@@ -1682,18 +1690,120 @@ def _probe_http_json(url: str, headers: Dict[str, str], timeout: int = 5) -> Dic
 @app.get("/radius/api/public-config", tags=["Health"])
 @app.get("/api/public-config", tags=["Health"])
 def get_public_config(request: Request):
-    """Unauthenticated client facts: RADIUS host/ports, portal path, signer presence, admin contact (no secrets)."""
+    """Unauthenticated client facts: RADIUS host/ports, portal path, signer presence, admin contact, upi settings."""
     host = RADIUS_PUBLIC_HOST or (request.headers.get("host", "").split(":")[0] if request.headers.get("host") else "")
+    
+    phone = ADMIN_CONTACT_PHONE
+    name = ADMIN_CONTACT_NAME
+    upi_vpa = "wifi@rajlabs"
+    upi_merchant = "RajLabs Enterprise WiFi"
+    currency = "INR"
+
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM system_settings WHERE key IN ('admin_contact_phone', 'admin_contact_name', 'upi_vpa', 'upi_merchant_name', 'currency')")
+            rows = cur.fetchall()
+            settings_dict = {r["key"]: r["value"] for r in rows}
+            phone = settings_dict.get("admin_contact_phone") or phone
+            name = settings_dict.get("admin_contact_name") or name
+            upi_vpa = settings_dict.get("upi_vpa") or upi_vpa
+            upi_merchant = settings_dict.get("upi_merchant_name") or upi_merchant
+            currency = settings_dict.get("currency") or currency
+        conn.close()
+    except Exception:
+        pass
+
     return {
         "radius_host": host,
         "radius_ports": {"auth": 1812, "acct": 1813, "coa": 3799},
         "portal_path": "/radius/portal",
         "signer_configured": bool(CERT_SIGNER_API_URL),
         "admin_contact": {
-            "phone": ADMIN_CONTACT_PHONE,
-            "name": ADMIN_CONTACT_NAME
+            "phone": phone,
+            "name": name
+        },
+        "payment_config": {
+            "upi_vpa": upi_vpa,
+            "merchant_name": upi_merchant,
+            "currency": currency
         }
     }
+
+# ============================================================================
+# Dynamic System Settings (Admin Configurable Contact, UPI, Currency)
+# ============================================================================
+@app.get("/radius/api/settings", tags=["Settings"])
+@app.get("/api/settings", tags=["Settings"])
+def get_all_settings(_: str = Depends(authenticate_admin)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value, description, updated_at FROM system_settings ORDER BY key ASC")
+            rows = cur.fetchall()
+            settings_map = {r["key"]: r["value"] for r in rows}
+            
+            # Populate fallbacks if not explicitly set
+            if "admin_contact_phone" not in settings_map:
+                settings_map["admin_contact_phone"] = ADMIN_CONTACT_PHONE
+            if "admin_contact_name" not in settings_map:
+                settings_map["admin_contact_name"] = ADMIN_CONTACT_NAME
+
+            return {
+                "settings": settings_map,
+                "records": rows
+            }
+    finally:
+        conn.close()
+
+@app.post("/radius/api/settings", tags=["Settings"])
+@app.post("/api/settings", tags=["Settings"])
+def update_settings(payload: SystemSettingsUpdateRequest, current_admin: str = Depends(authenticate_admin)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            if payload.admin_contact_phone is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('admin_contact_phone', %s, 'Administrator contact phone / WhatsApp number', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.admin_contact_phone.strip(),))
+            if payload.admin_contact_name is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('admin_contact_name', %s, 'Administrator contact display name', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.admin_contact_name.strip(),))
+            if payload.upi_vpa is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('upi_vpa', %s, 'Active UPI Virtual Payment Address (VPA)', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.upi_vpa.strip(),))
+            if payload.upi_merchant_name is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('upi_merchant_name', %s, 'Merchant display name for UPI payments', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.upi_merchant_name.strip(),))
+            if payload.default_voucher_code is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('default_voucher_code', %s, 'Default promotional voucher code for onboarding', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.default_voucher_code.strip(),))
+            if payload.currency is not None:
+                cur.execute("""
+                    INSERT INTO system_settings (key, value, description, updated_at)
+                    VALUES ('currency', %s, 'Default system currency code', CURRENT_TIMESTAMP)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP
+                """, (payload.currency.strip().upper(),))
+            conn.commit()
+
+        log_audit(current_admin, "SETTINGS_UPDATED", "system", f"Updated system settings: {payload.dict(exclude_unset=True)}")
+        return {"status": "success", "message": "System settings updated successfully!"}
+    finally:
+        conn.close()
 
 @app.get("/radius/api/certs/signer-status", tags=["Certificates"])
 @app.get("/api/certs/signer-status", tags=["Certificates"])

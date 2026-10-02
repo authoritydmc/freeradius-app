@@ -290,6 +290,9 @@
           <button @click="activeTab = 'logs'; fetchLogs(); fetchAudit()" :class="activeTab === 'logs' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
             <i class="fa-solid fa-list-check"></i> Auth History
           </button>
+          <button @click="activeTab = 'settings'; fetchSettings()" :class="activeTab === 'settings' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'" class="py-3 px-1 border-b-2 font-medium text-xs sm:text-sm flex items-center gap-2 transition-all whitespace-nowrap">
+            <i class="fa-solid fa-sliders"></i> System Settings
+          </button>
         </nav>
       </div>
     </header>
@@ -1073,6 +1076,202 @@
             </tbody>
           </table>
         </div>
+      <!-- TAB: SYSTEM SETTINGS -->
+      <section x-show="activeTab === 'settings'" class="space-y-6">
+        <div class="flex flex-wrap gap-3 justify-between items-center">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center gap-2">
+              <i class="fa-solid fa-sliders text-indigo-400"></i> System Configuration & Support Info
+            </h2>
+            <p class="text-xs text-slate-400 mt-1">Manage public support contacts, UPI payment details, default voucher codes, and portal configurations dynamically.</p>
+          </div>
+          <button @click="fetchSettings()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-2">
+            <i class="fa-solid fa-rotate"></i> Reload Settings
+          </button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <!-- Left 2 Cols: Form -->
+          <div class="lg:col-span-2 space-y-6">
+            <form @submit.prevent="saveSettings()" class="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-6">
+              <!-- Support & Admin Contact Section -->
+              <div class="space-y-4">
+                <div class="flex items-center gap-2 border-b border-slate-800 pb-3">
+                  <div class="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center">
+                    <i class="fa-solid fa-headset"></i>
+                  </div>
+                  <div>
+                    <h3 class="text-sm font-bold text-white">Administrator Support & Recovery Contact</h3>
+                    <p class="text-[11px] text-slate-400">Shown to users on login recovery and captive portal for 1-click WhatsApp & SMS.</p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <label class="block text-slate-300 font-medium mb-1.5">Admin Phone / WhatsApp Number</label>
+                    <div class="relative">
+                      <i class="fa-brands fa-whatsapp absolute left-3.5 top-3 text-emerald-400"></i>
+                      <input type="text" x-model="systemSettings.admin_contact_phone" placeholder="+919876543210" required
+                             class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-white font-mono focus:border-indigo-500 outline-none">
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-1 block">Include country code (e.g. +91) for WhatsApp links.</span>
+                  </div>
+
+                  <div>
+                    <label class="block text-slate-300 font-medium mb-1.5">Admin Display Name / Title</label>
+                    <div class="relative">
+                      <i class="fa-solid fa-user-tie absolute left-3.5 top-3 text-indigo-400"></i>
+                      <input type="text" x-model="systemSettings.admin_contact_name" placeholder="RajLabs Support Desk" required
+                             class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-white focus:border-indigo-500 outline-none">
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-1 block">Name displayed to users seeking assistance.</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- UPI & Payment Configuration Section -->
+              <div class="space-y-4">
+                <div class="flex items-center gap-2 border-b border-slate-800 pb-3">
+                  <div class="w-8 h-8 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center">
+                    <i class="fa-solid fa-qrcode"></i>
+                  </div>
+                  <div>
+                    <h3 class="text-sm font-bold text-white">UPI Payment & Merchant Configuration</h3>
+                    <p class="text-[11px] text-slate-400">Used to generate dynamic QR codes and instant UPI payment intents for vouchers and plans.</p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <label class="block text-slate-300 font-medium mb-1.5">UPI Virtual Payment Address (VPA)</label>
+                    <div class="relative">
+                      <i class="fa-solid fa-at absolute left-3.5 top-3 text-purple-400"></i>
+                      <input type="text" x-model="systemSettings.upi_vpa" placeholder="merchant@upi or phone@okaxis"
+                             class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-white font-mono focus:border-indigo-500 outline-none">
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-1 block">Your UPI ID for receiving instant payments.</span>
+                  </div>
+
+                  <div>
+                    <label class="block text-slate-300 font-medium mb-1.5">UPI Payee / Business Name</label>
+                    <div class="relative">
+                      <i class="fa-solid fa-building absolute left-3.5 top-3 text-purple-400"></i>
+                      <input type="text" x-model="systemSettings.upi_merchant_name" placeholder="RajLabs WiFi Network"
+                             class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-white focus:border-indigo-500 outline-none">
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-1 block">Name verified on UPI applications (GPay, PhonePe, Paytm).</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Default Vouchers & Portal Configuration -->
+              <div class="space-y-4">
+                <div class="flex items-center gap-2 border-b border-slate-800 pb-3">
+                  <div class="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center">
+                    <i class="fa-solid fa-ticket"></i>
+                  </div>
+                  <div>
+                    <h3 class="text-sm font-bold text-white">Default Onboarding & Currency</h3>
+                    <p class="text-[11px] text-slate-400">Configure default guest voucher codes and system-wide currency display.</p>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <label class="block text-slate-300 font-medium mb-1.5">Default Onboarding Voucher Code</label>
+                    <div class="relative">
+                      <i class="fa-solid fa-ticket absolute left-3.5 top-3 text-indigo-400"></i>
+                      <input type="text" x-model="systemSettings.default_voucher_code" placeholder="WELCOME2026"
+                             class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-white font-mono uppercase focus:border-indigo-500 outline-none">
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-1 block">Optional fallback code for guest portal instant trials.</span>
+                  </div>
+
+                  <div>
+                    <label class="block text-slate-300 font-medium mb-1.5">Currency Symbol / Code</label>
+                    <div class="relative">
+                      <i class="fa-solid fa-indian-rupee-sign absolute left-3.5 top-3 text-indigo-400"></i>
+                      <input type="text" x-model="systemSettings.currency" placeholder="INR"
+                             class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-white font-mono uppercase focus:border-indigo-500 outline-none">
+                    </div>
+                    <span class="text-[10px] text-slate-500 mt-1 block">Currency for all voucher and plan pricing (e.g. INR, USD).</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Action Bar -->
+              <div class="pt-4 border-t border-slate-800 flex items-center justify-between">
+                <span class="text-xs text-slate-400">Changes are saved to the database and take effect immediately.</span>
+                <button type="submit" :disabled="settingsSaving"
+                        class="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-indigo-600/25 flex items-center gap-2 transition-all disabled:opacity-50">
+                  <template x-if="settingsSaving">
+                    <span class="flex items-center gap-2"><i class="fa-solid fa-spinner animate-spin"></i> Saving...</span>
+                  </template>
+                  <template x-if="!settingsSaving">
+                    <span class="flex items-center gap-2"><i class="fa-solid fa-floppy-disk"></i> Save Settings</span>
+                  </template>
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Right 1 Col: Live Preview & System Details -->
+          <div class="space-y-6">
+            <!-- Live Preview Card -->
+            <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-4">
+              <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                <i class="fa-solid fa-mobile-screen"></i> Public Preview
+              </h3>
+              
+              <div class="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3 text-xs">
+                <div class="text-[11px] font-semibold text-slate-400">Contact Admin Modal Preview</div>
+                <div class="p-3 bg-slate-900 rounded-xl border border-slate-800 space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-500 text-[11px]">Representative:</span>
+                    <span class="font-bold text-white" x-text="systemSettings.admin_contact_name || 'Network Admin'"></span>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-500 text-[11px]">Contact Number:</span>
+                    <span class="font-mono text-emerald-400 font-semibold" x-text="systemSettings.admin_contact_phone || 'Not Set'"></span>
+                  </div>
+                </div>
+                
+                <div class="text-[11px] font-semibold text-slate-400 pt-2">UPI Payment Preview</div>
+                <div class="p-3 bg-slate-900 rounded-xl border border-slate-800 space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-500 text-[11px]">UPI VPA:</span>
+                    <span class="font-mono text-purple-300 font-semibold truncate max-w-[140px]" x-text="systemSettings.upi_vpa || 'None'"></span>
+                  </div>
+                  <div class="flex items-center justify-between">
+                    <span class="text-slate-500 text-[11px]">Merchant:</span>
+                    <span class="text-white font-medium truncate max-w-[140px]" x-text="systemSettings.upi_merchant_name || 'None'"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Database Records Audit Card -->
+            <div class="bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-3">
+              <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                <i class="fa-solid fa-database"></i> Stored Key/Values
+              </h3>
+              <div class="space-y-2 max-h-60 overflow-y-auto pr-1">
+                <template x-for="rec in systemSettingsRecords" :key="rec.key">
+                  <div class="bg-slate-950 border border-slate-800/80 rounded-xl p-2.5 text-[11px] font-mono">
+                    <div class="flex items-center justify-between text-indigo-400 font-bold">
+                      <span x-text="rec.key"></span>
+                      <span class="text-[9px] text-slate-500" x-text="new Date(rec.updated_at).toLocaleTimeString()"></span>
+                    </div>
+                    <div class="text-slate-300 truncate mt-0.5" x-text="rec.value"></div>
+                  </div>
+                </template>
+                <div x-show="!systemSettingsRecords.length" class="text-xs text-slate-500 italic text-center py-4">
+                  No custom records saved yet.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
     </main>
@@ -1506,6 +1705,17 @@
         testResult: null,
         contactAdminModal: { show: false, username: '' },
 
+        systemSettings: {
+          admin_contact_phone: '+919999999999',
+          admin_contact_name: 'Network Administrator',
+          upi_vpa: '',
+          upi_merchant_name: '',
+          default_voucher_code: 'WELCOME2026',
+          currency: 'INR'
+        },
+        systemSettingsRecords: [],
+        settingsSaving: false,
+
         userModal: {
           show: false,
           isEditing: false,
@@ -1673,6 +1883,7 @@
           this.fetchPublicConfig();
           this.fetchSignerStatus();
           this.fetchAudit();
+          this.fetchSettings();
         },
 
         async fetchPublicConfig() {
@@ -2451,6 +2662,51 @@
           const u = this.contactAdminModal.username ? ` (Username: ${this.contactAdminModal.username})` : '';
           const msg = encodeURIComponent(`Hello Admin, I need help resetting my RajLabs Wi-Fi / RADIUS password${u}. Please assist.`);
           return `sms:${phone}?body=${msg}`;
+        },
+
+        async fetchSettings() {
+          try {
+            const res = await this.fetchWithAuth('/radius/api/settings');
+            if (res.ok) {
+              const data = await res.json();
+              if (data.settings) {
+                this.systemSettings = {
+                  admin_contact_phone: data.settings.admin_contact_phone || '+919999999999',
+                  admin_contact_name: data.settings.admin_contact_name || 'Network Administrator',
+                  upi_vpa: data.settings.upi_vpa || '',
+                  upi_merchant_name: data.settings.upi_merchant_name || '',
+                  default_voucher_code: data.settings.default_voucher_code || 'WELCOME2026',
+                  currency: data.settings.currency || 'INR'
+                };
+              }
+              this.systemSettingsRecords = data.records || [];
+            }
+          } catch(e) {
+            console.error('Failed to fetch settings:', e);
+          }
+        },
+
+        async saveSettings() {
+          this.settingsSaving = true;
+          try {
+            const res = await this.fetchWithAuth('/radius/api/settings', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(this.systemSettings)
+            });
+            const data = await res.json();
+            if (res.ok) {
+              this.showToast('System settings and contact info saved successfully!');
+              await this.fetchSettings();
+              await this.fetchPublicConfig();
+            } else {
+              this.showToast(data.detail || 'Failed to update system settings.', 'error');
+            }
+          } catch(e) {
+            this.showToast('Network error while updating settings.', 'error');
+          } finally {
+            this.settingsSaving = false;
+          }
         }
       }
     }

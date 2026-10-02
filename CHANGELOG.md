@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.3.0] - 2026-10-02
+
+### Added
+- **Interactive System Settings Admin Tab (`/radius` -> System Settings)**:
+  - Full Web UI form to view, configure, and dynamically update Administrator Support Phone/WhatsApp, Display Name, UPI Virtual Payment Address (VPA), Merchant Name, Default Voucher Code, and Currency.
+  - Live preview widget illustrating how contact cards and payment badges appear to end users.
+  - Audit trail showing all stored settings keys, values, and last updated timestamps.
+- **1-Click WhatsApp & SMS Support Recovery**:
+  - Embedded in User Captive Portal (`/radius/portal`) and Admin Login modal.
+  - Pre-composes automated assistance requests with username context targeting configured administrator WhatsApp / SMS numbers.
+- **Dynamic Public Configuration API (`/radius/api/public-config`)**:
+  - Serves live system support numbers and UPI metadata directly from PostgreSQL `system_settings` table with graceful environment variable fallbacks.
+
+---
+
 ## [2.2.0] - 2026-10-01
 
 ### Added

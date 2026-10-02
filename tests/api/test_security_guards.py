@@ -333,6 +333,8 @@ def test_critical_routes_registered():
         "/radius/api/certs/orphans",
         "/radius/api/accounting",
         "/radius/api/devices",
+        "/radius/api/settings",
+        "/radius/api/public-config",
     ):
         assert needed in paths, needed
 
@@ -342,3 +344,17 @@ def test_accounting_limit_is_clamped():
     assert "min(max(int(limit" in src and ", 500)" in src
     # clamp assignment must come before the value reaches SQL params
     assert src.index("min(max(int(limit") < src.index("params.append(limit)")
+
+
+def test_settings_model_validation():
+    req = app.SystemSettingsUpdateRequest(
+        admin_contact_phone="+919876543210",
+        admin_contact_name="Support Desk",
+        upi_vpa="wifi@upi",
+        upi_merchant_name="WiFi Provider",
+        default_voucher_code="TRIAL100",
+        currency="INR"
+    )
+    assert req.admin_contact_phone == "+919876543210"
+    assert req.currency == "INR"
+
