@@ -2191,9 +2191,9 @@ def ensure_plans_table():
                 cur.execute("""
                     INSERT INTO plans (name, price, currency, validity_days, validity_seconds, max_session_seconds, description)
                     VALUES 
-                    ('1 Day Unlimited Pass', 20.00, 'INR', 1, 86400, 86400, 'High-speed 24-hour unlimited Wi-Fi voucher pass'),
-                    ('7 Days Weekly Pro', 99.00, 'INR', 7, 604800, 86400, '7 Days continuous broadband Wi-Fi access with QoS'),
-                    ('30 Days Enterprise Monthly', 299.00, 'INR', 30, 2592000, 86400, 'Full month unlimited multi-device Wi-Fi access')
+                    ('1 Day Daily Pass', 10.00, 'INR', 1, 86400, 86400, 'Emergency 24-hour unlimited high-speed access (₹10/day)'),
+                    ('7 Days Weekly Pass', 30.00, 'INR', 7, 604800, 86400, '7 Days high-speed broadband access (₹4.28/day)'),
+                    ('30 Days Monthly Unlimited', 52.00, 'INR', 30, 2592000, 86400, 'Best Value! Full 30 days unlimited Wi-Fi at only ₹1.73/day (₹50 + PG charges)')
                 """)
             conn.commit()
         conn.close()
@@ -2227,9 +2227,9 @@ def list_plans():
     except Exception:
         # Fallback default plans in case DB offline
         return [
-            {"id": 1, "name": "1 Day Unlimited Pass", "price": 20.0, "currency": "INR", "validity_days": 1, "validity_seconds": 86400, "max_session_seconds": 86400, "description": "High-speed 24-hour unlimited Wi-Fi voucher pass"},
-            {"id": 2, "name": "7 Days Weekly Pro", "price": 99.0, "currency": "INR", "validity_days": 7, "validity_seconds": 604800, "max_session_seconds": 86400, "description": "7 Days continuous broadband Wi-Fi access with QoS"},
-            {"id": 3, "name": "30 Days Enterprise Monthly", "price": 299.0, "currency": "INR", "validity_days": 30, "validity_seconds": 2592000, "max_session_seconds": 86400, "description": "Full month unlimited multi-device Wi-Fi access"}
+            {"id": 1, "name": "1 Day Daily Pass", "price": 10.0, "currency": "INR", "validity_days": 1, "validity_seconds": 86400, "max_session_seconds": 86400, "description": "Emergency 24-hour unlimited high-speed access (₹10/day)"},
+            {"id": 2, "name": "7 Days Weekly Pass", "price": 30.0, "currency": "INR", "validity_days": 7, "validity_seconds": 604800, "max_session_seconds": 86400, "description": "7 Days high-speed broadband access (₹4.28/day)"},
+            {"id": 3, "name": "30 Days Monthly Unlimited", "price": 52.0, "currency": "INR", "validity_days": 30, "validity_seconds": 2592000, "max_session_seconds": 86400, "description": "Best Value! Full 30 days unlimited Wi-Fi at only ₹1.73/day (₹50 + PG charges)"}
         ]
 
 @app.post("/radius/api/plans", tags=["Plans & Pricing"])

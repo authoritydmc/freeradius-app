@@ -3,7 +3,7 @@ import {
   Shield, Key, Lock, User, FileCode, CheckCircle2, 
   AlertCircle, RefreshCw, ArrowRight, UploadCloud, Sparkles, Wifi
 } from 'lucide-react';
-import { setAuthToken, setUserToken, fetchJson, apiRequest } from '../utils/api';
+import { setAuthToken, setUserToken, setUserInfo, fetchJson, apiRequest } from '../utils/api';
 
 export default function LoginView({ onLoginSuccess }) {
   const [mode, setMode] = useState('password'); // 'password' or 'cert'
