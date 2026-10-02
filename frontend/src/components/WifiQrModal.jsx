@@ -54,30 +54,26 @@ export default function WifiQrModal({
 
   // Determine current QR payload based on tab
   let currentQrValue = portalUrl;
-  let qrLabel = 'Self-Service Wi-Fi Portal';
-  let qrSubtext = 'Scan with camera to open personal Wi-Fi portal';
+  let qrLabel = 'Self-Service Portal';
+  let qrSubtext = 'Scan to open self-service Wi-Fi onboarding';
 
   if (activeTab === 'wifi') {
     currentQrValue = wifiConnectString;
-    qrLabel = `Wi-Fi Direct Join: ${customSsid}`;
-    qrSubtext = 'Scan with phone camera to prompt instant Wi-Fi network connection';
+    qrLabel = `Wi-Fi SSID: ${customSsid}`;
+    qrSubtext = 'Scan with camera to connect to network';
   } else if (activeTab === 'cert') {
     currentQrValue = certProfileUrl;
-    qrLabel = 'EAP-TLS Apple Wi-Fi Profile';
-    qrSubtext = 'Scan on iPhone/iPad/Mac to install enterprise 802.1X certificate profile';
+    qrLabel = 'Apple EAP-TLS Profile';
+    qrSubtext = 'Scan on iOS/Mac to install 802.1X certificate profile';
   }
 
   // Share text template
-  const shareMessage = `📡 RajLabs Enterprise Wi-Fi Pass
-━━━━━━━━━━━━━━━━━━━━
+  const shareMessage = `📡 RajLabs Wi-Fi Access Pass
 👤 User: ${effectiveUsername}
 👥 Group: ${effectiveGroup}
 📶 SSID: ${customSsid}
-${customPass ? `🔑 Password: ${customPass}\n` : ''}${effectiveExpiry ? `⏳ Expiry: ${effectiveExpiry}\n` : ''}
-🔗 Self-Service Wi-Fi Link:
-${portalUrl}
-
-(Scan QR code or click link above to connect your device)`;
+${customPass ? `🔑 Password: ${customPass}\n` : ''}${effectiveExpiry ? `⏳ Expiry: ${effectiveExpiry}\n` : ''}🔗 Portal Link: ${portalUrl}
+(Scan QR or click link above to connect your device)`;
 
   const handleCopy = (text, label = 'Copied to clipboard') => {
     navigator.clipboard.writeText(text);
@@ -89,7 +85,7 @@ ${portalUrl}
   const handleCopyLink = () => {
     navigator.clipboard.writeText(portalUrl);
     setCopiedLink(true);
-    onNotify?.('Portal join link copied to clipboard', 'success');
+    onNotify?.('Portal link copied to clipboard', 'success');
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
@@ -97,7 +93,7 @@ ${portalUrl}
     if (navigator.share) {
       try {
         await navigator.share({
-          title: `Wi-Fi Access Pass for ${effectiveUsername}`,
+          title: `Wi-Fi Pass for ${effectiveUsername}`,
           text: shareMessage,
           url: portalUrl,
         });
@@ -124,7 +120,7 @@ ${portalUrl}
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `RajLabs_WiFi_QR_${effectiveUsername || 'Pass'}.svg`;
+    a.download = `RajLabs_WiFi_${effectiveUsername || 'Pass'}.svg`;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
@@ -134,118 +130,118 @@ ${portalUrl}
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200 print:p-0 print:bg-white">
-      <div className="bg-slate-900 border border-indigo-500/30 rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl print:border-none print:shadow-none print:bg-white print:text-black">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200 print:p-0 print:bg-white">
+      <div className="bg-slate-900 border border-indigo-500/30 rounded-3xl w-full max-w-md max-h-[92vh] sm:max-h-[88vh] flex flex-col overflow-hidden shadow-2xl print:border-none print:shadow-none print:bg-white print:text-black">
         
-        {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/70 print:hidden">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-gradient-to-br from-indigo-500/20 to-violet-500/20 text-indigo-400 rounded-2xl border border-indigo-500/30">
-              <Wifi className="w-5 h-5" />
+        {/* Header - Fixed & Compact */}
+        <div className="shrink-0 flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-950/80 print:hidden">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 bg-indigo-500/10 text-indigo-400 rounded-xl border border-indigo-500/20">
+              <Wifi className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="font-bold text-white text-base flex items-center gap-2">
-                <span>Wi-Fi Join & QR Pass</span>
+              <h3 className="font-bold text-white text-sm flex items-center gap-1.5">
+                <span>Wi-Fi Join Pass</span>
                 {effectiveUsername && (
-                  <span className="text-xs px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 font-mono border border-indigo-500/20">
+                  <span className="text-[11px] px-1.5 py-0.2 rounded bg-indigo-500/10 text-indigo-300 font-mono border border-indigo-500/20">
                     {effectiveUsername}
                   </span>
                 )}
               </h3>
-              <p className="text-xs text-slate-400">Scan to connect immediately or send pass to user</p>
+              <p className="text-[10px] text-slate-400">Scan QR to connect or share credentials</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-white p-1.5 rounded-xl hover:bg-slate-800 transition"
+            className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Modal Body */}
-        <div className="p-6 space-y-5">
+        {/* Scrollable Content Body */}
+        <div className="p-4 sm:p-5 overflow-y-auto space-y-3.5 flex-1">
           
           {/* Mode Selector Tabs */}
-          <div className="flex rounded-2xl bg-slate-950 p-1 border border-slate-800 text-xs font-semibold print:hidden">
+          <div className="flex rounded-xl bg-slate-950 p-1 border border-slate-800 text-xs font-semibold print:hidden">
             <button
               onClick={() => setActiveTab('portal')}
-              className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-1.5 transition ${
+              className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1 transition ${
                 activeTab === 'portal'
-                  ? 'bg-indigo-600 text-white shadow-md'
+                  ? 'bg-indigo-600 text-white shadow-sm'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               <Globe className="w-3.5 h-3.5" />
-              <span>Portal Link</span>
+              <span>Portal</span>
             </button>
             <button
               onClick={() => setActiveTab('wifi')}
-              className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-1.5 transition ${
+              className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1 transition ${
                 activeTab === 'wifi'
-                  ? 'bg-indigo-600 text-white shadow-md'
+                  ? 'bg-indigo-600 text-white shadow-sm'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               <Wifi className="w-3.5 h-3.5" />
-              <span>Direct SSID</span>
+              <span>Wi-Fi SSID</span>
             </button>
             <button
               onClick={() => setActiveTab('cert')}
-              className={`flex-1 py-2 rounded-xl flex items-center justify-center gap-1.5 transition ${
+              className={`flex-1 py-1.5 rounded-lg flex items-center justify-center gap-1 transition ${
                 activeTab === 'cert'
-                  ? 'bg-indigo-600 text-white shadow-md'
+                  ? 'bg-indigo-600 text-white shadow-sm'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               <Shield className="w-3.5 h-3.5" />
-              <span>iOS / Cert Profile</span>
+              <span>Apple Profile</span>
             </button>
           </div>
 
-          {/* Printable Container / QR Card */}
-          <div ref={qrRef} className="bg-slate-950/80 border border-slate-800/80 rounded-2xl p-5 text-center space-y-4 print:border-slate-300 print:bg-white print:p-6">
+          {/* QR Display Card (Mobile-Optimized Height) */}
+          <div ref={qrRef} className="bg-slate-950/90 border border-slate-800/90 rounded-2xl p-3.5 text-center space-y-2.5 print:border-slate-300 print:bg-white print:p-4">
             
-            {/* Top Badge for Print */}
-            <div className="hidden print:block text-center border-b pb-3 mb-2">
-              <h2 className="text-xl font-black text-indigo-900 tracking-tight">RajLabs Wi-Fi Access Voucher</h2>
-              <p className="text-xs text-gray-600">Scan QR code below with any smartphone camera</p>
+            {/* Top Badge for Print Only */}
+            <div className="hidden print:block text-center border-b pb-2 mb-2">
+              <h2 className="text-lg font-black text-indigo-900">RajLabs Wi-Fi Access Voucher</h2>
+              <p className="text-[10px] text-gray-600">Scan QR code below with any smartphone camera</p>
             </div>
 
-            {/* QR Box */}
-            <div className="inline-block p-4 bg-white rounded-2xl shadow-xl shadow-indigo-500/10 border-4 border-indigo-500/20">
+            {/* Compact QR Container */}
+            <div className="inline-block p-2.5 bg-white rounded-xl shadow-lg shadow-indigo-500/10 border-2 border-indigo-500/20">
               <QRCodeSVG
                 value={currentQrValue}
-                size={190}
+                size={140}
                 level="H"
                 includeMargin={false}
               />
             </div>
 
-            {/* Label & Instructions */}
+            {/* Label */}
             <div>
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 font-mono">
-                <Wifi className="w-3.5 h-3.5 text-indigo-400" />
+              <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 font-mono">
+                <Wifi className="w-3 h-3 text-indigo-400" />
                 <span>{qrLabel}</span>
               </div>
-              <p className="text-[11px] text-slate-400 mt-1.5 max-w-xs mx-auto">
+              <p className="text-[10px] text-slate-400 mt-1 max-w-xs mx-auto">
                 {qrSubtext}
               </p>
             </div>
 
-            {/* User & Network Summary */}
-            <div className="bg-slate-900/90 print:bg-gray-100 p-3.5 rounded-xl border border-slate-800 print:border-gray-300 text-left text-xs font-mono space-y-1.5">
+            {/* User Details Box */}
+            <div className="bg-slate-900 print:bg-gray-100 p-2.5 rounded-xl border border-slate-800/80 print:border-gray-300 text-left text-[11px] font-mono space-y-1">
               <div className="flex justify-between items-center text-slate-300 print:text-black">
-                <span className="text-slate-400 print:text-gray-600 font-sans">Username:</span>
+                <span className="text-slate-400 print:text-gray-600 font-sans">User:</span>
                 <span className="font-bold text-white print:text-black">{effectiveUsername}</span>
               </div>
               <div className="flex justify-between items-center text-slate-300 print:text-black">
-                <span className="text-slate-400 print:text-gray-600 font-sans">Group Policy:</span>
+                <span className="text-slate-400 print:text-gray-600 font-sans">Policy:</span>
                 <span className="text-indigo-400 font-bold">{effectiveGroup}</span>
               </div>
               {effectiveExpiry && (
                 <div className="flex justify-between items-center text-slate-300 print:text-black">
-                  <span className="text-slate-400 print:text-gray-600 font-sans">Expiration:</span>
+                  <span className="text-slate-400 print:text-gray-600 font-sans">Expiry:</span>
                   <span className="text-amber-400 font-bold">{effectiveExpiry}</span>
                 </div>
               )}
@@ -259,104 +255,102 @@ ${portalUrl}
 
           </div>
 
-          {/* Wi-Fi SSID / Password Config Override (when in Direct SSID tab) */}
+          {/* Wi-Fi SSID / Passphrase override (only in Direct SSID tab) */}
           {activeTab === 'wifi' && (
-            <div className="grid grid-cols-2 gap-2 text-xs bg-slate-950 p-3 rounded-xl border border-slate-800 print:hidden">
+            <div className="grid grid-cols-2 gap-2 text-xs bg-slate-950 p-2.5 rounded-xl border border-slate-800 print:hidden">
               <div>
-                <label className="block text-slate-400 mb-1 text-[11px]">SSID</label>
+                <label className="block text-slate-400 mb-0.5 text-[10px]">SSID</label>
                 <input
                   type="text"
                   value={customSsid}
                   onChange={(e) => setCustomSsid(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-750 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:border-indigo-500 outline-none"
-                  placeholder="Network SSID"
+                  className="w-full bg-slate-900 border border-slate-750 rounded-lg px-2 py-1 text-white font-mono text-xs focus:border-indigo-500 outline-none"
+                  placeholder="SSID"
                 />
               </div>
               <div>
-                <label className="block text-slate-400 mb-1 text-[11px]">Password / PSK</label>
+                <label className="block text-slate-400 mb-0.5 text-[10px]">PSK / Password</label>
                 <input
                   type="text"
                   value={customPass}
                   onChange={(e) => setCustomPass(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-750 rounded-lg px-2.5 py-1.5 text-white font-mono text-xs focus:border-indigo-500 outline-none"
-                  placeholder="Optional PSK / Leave blank"
+                  className="w-full bg-slate-900 border border-slate-750 rounded-lg px-2 py-1 text-white font-mono text-xs focus:border-indigo-500 outline-none"
+                  placeholder="Optional PSK"
                 />
               </div>
             </div>
           )}
 
-          {/* Send / Share Options ("Send QR / Scan to Join") */}
-          <div className="space-y-2.5 print:hidden">
-            <span className="text-xs font-bold text-slate-300 uppercase tracking-wider text-[10px]">
-              Send / Share Access Pass:
+          {/* Share Actions - Grid Layout */}
+          <div className="space-y-2 print:hidden">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+              Send Pass to User:
             </span>
 
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              {/* WhatsApp Share */}
+            {/* Row 1: Instant Messaging */}
+            <div className="grid grid-cols-3 gap-1.5 text-xs">
               <a
                 href={`https://wa.me/?text=${encodeURIComponent(shareMessage)}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center justify-center gap-1.5 py-2.5 px-3 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 rounded-xl border border-emerald-500/30 transition font-semibold"
+                className="flex items-center justify-center gap-1 py-2 px-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 rounded-xl border border-emerald-500/30 transition text-[11px] font-semibold"
               >
-                <Send className="w-3.5 h-3.5 text-emerald-400" />
+                <Send className="w-3 h-3 text-emerald-400 shrink-0" />
                 <span>WhatsApp</span>
               </a>
 
-              {/* Email Share */}
               <a
-                href={`mailto:?subject=${encodeURIComponent(`RajLabs Wi-Fi Access for ${effectiveUsername}`)}&body=${encodeURIComponent(shareMessage)}`}
-                className="flex items-center justify-center gap-1.5 py-2.5 px-3 bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 rounded-xl border border-sky-500/30 transition font-semibold"
+                href={`mailto:?subject=${encodeURIComponent(`RajLabs Wi-Fi Pass for ${effectiveUsername}`)}&body=${encodeURIComponent(shareMessage)}`}
+                className="flex items-center justify-center gap-1 py-2 px-2 bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 rounded-xl border border-sky-500/30 transition text-[11px] font-semibold"
               >
-                <Mail className="w-3.5 h-3.5 text-sky-400" />
+                <Mail className="w-3 h-3 text-sky-400 shrink-0" />
                 <span>Email</span>
               </a>
 
-              {/* Native Device Share Sheet */}
               <button
                 onClick={handleNativeShare}
-                className="flex items-center justify-center gap-1.5 py-2.5 px-3 bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 rounded-xl border border-violet-500/30 transition font-semibold"
+                className="flex items-center justify-center gap-1 py-2 px-2 bg-violet-600/20 hover:bg-violet-600/30 text-violet-300 rounded-xl border border-violet-500/30 transition text-[11px] font-semibold"
               >
-                <Share2 className="w-3.5 h-3.5 text-violet-400" />
+                <Share2 className="w-3 h-3 text-violet-400 shrink-0" />
                 <span>Share App</span>
               </button>
             </div>
 
-            {/* Utility Actions (Copy link, download SVG, print badge) */}
-            <div className="grid grid-cols-3 gap-2 text-xs pt-1">
+            {/* Row 2: Utilities */}
+            <div className="grid grid-cols-3 gap-1.5 text-xs pt-0.5">
               <button
                 onClick={handleCopyLink}
-                className="flex items-center justify-center gap-1.5 py-2 px-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl border border-slate-700 transition"
+                className="flex items-center justify-center gap-1 py-1.5 px-2 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl border border-slate-700 transition text-[11px]"
               >
-                {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedLink ? 'Copied' : 'Copy Link'}</span>
+                {copiedLink ? <Check className="w-3 h-3 text-emerald-400 shrink-0" /> : <Copy className="w-3 h-3 shrink-0" />}
+                <span>{copiedLink ? 'Copied' : 'Link'}</span>
               </button>
 
               <button
                 onClick={handleDownloadQrSvg}
-                className="flex items-center justify-center gap-1.5 py-2 px-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl border border-slate-700 transition"
+                className="flex items-center justify-center gap-1 py-1.5 px-2 bg-slate-800 hover:bg-slate-750 text-slate-200 rounded-xl border border-slate-700 transition text-[11px]"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Save SVG</span>
+                <Download className="w-3 h-3 shrink-0" />
+                <span>SVG</span>
               </button>
 
               <button
                 onClick={handlePrint}
-                className="flex items-center justify-center gap-1.5 py-2 px-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl font-bold shadow-md shadow-indigo-600/20 transition"
+                className="flex items-center justify-center gap-1 py-1.5 px-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl font-bold shadow-sm transition text-[11px]"
               >
-                <Printer className="w-3.5 h-3.5" />
-                <span>Print Pass</span>
+                <Printer className="w-3 h-3 shrink-0" />
+                <span>Print</span>
               </button>
             </div>
           </div>
 
         </div>
 
-        {/* Modal Footer */}
-        <div className="px-6 py-3.5 bg-slate-950 border-t border-slate-800 flex justify-end print:hidden">
+        {/* Footer - Fixed & Compact */}
+        <div className="shrink-0 px-5 py-2.5 bg-slate-950 border-t border-slate-800 flex justify-end print:hidden">
           <button
             onClick={onClose}
-            className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-xl transition"
+            className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-xl transition"
           >
             Close
           </button>
