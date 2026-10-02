@@ -27,6 +27,12 @@ logs/
 # Certs local output
 certs/clients/*.p12
 certs/clients/*.pem
+data/
+*.key
+*.p12
+*.crt
+*.srl
+*.csr
 
 # Node / React
 frontend/node_modules/
