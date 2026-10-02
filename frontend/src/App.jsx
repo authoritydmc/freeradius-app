@@ -13,17 +13,19 @@ import SettingsTab from './components/SettingsTab';
 import LoginView from './components/LoginView';
 import PortalView from './components/PortalView';
 import CredResultModal from './components/CredResultModal';
-import { getAuthToken, setAuthToken, removeAuthToken, fetchJson } from './utils/api';
-import { AlertCircle, CheckCircle2, Info, X } from 'lucide-react';
+import ChangelogModal from './components/ChangelogModal';
+import { getAuthToken, setAuthToken, removeAuthToken, getUserInfo, setUserInfo, fetchJson } from './utils/api';
+import { AlertCircle, CheckCircle2, Info, X, Sparkles, Wifi, Shield, ExternalLink } from 'lucide-react';
 
 export default function App() {
   const [isPortal, setIsPortal] = useState(
     window.location.pathname.includes('/portal') || window.location.hash === '#portal'
   );
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => getUserInfo());
   const [authChecking, setAuthChecking] = useState(true);
   const [activeTab, setActiveTab] = useState('status');
   const [credModalData, setCredModalData] = useState(null);
+  const [showChangelog, setShowChangelog] = useState(false);
   const [toast, setToast] = useState(null);
 
   const showToast = (message, type = 'info') => {
@@ -44,8 +46,8 @@ export default function App() {
     try {
       // Validate session with backend
       const data = await fetchJson('status');
-      // If status succeeds, token is valid admin
-      setCurrentUser({ username: 'Admin', role: 'admin' });
+      const savedUser = getUserInfo();
+      setCurrentUser(savedUser || { username: 'Administrator', role: 'admin' });
     } catch (err) {
       if (err.status === 401) {
         removeAuthToken();
@@ -77,6 +79,8 @@ export default function App() {
 
   const handleLoginSuccess = (user, token) => {
     setCurrentUser(user);
+    setUserInfo(user);
+    setAuthChecking(false);
     showToast(`Welcome back, ${user.username}!`, 'success');
   };
 
@@ -90,7 +94,7 @@ export default function App() {
     return <PortalView />;
   }
 
-  if (authChecking) {
+  if (authChecking && !currentUser) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
@@ -138,6 +142,7 @@ export default function App() {
         setActiveTab={setActiveTab}
         currentUser={currentUser}
         onLogout={handleLogout}
+        onOpenChangelog={() => setShowChangelog(true)}
       />
 
       {/* Main Content Area */}
@@ -159,10 +164,48 @@ export default function App() {
         {activeTab === 'settings' && <SettingsTab onNotify={showToast} />}
       </main>
 
+      {/* Enterprise Footer */}
+      <footer className="border-t border-slate-800/80 bg-slate-950/90 py-4 mt-auto">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-400">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold text-slate-300">RajLabs FreeRADIUS AAA</span>
+            <button
+              onClick={() => setShowChangelog(true)}
+              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/20 font-mono text-[11px] transition"
+            >
+              <Sparkles className="w-3 h-3 text-indigo-400" />
+              <span>v2.5.0 Enterprise</span>
+            </button>
+            <span className="flex items-center gap-1 text-emerald-400 font-medium text-[11px]">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              AAA Engine Online
+            </span>
+          </div>
+
+          <div className="flex items-center gap-4 text-[11px]">
+            <a href="/radius/portal" className="hover:text-indigo-300 transition">
+              Captive Wi-Fi Portal
+            </a>
+            <span>•</span>
+            <button onClick={() => setShowChangelog(true)} className="hover:text-indigo-300 transition">
+              Release Notes
+            </button>
+            <span>•</span>
+            <span>© {new Date().getFullYear()} RajLabs Cloud Architecture</span>
+          </div>
+        </div>
+      </footer>
+
       {/* Credential Result Modal (for newly generated users/vouchers) */}
       <CredResultModal
         data={credModalData}
         onClose={() => setCredModalData(null)}
+      />
+
+      {/* Release Changelog Modal */}
+      <ChangelogModal
+        isOpen={showChangelog}
+        onClose={() => setShowChangelog(false)}
       />
     </div>
   );

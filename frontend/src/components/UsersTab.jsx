@@ -622,7 +622,7 @@ export default function UsersTab({
               </button>
             </div>
 
-            {resetUsername === currentUser && (
+            {resetUsername === (typeof currentUser === 'string' ? currentUser : currentUser?.username) && (
               <div className="bg-rose-950/50 border border-rose-500/30 text-rose-200 text-xs rounded-xl p-3">
                 ⚠️ You are resetting your <strong>own admin login</strong>. You will need to sign in again with the new password.
               </div>

@@ -116,7 +116,9 @@ export default function Navbar({
             <div className="flex items-center gap-1.5 sm:gap-2 pl-2 border-l border-slate-800">
               <span className="text-xs font-semibold px-2.5 py-1 rounded-xl bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1.5">
                 <UserCheck className="w-3.5 h-3.5 text-purple-400" />
-                <span className="max-w-[80px] sm:max-w-none truncate">{currentUser}</span>
+                <span className="max-w-[120px] sm:max-w-none truncate font-mono">
+                  {typeof currentUser === 'string' ? currentUser : (currentUser?.username || 'Admin')}
+                </span>
               </span>
               <button
                 onClick={onLogout}

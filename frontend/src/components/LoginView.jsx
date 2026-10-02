@@ -24,12 +24,19 @@ export default function LoginView({ onLoginSuccess }) {
         body: JSON.stringify({ username, password })
       });
       if (data.token) {
-        if (data.user?.role === 'admin') {
+        const role = data.role || data.user?.role || (data.group === 'admins' || data.group === 'admin' ? 'admin' : 'user');
+        const userObj = {
+          username: data.username || data.user?.username || username,
+          role: role,
+          group: data.group || data.user?.group || (role === 'admin' ? 'admins' : 'default')
+        };
+        setUserInfo(userObj);
+        if (role === 'admin') {
           setAuthToken(data.token);
         } else {
           setUserToken(data.token);
         }
-        onLoginSuccess?.(data.user || { username, role: 'admin' }, data.token);
+        onLoginSuccess?.(userObj, data.token);
       } else {
         throw new Error('No token returned from server.');
       }
@@ -65,12 +72,19 @@ export default function LoginView({ onLoginSuccess }) {
       }
 
       if (data.token) {
-        if (data.role === 'admin') {
+        const role = data.role || data.user?.role || (data.group === 'admins' || data.group === 'admin' ? 'admin' : 'user');
+        const userObj = {
+          username: data.username || data.user?.username || 'Certificate User',
+          role: role,
+          group: data.group || data.user?.group || (role === 'admin' ? 'admins' : 'default')
+        };
+        setUserInfo(userObj);
+        if (role === 'admin') {
           setAuthToken(data.token);
         } else {
           setUserToken(data.token);
         }
-        onLoginSuccess?.({ username: data.username, role: data.role }, data.token);
+        onLoginSuccess?.(userObj, data.token);
       } else {
         throw new Error('No token issued for certificate.');
       }

@@ -2,14 +2,37 @@
 
 const TOKEN_KEY = 'admin_token';
 const USER_TOKEN_KEY = 'user_token';
+const USER_INFO_KEY = 'auth_user_info';
 
 export const getAuthToken = () => localStorage.getItem(TOKEN_KEY);
 export const setAuthToken = (token) => localStorage.setItem(TOKEN_KEY, token);
-export const removeAuthToken = () => localStorage.removeItem(TOKEN_KEY);
+export const removeAuthToken = () => {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_INFO_KEY);
+};
 
 export const getUserToken = () => localStorage.getItem(USER_TOKEN_KEY);
 export const setUserToken = (token) => localStorage.setItem(USER_TOKEN_KEY, token);
-export const removeUserToken = () => localStorage.removeItem(USER_TOKEN_KEY);
+export const removeUserToken = () => {
+  localStorage.removeItem(USER_TOKEN_KEY);
+  localStorage.removeItem(USER_INFO_KEY);
+};
+
+export const getUserInfo = () => {
+  try {
+    const raw = localStorage.getItem(USER_INFO_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+export const setUserInfo = (info) => {
+  try {
+    localStorage.setItem(USER_INFO_KEY, JSON.stringify(info));
+  } catch {}
+};
+
 
 export async function apiRequest(path, options = {}) {
   const url = path.startsWith('/') ? path : `/radius/api/${path}`;
