@@ -316,6 +316,10 @@ def get_cert_signer_config() -> tuple[str, str]:
 def safe_client_path(username: str, suffix: str) -> str:
     """Join CLIENT_CERTS_DIR safely; rejects traversal even if regex is bypassed."""
     validate_username(username)
+    try:
+        os.makedirs(CLIENT_CERTS_DIR, exist_ok=True)
+    except Exception:
+        pass
     p = os.path.abspath(os.path.join(CLIENT_CERTS_DIR, f"{username}{suffix}"))
     base = os.path.abspath(CLIENT_CERTS_DIR)
     if p != base and not p.startswith(base + os.sep):
@@ -558,7 +562,14 @@ CLIENT_CERTS_DIR = os.getenv("CLIENT_CERTS_DIR", os.path.join(CERTS_DIR, "client
 try:
     os.makedirs(CLIENT_CERTS_DIR, exist_ok=True)
 except Exception:
-    pass
+    if not os.path.exists(CLIENT_CERTS_DIR):
+        local_certs_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "certs"))
+        CERTS_DIR = local_certs_dir
+        CLIENT_CERTS_DIR = os.path.join(CERTS_DIR, "clients")
+        try:
+            os.makedirs(CLIENT_CERTS_DIR, exist_ok=True)
+        except Exception:
+            pass
 
 def get_db_connection():
     return psycopg2.connect(
@@ -3496,7 +3507,7 @@ def inspect_certificate(username: str, _: str = Depends(authenticate_admin)):
         "fingerprint_sha256": fingerprint,
         "san_list": san_list,
         "raw_text": text_dump,
-        "authority_type": "Central RajLabs-CA PKI" if ("rajlabs" in issuer.lower() or "intermediate" in issuer.lower()) else "Local FreeRADIUS Root CA"
+        "authority_type": "Local FreeRADIUS Root CA" if ("freeradius" in issuer.lower() or "local" in issuer.lower()) else "Central RajLabs-CA PKI"
     }
 
 def authenticate_admin_or_owner(username: str, request: Request) -> str:
@@ -3587,6 +3598,19 @@ def sign_certificate_with_ca(username: str, user_csr_path: str, days: int = 365,
     # Local FreeRADIUS CA Fallback
     ca_key = os.path.join(CERTS_DIR, "ca.key")
     ca_pem = os.path.join(CERTS_DIR, "ca.pem")
+    if not (os.path.exists(ca_key) and os.path.exists(ca_pem)):
+        try:
+            os.makedirs(CERTS_DIR, exist_ok=True)
+            subprocess.run(["openssl", "genrsa", "-out", ca_key, "4096"], check=True, capture_output=True)
+            subj = "/C=IN/ST=Delhi/O=RajLabs/CN=RajLabs FreeRADIUS Root CA"
+            subprocess.run([
+                "openssl", "req", "-x509", "-new", "-nodes", "-key", ca_key,
+                "-sha256", "-days", "3650", "-out", ca_pem, "-subj", subj
+            ], check=True, capture_output=True)
+            logger.info("Auto-bootstrapped local FreeRADIUS Root CA at %s", ca_pem)
+        except Exception as e:
+            logger.warning("Failed to auto-bootstrap local CA: %s", e)
+
     if not os.path.exists(ca_key) or not os.path.exists(ca_pem):
         raise HTTPException(status_code=500, detail="No certificate authority available (Cert-Signer unreachable and local CA missing).")
 
