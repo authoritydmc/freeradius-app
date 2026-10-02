@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   KeyRound, 
   Plus, 
@@ -11,19 +11,25 @@ import {
   X, 
   Radio, 
   Sparkles, 
-  RotateCw 
+  RotateCw,
+  AlertCircle
 } from 'lucide-react';
-import { formatDateTime } from '../utils/api';
+import { formatDateTime, fetchJson } from '../utils/api';
 
 export default function CertsTab({
-  certs = [],
-  orphans = [],
-  signerStatus,
-  onIssueCert,
-  onCleanupOrphan,
-  onRefreshSignerStatus,
-  onRefreshCerts
+  certs: propCerts,
+  orphans: propOrphans,
+  signerStatus: propSignerStatus,
+  onIssueCert: propOnIssueCert,
+  onCleanupOrphan: propOnCleanupOrphan,
+  onRefreshSignerStatus: propOnRefreshSignerStatus,
+  onRefreshCerts: propOnRefreshCerts,
+  onNotify
 }) {
+  const [internalCerts, setInternalCerts] = useState([]);
+  const [internalOrphans, setInternalOrphans] = useState([]);
+  const [internalSignerStatus, setInternalSignerStatus] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [issueModalOpen, setIssueModalOpen] = useState(false);
   const [issueForm, setIssueForm] = useState({
     username: '',
@@ -32,6 +38,33 @@ export default function CertsTab({
     email: ''
   });
   const [issuing, setIssuing] = useState(false);
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      const [cData, sData] = await Promise.all([
+        fetchJson('certs'),
+        fetchJson('certs/signer-status')
+      ]);
+      setInternalCerts(cData?.certificates || cData || []);
+      setInternalOrphans(cData?.orphans || []);
+      setInternalSignerStatus(sData);
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to load certificate inventory', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!propCerts) {
+      loadData();
+    }
+  }, [propCerts]);
+
+  const certs = propCerts || internalCerts;
+  const orphans = propOrphans || internalOrphans;
+  const signerStatus = propSignerStatus || internalSignerStatus;
 
   const handleOpenIssue = () => {
     setIssueForm({
@@ -47,10 +80,35 @@ export default function CertsTab({
     e.preventDefault();
     setIssuing(true);
     try {
-      await onIssueCert(issueForm);
+      if (propOnIssueCert) {
+        await propOnIssueCert(issueForm);
+      } else {
+        await fetchJson('certs/issue', {
+          method: 'POST',
+          body: JSON.stringify(issueForm)
+        });
+        onNotify?.(`Certificate issued for '${issueForm.username}'!`, 'success');
+        loadData();
+      }
       setIssueModalOpen(false);
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to issue certificate', 'error');
     } finally {
       setIssuing(false);
+    }
+  };
+
+  const handleRefreshSigner = async () => {
+    if (propOnRefreshSignerStatus) {
+      propOnRefreshSignerStatus();
+      return;
+    }
+    try {
+      const s = await fetchJson('certs/signer-status?refresh=true');
+      setInternalSignerStatus(s);
+      onNotify?.('Signer connection probed', 'info');
+    } catch (err) {
+      onNotify?.(err.message || 'Probe failed', 'error');
     }
   };
 
@@ -113,7 +171,7 @@ export default function CertsTab({
         </div>
 
         <button
-          onClick={onRefreshSignerStatus}
+          onClick={handleRefreshSigner}
           className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs flex items-center gap-1.5 transition-colors"
         >
           <RotateCw className="w-3.5 h-3.5" />

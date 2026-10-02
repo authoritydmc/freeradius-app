@@ -394,7 +394,7 @@ export default function SettingsTab({ onNotify }) {
               type="button"
               onClick={() => checkSignerStatus(true)}
               disabled={testingSigner}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-200 rounded-xl text-xs font-medium transition disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-750 border border-slate-700 text-slate-200 rounded-xl text-xs font-medium transition disabled:opacity-50 cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${testingSigner ? 'animate-spin text-indigo-400' : ''}`} />
               <span>Test Signer Connection</span>
@@ -403,24 +403,57 @@ export default function SettingsTab({ onNotify }) {
 
           {/* Signer status banner */}
           {signerStatus && (
-            <div className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs ${signerStatus.status === 'ok' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-amber-500/10 border-amber-500/30 text-amber-300'}`}>
-              <div className="flex items-center gap-2">
-                {signerStatus.status === 'ok' ? (
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-                )}
-                <div>
-                  <span className="font-semibold">Signer Status: </span>
-                  <span>{signerStatus.status === 'ok' ? 'Online & Authenticated' : (signerStatus.error || 'Token Missing or Unreachable')}</span>
-                  {signerStatus.ca_subject && (
-                    <span className="ml-2 font-mono text-[11px] opacity-80">({signerStatus.ca_subject})</span>
+            <div className="space-y-2">
+              <div className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs ${signerStatus.status === 'ok' || signerStatus.reachable ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-amber-500/10 border-amber-500/30 text-amber-300'}`}>
+                <div className="flex items-center gap-2">
+                  {signerStatus.status === 'ok' || signerStatus.reachable ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
                   )}
+                  <div>
+                    <span className="font-semibold">Signer Status: </span>
+                    <span>{signerStatus.status === 'ok' || (signerStatus.reachable && signerStatus.key_valid) ? 'Online & Authenticated' : (signerStatus.detail || signerStatus.error || 'Token Missing or Unreachable')}</span>
+                    {signerStatus.host && (
+                      <span className="ml-2 font-mono text-[11px] opacity-80">({signerStatus.host})</span>
+                    )}
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-900/60 border border-slate-700/50">
+                  Mode: {signerStatus.mode || 'REST API'}
+                </span>
+              </div>
+
+              {/* Live Probe Response Console */}
+              <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-[11px] space-y-1 text-slate-300">
+                <div className="text-slate-500 flex items-center justify-between pb-1 border-b border-slate-900">
+                  <span>Signer Diagnostic Probe Response:</span>
+                  <span>{signerStatus.checked_at ? new Date(signerStatus.checked_at).toLocaleTimeString() : 'live'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Target Host / URL:</span>
+                  <span className="text-indigo-300 font-bold">{form.cert_signer_api_url || 'Local Fallback CA'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">HTTP Status Code:</span>
+                  <span className={signerStatus.status_code === 200 ? 'text-emerald-400' : 'text-amber-400'}>
+                    {signerStatus.status_code || 'N/A'}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Round-Trip Latency:</span>
+                  <span className="text-slate-200">{signerStatus.latency_ms ? `${signerStatus.latency_ms} ms` : '—'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">API Key Configured:</span>
+                  <span className={form.cert_signer_api_key ? 'text-emerald-400' : 'text-amber-400'}>
+                    {form.cert_signer_api_key ? 'Yes (Bearer / X-API-KEY)' : 'None'}
+                  </span>
+                </div>
+                <div className="pt-1 text-slate-400 text-[10px] border-t border-slate-900 leading-relaxed">
+                  {signerStatus.detail || 'Local FreeRADIUS Root CA is ready for issuing EAP-TLS client certificates.'}
                 </div>
               </div>
-              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-slate-900/60 border border-slate-700/50">
-                Mode: {signerStatus.mode || 'REST API'}
-              </span>
             </div>
           )}
 

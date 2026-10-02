@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Users, 
   UserPlus, 
@@ -19,30 +19,36 @@ import {
   Eye, 
   EyeOff, 
   Copy, 
-  Smartphone 
+  Smartphone,
+  RefreshCw
 } from 'lucide-react';
-import { calculatePasswordStrength } from '../utils/api';
+import { calculatePasswordStrength, fetchJson } from '../utils/api';
 
 export default function UsersTab({
-  users = [],
-  groups = [],
+  users: propUsers,
+  groups: propGroups,
   currentUser,
-  onSaveUser,
-  onDeleteUser,
-  onResetPassword,
-  onGenerateGuest,
-  onOpenDevicePolicy,
-  onTestAuth,
-  onIssueCert,
-  onCopyText
+  onSaveUser: propOnSaveUser,
+  onDeleteUser: propOnDeleteUser,
+  onResetPassword: propOnResetPassword,
+  onGenerateGuest: propOnGenerateGuest,
+  onOpenDevicePolicy: propOnOpenDevicePolicy,
+  onTestAuth: propOnTestAuth,
+  onIssueCert: propOnIssueCert,
+  onCopyText: propOnCopyText,
+  onShowCredModal,
+  onNotify
 }) {
+  const [internalUsers, setInternalUsers] = useState([]);
+  const [internalGroups, setInternalGroups] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [groupFilter, setGroupFilter] = useState('');
   
   // Guest Generator Modal & State
   const [guestModalOpen, setGuestModalOpen] = useState(false);
   const [guestDuration, setGuestDuration] = useState('24h');
-  const [guestGroup, setGuestGroup] = useState(groups[0]?.groupname || 'guests');
+  const [guestGroup, setGuestGroup] = useState('guests');
   const [guestPrefix, setGuestPrefix] = useState('guest');
   const [guestLoading, setGuestLoading] = useState(false);
 
@@ -60,6 +66,42 @@ export default function UsersTab({
   const [resetDisconnect, setResetDisconnect] = useState(false);
   const [resetSaving, setResetSaving] = useState(false);
   const [showResetPass, setShowResetPass] = useState(true);
+
+  // Device Policy Modal
+  const [deviceModalOpen, setDeviceModalOpen] = useState(false);
+  const [deviceUser, setDeviceUser] = useState('');
+  const [devicePolicy, setDevicePolicy] = useState(null);
+  const [deviceLoading, setDeviceLoading] = useState(false);
+  const [newMac, setNewMac] = useState('');
+  const [newMacDesc, setNewMacDesc] = useState('');
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      const [uData, gData] = await Promise.all([
+        fetchJson('users'),
+        fetchJson('groups')
+      ]);
+      setInternalUsers(uData || []);
+      setInternalGroups(gData || []);
+      if (gData && gData.length > 0) {
+        setGuestGroup(gData[0].groupname);
+      }
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to load users from database', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!propUsers) {
+      loadData();
+    }
+  }, [propUsers]);
+
+  const users = propUsers || internalUsers;
+  const groups = propGroups || internalGroups;
 
   // Generate random password helper
   const generateRandomPass = () => {
@@ -100,13 +142,39 @@ export default function UsersTab({
     e.preventDefault();
     setUserModalSaving(true);
     try {
-      await onSaveUser({
-        username: userForm.username,
-        password: userForm.password,
-        group: userForm.group,
-        framed_ip: userForm.static_ip
-      }, isEditing);
+      if (propOnSaveUser) {
+        await propOnSaveUser({
+          username: userForm.username,
+          password: userForm.password,
+          group: userForm.group,
+          framed_ip: userForm.static_ip
+        }, isEditing);
+      } else {
+        const endpoint = isEditing ? `users/${userForm.username}` : 'users';
+        const method = isEditing ? 'PUT' : 'POST';
+        const res = await fetchJson(endpoint, {
+          method,
+          body: JSON.stringify({
+            username: userForm.username,
+            password: userForm.password,
+            group: userForm.group,
+            framed_ip: userForm.static_ip
+          })
+        });
+        onNotify?.(res.message || `User '${userForm.username}' saved successfully!`, 'success');
+        if (!isEditing && onShowCredModal) {
+          onShowCredModal({
+            username: userForm.username,
+            password: userForm.password,
+            group: userForm.group,
+            static_ip: userForm.static_ip
+          });
+        }
+        loadData();
+      }
       setUserModalOpen(false);
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to save user', 'error');
     } finally {
       setUserModalSaving(false);
     }
@@ -123,8 +191,22 @@ export default function UsersTab({
   const handleSaveReset = async () => {
     setResetSaving(true);
     try {
-      await onResetPassword(resetUsername, resetPassword, resetDisconnect);
+      if (propOnResetPassword) {
+        await propOnResetPassword(resetUsername, resetPassword, resetDisconnect);
+      } else {
+        const res = await fetchJson(`users/${resetUsername}/reset-password`, {
+          method: 'POST',
+          body: JSON.stringify({
+            password: resetPassword,
+            disconnect: resetDisconnect
+          })
+        });
+        onNotify?.(res.message || `Password reset for '${resetUsername}'!`, 'success');
+        loadData();
+      }
       setResetModalOpen(false);
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to reset password', 'error');
     } finally {
       setResetSaving(false);
     }
@@ -133,14 +215,102 @@ export default function UsersTab({
   const handleQuickGuest = async (dur = '24h') => {
     setGuestLoading(true);
     try {
-      await onGenerateGuest({
-        duration: dur,
-        group: guestGroup,
-        prefix: guestPrefix
-      });
+      if (propOnGenerateGuest) {
+        await propOnGenerateGuest({
+          duration: dur,
+          group: guestGroup,
+          prefix: guestPrefix
+        });
+      } else {
+        const res = await fetchJson('users/guest', {
+          method: 'POST',
+          body: JSON.stringify({
+            duration: dur,
+            group: guestGroup,
+            prefix: guestPrefix
+          })
+        });
+        onNotify?.(`Guest account '${res.username}' created (${res.validity_label || dur})!`, 'success');
+        if (onShowCredModal) {
+          onShowCredModal(res);
+        }
+        loadData();
+      }
       setGuestModalOpen(false);
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to generate guest user', 'error');
     } finally {
       setGuestLoading(false);
+    }
+  };
+
+  const handleDeleteUser = async (username) => {
+    if (!window.confirm(`Are you sure you want to delete user '${username}'?`)) return;
+    try {
+      if (propOnDeleteUser) {
+        await propOnDeleteUser(username);
+      } else {
+        await fetchJson(`users/${username}`, { method: 'DELETE' });
+        onNotify?.(`User '${username}' deleted successfully`, 'success');
+        loadData();
+      }
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to delete user', 'error');
+    }
+  };
+
+  const handleIssueCert = async (username) => {
+    try {
+      if (propOnIssueCert) {
+        await propOnIssueCert(username);
+      } else {
+        const res = await fetchJson('certs/issue', {
+          method: 'POST',
+          body: JSON.stringify({ username, valid_days: 365 })
+        });
+        onNotify?.(`Certificate generated for '${username}'! Password: ${res.p12_password}`, 'success');
+        loadData();
+      }
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to issue certificate', 'error');
+    }
+  };
+
+  const handleTestAuth = async (username) => {
+    if (propOnTestAuth) {
+      propOnTestAuth(username);
+      return;
+    }
+    try {
+      const res = await fetchJson('test-auth', {
+        method: 'POST',
+        body: JSON.stringify({ username, password: '' })
+      });
+      if (res.success) {
+        onNotify?.(`Test Auth for '${username}': Access-Accept!`, 'success');
+      } else {
+        onNotify?.(`Test Auth for '${username}': ${res.status || 'Access-Reject'}`, 'warning');
+      }
+    } catch (err) {
+      onNotify?.(err.message || 'Test auth request failed', 'error');
+    }
+  };
+
+  const handleOpenDevicePolicy = async (username) => {
+    if (propOnOpenDevicePolicy) {
+      propOnOpenDevicePolicy(username);
+      return;
+    }
+    setDeviceUser(username);
+    setDeviceModalOpen(true);
+    setDeviceLoading(true);
+    try {
+      const data = await fetchJson(`devices/user-policy/${username}`);
+      setDevicePolicy(data);
+    } catch (err) {
+      onNotify?.(err.message || 'Failed to load device policy', 'error');
+    } finally {
+      setDeviceLoading(false);
     }
   };
 
@@ -315,7 +485,7 @@ export default function UsersTab({
                     </div>
                   ) : (
                     <button
-                      onClick={() => onIssueCert(user.username)}
+                      onClick={() => handleIssueCert(user.username)}
                       className="text-slate-400 hover:text-indigo-300 text-[10px] border border-slate-700 px-2.5 py-1 rounded-lg hover:border-indigo-500 transition-colors flex items-center gap-1"
                     >
                       <Plus className="w-3 h-3" /> Issue Cert
@@ -343,7 +513,7 @@ export default function UsersTab({
                 {/* Action Buttons */}
                 <td className="px-6 py-4 text-right space-x-1 whitespace-nowrap">
                   <button
-                    onClick={() => onOpenDevicePolicy(user.username)}
+                    onClick={() => handleOpenDevicePolicy(user.username)}
                     title="Verified Device MAC Lock Policy"
                     className="p-1.5 text-sky-400 hover:text-sky-300 hover:bg-sky-500/10 rounded-lg transition-colors"
                   >
@@ -364,14 +534,14 @@ export default function UsersTab({
                     <Edit className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => onTestAuth(user.username)}
+                    onClick={() => handleTestAuth(user.username)}
                     title="Test RADIUS Auth"
                     className="p-1.5 text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 rounded-lg transition-colors"
                   >
                     <Play className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => onDeleteUser(user.username)}
+                    onClick={() => handleDeleteUser(user.username)}
                     title="Delete User"
                     className="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors"
                   >
