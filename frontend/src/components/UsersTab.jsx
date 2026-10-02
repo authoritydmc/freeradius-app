@@ -17,6 +17,7 @@ import {
   Eye, 
   EyeOff, 
   Smartphone,
+  Phone,
   RefreshCw,
   QrCode,
   Lock,
@@ -173,7 +174,7 @@ export default function UsersTab({
     setSaveResult(null);
     setUserForm({
       username: '',
-      password: generateRandomPass(),
+      password: '',
       group: groups[0]?.groupname || 'staff',
       static_ip: '',
       phone: ''
@@ -287,13 +288,15 @@ export default function UsersTab({
           })
         });
         const msg = res.message || `User '${userForm.username}' saved successfully!`;
+        // Backend may have defaulted a blank password to the phone number.
+        const effectivePassword = res.password || userForm.password;
         setSaveResult({ ok: true, msg });
         onNotify?.(msg, 'success');
         if (!isEditing && onShowCredModal) {
-          setLastCreatedCreds({ username: userForm.username, password: userForm.password });
+          setLastCreatedCreds({ username: userForm.username, password: effectivePassword });
           onShowCredModal({
             username: userForm.username,
-            password: userForm.password,
+            password: effectivePassword,
             group: userForm.group,
             static_ip: userForm.static_ip,
             phone: userForm.phone?.trim() || ''
@@ -325,6 +328,7 @@ export default function UsersTab({
     setResetSaving(true);
     setResetResult(null);
     try {
+      let effectivePass = resetPassword;
       if (propOnResetPassword) {
         await propOnResetPassword(resetUsername, resetPassword, resetDisconnect);
       } else {
@@ -335,11 +339,16 @@ export default function UsersTab({
             disconnect_active: resetDisconnect
           })
         });
+        // Blank input resets to the phone number — server returns it.
+        if (res.password) {
+          effectivePass = res.password;
+          setResetPassword(res.password);
+        }
         onNotify?.(res.message || `Password reset for '${resetUsername}'!`, 'success');
         loadData();
       }
       const savedUser = resetUsername;
-      const savedPass = resetPassword;
+      const savedPass = effectivePass;
       setResetResult({ ok: true, msg: `Password saved for '${savedUser}'.` });
       setTimeout(() => {
         setResetModalOpen(false);
@@ -999,30 +1008,40 @@ export default function UsersTab({
               {!isEditing && (
                 <div>
                   <label className="block text-slate-300 mb-1 font-medium">
-                    Password <span className="text-slate-500 font-normal">(min 10 chars, any 3 of Aa 0 $ — e.g. 9876543210Ram@)</span>
+                    Password <span className="text-slate-500 font-normal">(min 8 chars — blank = use phone number)</span>
                   </label>
                   <div className="flex gap-1.5">
                     <div className="relative flex-1">
-                      <input 
-                        type={showPass ? 'text' : 'password'} 
-                        value={userForm.password} 
+                      <input
+                        type={showPass ? 'text' : 'password'}
+                        value={userForm.password}
                         onChange={(e) => setUserForm({ ...userForm, password: e.target.value })}
-                        required 
-                        placeholder="••••••••••••" 
+                        placeholder="Blank = use phone number"
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-white focus:border-indigo-500 outline-none font-mono"
                       />
-                      <button 
-                        type="button" 
+                      <button
+                        type="button"
                         onClick={() => setShowPass(!showPass)}
                         className="absolute right-2.5 top-2.5 text-slate-500 hover:text-white"
                       >
                         {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
                     </div>
-                    <button 
-                      type="button" 
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const digits = (userForm.phone || '').replace(/\D/g, '');
+                        if (digits) setUserForm({ ...userForm, password: digits });
+                      }}
+                      title={userForm.phone ? 'Fill phone number digits as password' : 'Enter a phone number first'}
+                      className="px-3 py-2 bg-sky-600/20 border border-sky-500/30 text-sky-300 rounded-xl hover:bg-sky-600/30 font-bold whitespace-nowrap flex items-center gap-1"
+                    >
+                      <Phone className="w-3.5 h-3.5" /> Phone
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setUserForm({ ...userForm, password: generateRandomPass() })}
-                      title="Generate secure random password" 
+                      title="Generate secure random password"
                       className="px-3 py-2 bg-amber-600/20 border border-amber-500/30 text-amber-300 rounded-xl hover:bg-amber-600/30 font-bold whitespace-nowrap flex items-center gap-1"
                     >
                       <Dice5 className="w-3.5 h-3.5" /> Generate
@@ -1178,17 +1197,18 @@ export default function UsersTab({
 
             <div className="space-y-3.5 text-xs">
               <p className="-mb-1 text-[11px] text-slate-500">
-                The current password can't be displayed (only hashes are stored) — this generates a
-                <span className="text-amber-300 font-semibold"> new password that replaces it on save</span>.
+                The current password can't be shown — enter
+                <span className="text-amber-300 font-semibold"> a new one below (blank = use the user's phone number)</span>.
               </p>
               <div>
                 <label className="block text-slate-300 mb-1 font-medium">New auto-generated password</label>
                 <div className="flex gap-1.5">
                   <div className="relative flex-1">
-                    <input 
-                      type={showResetPass ? 'text' : 'password'} 
-                      value={resetPassword} 
+                    <input
+                      type={showResetPass ? 'text' : 'password'}
+                      value={resetPassword}
                       onChange={(e) => setResetPassword(e.target.value)}
+                      placeholder="Blank = reset to phone number"
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 pr-16 text-white focus:border-amber-500 outline-none font-mono"
                     />
                     <div className="absolute right-2 top-2 flex items-center gap-1">

@@ -58,7 +58,7 @@ class FakeConn:
 
 def _user_row(**kw):
     base = {
-        "id": 7, "username": "ram", "password_hash": "9876543210Ram@",
+        "id": 7, "username": "ram", "password_cleartext": "9876543210Ram@",
         "email": None, "phone": None, "group_id": None,
         "recharge_required_override": None, "status": "ACTIVE",
         "group_name": None, "group_recharge_required": None,
@@ -196,3 +196,53 @@ def test_devices_include_auth_seen_macs(monkeypatch):
     assert dev["sessions"] == 0
     assert dev["auth_attempts"] == 3
     assert dev["username"] == "ram"
+
+
+def test_create_user_blank_password_uses_phone(monkeypatch):
+    """Blank password on create defaults to the phone number digits."""
+
+    def handler(q, p):
+        if "SELECT 1 FROM radcheck" in q:
+            return []  # new user
+        if "SELECT id FROM groups" in q:
+            return []
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    payload = app.UserCreateRequest(username="ram", password="",
+                                    group="staff", phone="+919876543210")
+    res = app.create_or_update_user(payload, "admin")
+    assert res["password"] == "919876543210"
+    assert res["password_source"] == "phone"
+    inserts = [(s, p) for s, p in conn.log if s.startswith("INSERT INTO radcheck")]
+    assert inserts and inserts[0][1][1] == "919876543210"
+
+
+def test_create_user_blank_password_without_phone_rejected(monkeypatch):
+    """Blank password with no phone must 422 (nothing to default to)."""
+    from fastapi import HTTPException
+
+    conn = FakeConn(lambda q, p: [])
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    payload = app.UserCreateRequest(username="ram", password="")
+    with pytest.raises(HTTPException) as ei:
+        app.create_or_update_user(payload, "admin")
+    assert ei.value.status_code == 422
+
+
+def test_reset_blank_password_uses_phone(monkeypatch):
+    """Blank password on reset falls back to the stored phone number."""
+
+    def handler(q, p):
+        if "SELECT 1 FROM radcheck" in q:
+            return [{"1": 1}]
+        if "SELECT phone FROM users" in q:
+            return [{"phone": "+919876543210"}]
+        return []
+
+    conn = FakeConn(handler)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    res = app.update_user_password("ram", app.PasswordChangeRequest(password=""), "admin")
+    assert res["password"] == "919876543210"
+    assert res["password_source"] == "phone"

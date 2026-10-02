@@ -176,8 +176,8 @@ export function calculatePasswordStrength(pass) {
   // keep in sync with backend PASSWORD_SYMBOLS (11 chars)
   if (/[^a-zA-Z0-9]/.test(pass)) bits += 11;
   const entropy = Math.round(pass.length * (Math.log2(bits || 1)));
-  // backend: min 10 chars, weak <45, fair <70, good <90 else strong
-  if (pass.length < 10 || entropy < 45) {
+  // backend: min 8 chars, no forced mix — meter only advises, never blocks.
+  if (pass.length < 8 || entropy < 45) {
     return { score: 1, label: 'Weak', color: '#f43f5e', pct: 30, bits: entropy };
   } else if (entropy < 70) {
     return { score: 2, label: 'Moderate', color: '#f59e0b', pct: 65, bits: entropy };
@@ -188,4 +188,4 @@ export function calculatePasswordStrength(pass) {
   }
 }
 
-export const PASSWORD_POLICY_HINT = 'Min 10 chars, any 3 of: Aa, 0, $ (e.g. 9876543210Ram@)';
+export const PASSWORD_POLICY_HINT = 'Min 8 chars — anything goes (e.g. 9876543210)';

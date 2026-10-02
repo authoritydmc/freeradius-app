@@ -153,7 +153,7 @@ def get_user_full_context(username: str, conn=None) -> Optional[Dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    u.id, u.username, u.password_hash, u.email, u.phone,
+                    u.id, u.username, u.password_cleartext, u.email, u.phone,
                     u.group_id, u.recharge_required_override, u.status,
                     g.name as group_name, g.recharge_required as group_recharge_required,
                     g.max_session_seconds as group_max_session_seconds,
@@ -258,17 +258,17 @@ def sync_user_radius_attributes(username: str, conn=None):
                 # Clear any stale reject marker. Credentials are deliberately
                 # PRESERVED: radcheck holds the live Wi-Fi password (written by
                 # user create / password reset flows). Overwriting it here with
-                # users.password_hash used to break logins after every
+                # users.password_cleartext used to break logins after every
                 # recharge, because central rows created at onboarding carry a
                 # random placeholder — users then had to "reset password" to
                 # get back online. Only seed a password when none exists.
                 cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute = 'Auth-Type'", (username,))
                 cur.execute("SELECT 1 FROM radcheck WHERE username = %s AND attribute LIKE '%%Password' LIMIT 1", (username,))
-                if not cur.fetchone() and user_ctx.get("password_hash"):
+                if not cur.fetchone() and user_ctx.get("password_cleartext"):
                     cur.execute("""
                         INSERT INTO radcheck (username, attribute, op, value)
                         VALUES (%s, 'Cleartext-Password', ':=', %s)
-                    """, (username, user_ctx["password_hash"]))
+                    """, (username, user_ctx["password_cleartext"]))
 
                 # Ensure group assignment
                 group_name = user_ctx["group_name"] or "PAID"

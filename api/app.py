@@ -495,13 +495,13 @@ def build_mobileconfig(username: str, ssid: str, p12_bytes: bytes, p12_password:
 
 # ----------------------------------------------------------------------------
 # Password policy & secure generation (single source of truth, mirrored in UI)
-# Relaxed (Oct 2026): min 10 chars + any 3 of 4 classes, so that
-#   mobile-number + Word + symbol  (e.g. 9876543210Ram@, 9876543210ram@)
-# works without forcing an extra character class.
+# Simple by design (Oct 2026): min 8 characters, anything goes — no forced
+# upper/lower/digit/symbol mix. A 10-digit mobile number alone already passes;
+# mobile-number + word + symbol passes too. Generated passwords stay strong
+# (one char per class); the strength meter only advises, never blocks.
 # ----------------------------------------------------------------------------
-PASSWORD_MIN_LENGTH = 10
+PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
-PASSWORD_MIN_CLASSES = 3
 PASSWORD_SYMBOLS = "!@#$%^*-_=+"
 _PASSWORD_AMBIGUOUS = set("l1IoO0|`'\"")
 
@@ -531,31 +531,14 @@ def password_strength(password: str) -> Dict[str, Any]:
 def validate_password_policy(password: str, username: Optional[str] = None):
     """Raises HTTPException 422 on policy violation.
 
-    Relaxed rule: 10-128 chars + at least 3 of 4 classes
-    (upper, lower, digit, symbol). This lets
-    mobile-number + word + symbol pass, e.g. both
-    9876543210Ram@ (4/4) and 9876543210ram@ (digit+lower+symbol).
+    Simple rule: 8-128 chars and not identical to the username. No forced
+    character-class mix — "9876543210", "9876543210ram@" and "Str0ng!Pass#42"
+    are all fine. Longer generated passwords remain strong by construction.
     """
     if not password or not (PASSWORD_MIN_LENGTH <= len(password) <= PASSWORD_MAX_LENGTH):
         raise HTTPException(status_code=422, detail=f"Password must be {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters long.")
     if username and password.strip().lower() == username.strip().lower():
         raise HTTPException(status_code=422, detail="Password must not be the same as the username.")
-    has_lower = any(c.islower() for c in password)
-    has_upper = any(c.isupper() for c in password)
-    has_digit = any(c.isdigit() for c in password)
-    has_symbol = any(not c.isalnum() for c in password)
-    classes = sum([has_lower, has_upper, has_digit, has_symbol])
-    if classes < PASSWORD_MIN_CLASSES:
-        missing = []
-        if not has_lower:
-            missing.append("lower-case")
-        if not has_upper:
-            missing.append("upper-case")
-        if not has_digit:
-            missing.append("digit")
-        if not has_symbol:
-            missing.append("symbol")
-        raise HTTPException(status_code=422, detail=f"Password must include at least {PASSWORD_MIN_CLASSES} of: upper-case, lower-case, digit, symbol (missing: {', '.join(missing)}).")
 
 def generate_secure_password(length: int = 16, use_symbols: bool = True, exclude_ambiguous: bool = True) -> str:
     length = max(PASSWORD_MIN_LENGTH, min(int(length or 16), 64))
@@ -1180,8 +1163,10 @@ async def log_requests(request: Request, call_next):
 # Request Models
 class UserCreateRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
-    password: str = Field(..., min_length=1)
-    password_type: str = Field(default="Cleartext-Password") # Cleartext-Password, SHA2-Password, etc.
+    # Blank/omitted = use the phone number digits as password (min 8 chars).
+    # Always stored as Cleartext-Password: MS-CHAP/PEAP challenge-response
+    # cannot work with hashed password attributes.
+    password: Optional[str] = None
     group: Optional[str] = None
     attributes: Optional[Dict[str, str]] = None
     # Static client IP: None = leave existing pinning untouched, "" = remove it (DHCP), value = pin it.
@@ -1191,7 +1176,6 @@ class UserCreateRequest(BaseModel):
 
 class UserUpdateRequest(BaseModel):
     password: Optional[str] = None
-    password_type: Optional[str] = "Cleartext-Password"
     group: Optional[str] = None
     attributes: Optional[Dict[str, str]] = None
     framed_ip: Optional[str] = None
@@ -1226,7 +1210,7 @@ def upsert_user_contact(cur, username: str, phone: Optional[str] = None,
             gid = grow["id"] if grow else None
         if set_phone:
             cur.execute("""
-                INSERT INTO users (username, password_hash, phone, group_id, status)
+                INSERT INTO users (username, password_cleartext, phone, group_id, status)
                 VALUES (%s, %s, %s, %s, 'ACTIVE')
                 ON CONFLICT (username) DO UPDATE SET
                     phone = EXCLUDED.phone,
@@ -1234,7 +1218,7 @@ def upsert_user_contact(cur, username: str, phone: Optional[str] = None,
             """, (username, generate_session_secret(24), phone, gid))
         else:
             cur.execute("""
-                INSERT INTO users (username, password_hash, group_id, status)
+                INSERT INTO users (username, password_cleartext, group_id, status)
                 VALUES (%s, %s, %s, 'ACTIVE')
                 ON CONFLICT (username) DO UPDATE SET
                     group_id = COALESCE(EXCLUDED.group_id, users.group_id)
@@ -1243,18 +1227,23 @@ def upsert_user_contact(cur, username: str, phone: Optional[str] = None,
         logger.debug("central user contact upsert skipped for %s: %s", username, e)
 
 def sync_central_password(cur, username: str, password: str) -> None:
-    """Mirror the live Wi-Fi password into central users.password_hash.
+    """Mirror the live Wi-Fi password into central users.password_cleartext.
+
+    Deliberately CLEARTEXT, not a hash: MS-CHAPv2/PEAP challenge-response
+    requires the server to know the actual password (a bcrypt/scrypt hash
+    cannot answer challenges), and FreeRADIUS reads radcheck Cleartext-Password
+    for the same reason. Never "upgrade" this column to a hash — logins break.
 
     Best-effort (never fails the caller): the access-engine sync reads this
     column when it must seed a missing radcheck credential, so it has to be
-    the real password — never a onboarding placeholder. All password-write
+    the real password — never an onboarding placeholder. All password-write
     paths (create, profile update, admin reset, self-service change) call this.
     """
     try:
         cur.execute("""
-            INSERT INTO users (username, password_hash, status)
+            INSERT INTO users (username, password_cleartext, status)
             VALUES (%s, %s, 'ACTIVE')
-            ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash
+            ON CONFLICT (username) DO UPDATE SET password_cleartext = EXCLUDED.password_cleartext
         """, (username, password))
     except Exception as e:
         logger.debug("central password mirror skipped for %s: %s", username, e)
@@ -1266,8 +1255,9 @@ class GuestUserGenerateRequest(BaseModel):
     note: Optional[str] = None
 
 class PasswordChangeRequest(BaseModel):
-    password: str = Field(..., min_length=1, max_length=128)
-    password_type: str = Field(default="Cleartext-Password")
+    # Blank = reset to the user's phone number digits (min 8 chars).
+    # Always Cleartext-Password (MS-CHAP/PEAP can't use hashed attributes).
+    password: Optional[str] = None
     disconnect_active: Optional[bool] = False
 
 class PasswordGenerateRequest(BaseModel):
@@ -2139,12 +2129,12 @@ def get_password_policy(_: str = Depends(authenticate_admin)):
     return {
         "min_length": PASSWORD_MIN_LENGTH,
         "max_length": PASSWORD_MAX_LENGTH,
-        "min_classes": PASSWORD_MIN_CLASSES,
+        "min_classes": 1,
         "require_upper": False,
         "require_lower": False,
         "require_digit": False,
         "require_symbol": False,
-        "description": f"Min {PASSWORD_MIN_LENGTH} chars with at least {PASSWORD_MIN_CLASSES} of: upper-case, lower-case, digit, symbol. Example: 9876543210Ram@",
+        "description": f"Min {PASSWORD_MIN_LENGTH} characters — anything goes (e.g. 9876543210). Longer is stronger.",
         "default_generate_length": 16,
     }
 
@@ -2239,19 +2229,30 @@ def get_ip_coverage(ip: str = Query(...), _: str = Depends(authenticate_admin)):
 @app.post("/radius/api/users", tags=["Users"])
 @app.post("/api/users", tags=["Users"])
 def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(authenticate_admin)):
-    validate_password_policy(payload.password, payload.username)
     phone = normalize_phone(payload.phone) if payload.phone is not None else None
+    # Blank password defaults to the phone number digits (e.g. 919876543210).
+    raw_pw = (payload.password or "").strip()
+    pw_source = "given"
+    if not raw_pw:
+        if phone:
+            raw_pw = re.sub(r"\D", "", phone)
+            if len(raw_pw) < PASSWORD_MIN_LENGTH:
+                raise HTTPException(status_code=422, detail="Phone number too short to use as password — set an explicit password (min 8 characters).")
+            pw_source = "phone"
+        else:
+            raise HTTPException(status_code=422, detail="Password is required when no phone number is given (leave blank to use the phone number).")
+    validate_password_policy(raw_pw, payload.username)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (payload.username,))
             existed = cur.fetchone() is not None
             cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (payload.username,))
-            
+
             cur.execute("""
                 INSERT INTO radcheck (username, attribute, op, value)
-                VALUES (%s, %s, ':=', %s)
-            """, (payload.username, payload.password_type, payload.password))
+                VALUES (%s, 'Cleartext-Password', ':=', %s)
+            """, (payload.username, raw_pw))
 
             if payload.group:
                 cur.execute("DELETE FROM radusergroup WHERE username = %s", (payload.username,))
@@ -2298,16 +2299,19 @@ def create_or_update_user(payload: UserCreateRequest, admin_user: str = Depends(
                                 set_phone=payload.phone is not None,
                                 group_name=payload.group)
             # Central password mirror (access-engine seeds from here when needed)
-            sync_central_password(cur, payload.username, payload.password)
+            sync_central_password(cur, payload.username, raw_pw)
 
             conn.commit()
             merged = dict(payload.attributes or {})
             merged.update(ip_attrs)
             warnings = framed_ip_warnings(merged, f"User '{payload.username}'")
             log_audit(admin_user, "user_create" if not existed else "user_update", payload.username,
-                      f"group={payload.group}" + (f" warnings={len(warnings)}" if warnings else ""))
+                      f"group={payload.group} password_source={pw_source}" + (f" warnings={len(warnings)}" if warnings else ""))
             return {"status": "success", "created": not existed,
-                    "message": f"User '{payload.username}' {'created' if not existed else 'updated'} successfully",
+                    "message": f"User '{payload.username}' {'created' if not existed else 'updated'} successfully"
+                               + (" (password = phone number)" if pw_source == "phone" else ""),
+                    "password": raw_pw,
+                    "password_source": pw_source,
                     "warnings": warnings}
     finally:
         conn.close()
@@ -2330,8 +2334,8 @@ def update_user_profile(username: str, payload: UserUpdateRequest, admin_user: s
                 cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (uname,))
                 cur.execute("""
                     INSERT INTO radcheck (username, attribute, op, value)
-                    VALUES (%s, %s, ':=', %s)
-                """, (uname, payload.password_type or "Cleartext-Password", payload.password))
+                    VALUES (%s, 'Cleartext-Password', ':=', %s)
+                """, (uname, payload.password))
                 sync_central_password(cur, uname, payload.password)
 
             # Update group membership
@@ -2487,9 +2491,9 @@ def generate_guest_user(payload: Optional[GuestUserGenerateRequest] = None, admi
                 except Exception:
                     guest_plan_id = None
                 cur.execute("""
-                    INSERT INTO users (username, password_hash, group_id, status)
+                    INSERT INTO users (username, password_cleartext, group_id, status)
                     VALUES (%s, %s, %s, 'ACTIVE')
-                    ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, status = 'ACTIVE'
+                    ON CONFLICT (username) DO UPDATE SET password_cleartext = EXCLUDED.password_cleartext, status = 'ACTIVE'
                     RETURNING id
                 """, (username, password, g_id))
                 u_row = cur.fetchone()
@@ -2584,7 +2588,7 @@ def _apply_user_ban(cur, uname: str, banned: bool, admin_user: str) -> None:
     credential and policy rows untouched. Unban removes exactly those rows.
     """
     cur.execute("""
-        INSERT INTO users (username, password_hash, status)
+        INSERT INTO users (username, password_cleartext, status)
         VALUES (%s, %s, %s)
         ON CONFLICT (username) DO UPDATE SET status = EXCLUDED.status
     """, (uname, generate_session_secret(24), "DISABLED" if banned else "ACTIVE"))
@@ -2808,25 +2812,35 @@ def remove_verified_device(username: str, mac: str, admin_user: str = Depends(au
 @app.put("/radius/api/users/{username}/password", tags=["Users"])
 @app.put("/api/users/{username}/password", tags=["Users"])
 def update_user_password(username: str, payload: PasswordChangeRequest, admin_user: str = Depends(authenticate_admin)):
-    validate_password_policy(payload.password, username)
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM radcheck WHERE username = %s LIMIT 1", (username,))
             if not cur.fetchone():
                 raise HTTPException(status_code=404, detail=f"User '{username}' not found.")
+            # Blank password resets to the user's phone number digits.
+            raw_pw = (payload.password or "").strip()
+            pw_source = "given"
+            if not raw_pw:
+                cur.execute("SELECT phone FROM users WHERE username = %s", (username,))
+                row = cur.fetchone()
+                raw_pw = re.sub(r"\D", "", (row.get("phone") if row else "") or "")
+                if len(raw_pw) < PASSWORD_MIN_LENGTH:
+                    raise HTTPException(status_code=422, detail="No usable phone number on file — type an explicit password (min 8 characters).")
+                pw_source = "phone"
+            validate_password_policy(raw_pw, username)
             cur.execute("DELETE FROM radcheck WHERE username = %s AND attribute LIKE '%%Password'", (username,))
             cur.execute("""
                 INSERT INTO radcheck (username, attribute, op, value)
-                VALUES (%s, %s, ':=', %s)
-            """, (username, payload.password_type, payload.password))
-            sync_central_password(cur, username, payload.password)
+                VALUES (%s, 'Cleartext-Password', ':=', %s)
+            """, (username, raw_pw))
+            sync_central_password(cur, username, raw_pw)
             conn.commit()
     finally:
         conn.close()
     # Audit (never logs the plaintext password)
-    info = password_strength(payload.password)
-    log_audit(admin_user, "password_reset", username, f"type={payload.password_type} strength={info['strength']}")
+    info = password_strength(raw_pw)
+    log_audit(admin_user, "password_reset", username, f"source={pw_source} strength={info['strength']}")
     disconnected = 0
     if payload.disconnect_active:
         try:
@@ -2857,8 +2871,12 @@ def update_user_password(username: str, payload: PasswordChangeRequest, admin_us
     logger.info("Password reset username=%s by=%s disconnect=%s sessions_dropped=%s sessions_revoked=%s", username, admin_user, payload.disconnect_active, disconnected, sessions_revoked)
     return {
         "status": "success",
-        "message": f"Password updated for user '{username}'" + (f" ({disconnected} session(s) disconnected)" if payload.disconnect_active else ""),
+        "message": f"Password updated for user '{username}'"
+                   + (" (password = phone number)" if pw_source == "phone" else "")
+                   + (f" ({disconnected} session(s) disconnected)" if payload.disconnect_active else ""),
         "username": username,
+        "password": raw_pw if pw_source == "phone" else None,
+        "password_source": pw_source,
         "updated_by": admin_user,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "disconnected_sessions": disconnected,
@@ -3472,7 +3490,7 @@ def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: s
             u_row = cur.fetchone()
             if not u_row:
                 cur.execute("""
-                    INSERT INTO users (username, password_hash, status)
+                    INSERT INTO users (username, password_cleartext, status)
                     VALUES (%s, %s, 'ACTIVE')
                     RETURNING id
                 """, (uname, generate_session_secret(24)))
@@ -3611,7 +3629,7 @@ def scan_email_payments(payload: EmailScanRequest, admin_user: str = Depends(aut
                         cur.execute("SELECT id FROM users WHERE username = %s LIMIT 1", (uname,))
                         u_row = cur.fetchone()
                         if not u_row:
-                            cur.execute("INSERT INTO users (username, password_hash, status) VALUES (%s, %s, 'ACTIVE') RETURNING id", (uname, generate_session_secret(24)))
+                            cur.execute("INSERT INTO users (username, password_cleartext, status) VALUES (%s, %s, 'ACTIVE') RETURNING id", (uname, generate_session_secret(24)))
                             uid = cur.fetchone()["id"]
                         else:
                             uid = u_row["id"]
@@ -3778,7 +3796,7 @@ async def razorpay_webhook(request: Request):
                 u_row = cur.fetchone()
                 uid = u_row["id"] if u_row else None
                 if not uid:
-                    cur.execute("INSERT INTO users (username, password_hash, status) VALUES (%s, %s, 'ACTIVE') RETURNING id", (username, generate_session_secret(24)))
+                    cur.execute("INSERT INTO users (username, password_cleartext, status) VALUES (%s, %s, 'ACTIVE') RETURNING id", (username, generate_session_secret(24)))
                     uid = cur.fetchone()["id"]
                 c.commit()
             c.close()
@@ -4250,7 +4268,7 @@ def list_groups(_: str = Depends(authenticate_admin)):
 
 @app.post("/radius/api/groups", tags=["Groups"])
 @app.post("/api/groups", tags=["Groups"])
-def create_or_update_group(payload: GroupCreateRequest, _: str = Depends(authenticate_admin)):
+def create_or_update_group(payload: GroupCreateRequest, admin_user: str = Depends(authenticate_admin)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -4379,6 +4397,8 @@ def create_or_update_group(payload: GroupCreateRequest, _: str = Depends(authent
             msg = f"Policy Group '{payload.groupname}' saved successfully!"
             if members:
                 msg += f" ({resynced} member(s) re-synced" + (f", {resync_errors} skipped" if resync_errors else "") + ")"
+            log_audit(admin_user, "group_save", payload.groupname,
+                      f"recharge_required={payload.recharge_required} simultaneous_use={payload.simultaneous_use} resynced={resynced}")
             return {"status": "success", "message": msg,
                     "warnings": warnings}
     finally:
@@ -4410,7 +4430,7 @@ def apply_group_preset(payload: ApplyPresetRequest, _: str = Depends(authenticat
 
 @app.delete("/radius/api/groups/{groupname}", tags=["Groups"])
 @app.delete("/api/groups/{groupname}", tags=["Groups"])
-def delete_group(groupname: str, _: str = Depends(authenticate_admin)):
+def delete_group(groupname: str, admin_user: str = Depends(authenticate_admin)):
     if groupname == "admins":
         raise HTTPException(status_code=400, detail="Cannot delete default 'admins' system group.")
     conn = get_db_connection()
@@ -4419,7 +4439,12 @@ def delete_group(groupname: str, _: str = Depends(authenticate_admin)):
             cur.execute("DELETE FROM radgroupreply WHERE groupname = %s", (groupname,))
             cur.execute("DELETE FROM radgroupcheck WHERE groupname = %s", (groupname,))
             cur.execute("DELETE FROM radusergroup WHERE groupname = %s", (groupname,))
+            try:
+                cur.execute("DELETE FROM groups WHERE name = %s", (groupname,))
+            except Exception as e:
+                logger.debug("central groups cleanup skipped for %s: %s", groupname, e)
             conn.commit()
+            log_audit(admin_user, "group_delete", groupname, None)
             return {"status": "success", "message": f"Policy Group '{groupname}' and associated user assignments removed successfully."}
     finally:
         conn.close()
@@ -4438,7 +4463,7 @@ def list_nas(_: str = Depends(authenticate_admin)):
 
 @app.post("/radius/api/nas", tags=["NAS"])
 @app.post("/api/nas", tags=["NAS"])
-def create_nas(payload: NasCreateRequest, _: str = Depends(authenticate_admin)):
+def create_nas(payload: NasCreateRequest, admin_user: str = Depends(authenticate_admin)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
@@ -4449,18 +4474,20 @@ def create_nas(payload: NasCreateRequest, _: str = Depends(authenticate_admin)):
             """, (payload.nasname, payload.shortname, payload.type, payload.secret, payload.description))
             new_id = cur.fetchone()["id"]
             conn.commit()
+            log_audit(admin_user, "nas_create", payload.shortname, f"nasname={payload.nasname} id={new_id}")
             return {"status": "success", "id": new_id, "message": f"NAS client '{payload.shortname}' added successfully"}
     finally:
         conn.close()
 
 @app.delete("/radius/api/nas/{nas_id}", tags=["NAS"])
 @app.delete("/api/nas/{nas_id}", tags=["NAS"])
-def delete_nas(nas_id: int, _: str = Depends(authenticate_admin)):
+def delete_nas(nas_id: int, admin_user: str = Depends(authenticate_admin)):
     conn = get_db_connection()
     try:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM nas WHERE id = %s", (nas_id,))
             conn.commit()
+            log_audit(admin_user, "nas_delete", f"#{nas_id}", None)
             return {"status": "success", "message": f"NAS client #{nas_id} deleted successfully"}
     finally:
         conn.close()
