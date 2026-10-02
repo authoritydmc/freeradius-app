@@ -48,5 +48,10 @@ sql {
     # above. Columns come from migration 005 (also in config/schema.sql);
     # sections call sql as "-sql" so a missing column on old DBs is ignored,
     # never fatal.
-    postauth_query = "INSERT INTO ${postauth_table} (username, pass, reply, reason, eap_type, calling_station, called_station, authdate) VALUES ('%{User-Name}', '%{%{User-Password}:-%{Chap-Password}}', '%{reply:Packet-Type}', '%{reply:Reply-Message}', '%{EAP-Type}', '%{Calling-Station-Id}', '%{Called-Station-Id}', '%S')"
+    #
+    # SECURITY: the tried password is deliberately NOT logged (pass = '').
+    # MS-CHAP/PEAP attempts would otherwise persist real user secrets —
+    # including mistyped passwords for unrelated accounts — in the DB and
+    # every backup. The API never selects this column either.
+    postauth_query = "INSERT INTO ${postauth_table} (username, pass, reply, reason, eap_type, calling_station, called_station, authdate) VALUES ('%{User-Name}', '', '%{reply:Packet-Type}', '%{reply:Reply-Message}', '%{EAP-Type}', '%{Calling-Station-Id}', '%{Called-Station-Id}', '%S')"
 }

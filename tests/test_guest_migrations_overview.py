@@ -76,6 +76,16 @@ def test_freeradius_control_attrs_are_dictionary_known():
                 assert m.group(1) in known, f"{f}: unknown control attribute '{m.group(1)}' would fail freeradius -C"
 
 
+def test_postauth_query_logs_no_password():
+    """Attempted passwords must never reach radpostauth.pass (#18)."""
+    text = Path("config/mods-available/sql").read_text()
+    m = __import__("re").search(r"postauth_query\s*=\s*\"(.*)\"", text)
+    assert m, "postauth_query override missing"
+    query = m.group(1)
+    assert "User-Password" not in query
+    assert "Chap-Password" not in query
+
+
 def test_expiry_uses_utc_epoch_everywhere():
     import inspect
     from api.entitlements import activate_or_extend_subscription

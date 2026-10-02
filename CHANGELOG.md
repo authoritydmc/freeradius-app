@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Audit coverage completed**: group save/delete and NAS create/delete now write audit rows (they were the only silent admin actions).
 - **Access state converges (#25)**: ALLOW sync stamps wall-clock `Expiration` from `expires_at` (recharge no longer leaves paid users hard-rejected) and drops stale guest `Expiration` for exempt users; portal guest `Session-Timeout` moved to `radreply` (was inert in `radcheck`) with collision-safe IDs; group delete re-syncs former members.
 - **Password writes survive sync (#28)**: DENY blocks via `Auth-Type := Reject` only — credentials are preserved, so bulk/single resets stay valid and re-ALLOW needs no re-seed; manual activation writes one secret to both tables; resync failures warn and surface `resync_failed` instead of silent success.
+- **Attempted passwords no longer logged (#18)**: `postauth_query` writes `pass = ''` (migration 007 purges historic values); CI guards the query. Note: pre-existing offsite backups still hold old values — expire them.
 - **Postgres HA without dual-write**: `POSTGRES_HOST="primary,standby"` lands API/migration writes on the primary via libpq `target_session_attrs` (all three connectors; single-host unchanged). `backup.sh` pushes a second copy to `BACKUP_PUSH_TARGET`; see `docs/BACKUP_AND_HA.md` for replica setup, promotion, and restore drills. Deliberately no app-level dual-write — `rlm_sql` can't broadcast writes and hand-rolled two-phase commit buys split-brain.
 
 ### Added
