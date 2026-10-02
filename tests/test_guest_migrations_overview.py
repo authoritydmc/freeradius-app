@@ -120,3 +120,29 @@ def test_exempt_users_shown_as_exempt():
     assert "recharge_required === false" in users_tab
     dossier = Path("frontend/src/components/UserDetailModal.jsx").read_text(encoding="utf-8")
     assert "Exempt from recharge" in dossier
+
+
+def test_group_restricted_plans():
+    import inspect
+    from api.app import (
+        list_plans, create_or_update_plan, manual_activate_payment,
+        scan_email_payments, check_plan_group_access,
+    )
+    # Schema migration exists
+    assert Path("api/migrations/003_plan_group_access.sql").exists()
+    # Plans API carries group scope end to end
+    assert "allowed_groups" in inspect.getsource(list_plans)
+    assert "allowed_groups" in inspect.getsource(create_or_update_plan)
+    # Admin 1-click overrides loudly instead of silently leaking VIP plans
+    assert "group_warning" in inspect.getsource(manual_activate_payment)
+    # Automated email recon never overrides a restriction
+    assert "skipped_group_restriction" in inspect.getsource(scan_email_payments)
+    # No restriction rows => everyone allowed
+    assert "everyone" in inspect.getsource(check_plan_group_access).lower()
+    # Plan manager UI assigns groups; buying surfaces respect them
+    pm = Path("frontend/src/components/PlansManager.jsx").read_text(encoding="utf-8")
+    assert "allowed_groups" in pm and "Available to groups" in pm
+    portal = Path("frontend/src/components/PortalView.jsx").read_text(encoding="utf-8")
+    assert "visiblePlans" in portal
+    dash = Path("frontend/src/components/UserDashboard.jsx").read_text(encoding="utf-8")
+    assert "visiblePlans" in dash

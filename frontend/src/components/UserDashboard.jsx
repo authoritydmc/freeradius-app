@@ -130,6 +130,13 @@ export default function UserDashboard({ user, onLogout, onNotify }) {
   const sub = overview?.active_subscription;
   const usage = overview?.usage || {};
   const totalBytes = (usage.up_bytes || 0) + (usage.down_bytes || 0);
+  // Hide group-restricted plans (e.g. VIP-only) from other groups
+  const myGroup = (overview?.group || user?.group || '').toLowerCase();
+  const visiblePlans = plans.filter(p => {
+    const allowed = p.allowed_groups || [];
+    if (!allowed.length) return true;
+    return myGroup && allowed.some(g => String(g).toLowerCase() === myGroup);
+  });
 
   return (
     <div className="space-y-5 animate-in fade-in duration-300">
@@ -206,14 +213,14 @@ export default function UserDashboard({ user, onLogout, onNotify }) {
         action={<a href="/radius/portal" className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold">Open payment portal</a>}
       >
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-          {(plans.length ? plans : []).map(p => (
+          {visiblePlans.map(p => (
             <div key={p.id} className="bg-slate-950 border border-slate-800 rounded-xl p-3">
               <div className="text-xs font-bold text-white">{p.name}</div>
               <div className="text-sm font-black text-emerald-400 font-mono mt-1">₹{Number(p.price).toFixed(2)}</div>
               <div className="text-[10px] text-slate-500 font-mono">{p.validity_days} day(s) validity</div>
             </div>
           ))}
-          {!plans.length && <p className="text-[11px] text-slate-500 italic">Loading plans…</p>}
+          {!visiblePlans.length && <p className="text-[11px] text-slate-500 italic">No plans available for your group right now.</p>}
         </div>
         <p className="text-[11px] text-slate-400 mt-3">
           Pay with Google Pay / PhonePe / Paytm in the portal using note <code className="text-indigo-300 font-mono">wifi:{username}</code> — activation is automatic after verification.

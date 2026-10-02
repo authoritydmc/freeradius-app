@@ -127,6 +127,15 @@ export default function PortalView() {
   const upiVpa = config?.payment_config?.upi_vpa || 'wifi@rajlabs';
   const upiMerchant = config?.payment_config?.merchant_name || 'RajLabs Enterprise WiFi';
 
+  // Group-restricted plans (e.g. VIP-only) are hidden from other groups.
+  const myGroup = (authSession?.group || '').toLowerCase();
+  const visiblePlans = plans.filter(p => {
+    const allowed = p.allowed_groups || [];
+    if (!allowed.length) return true;
+    return myGroup && allowed.some(g => String(g).toLowerCase() === myGroup);
+  });
+  const hiddenPlanCount = plans.length - visiblePlans.length;
+
   const handleEnroll = async (e) => {
     e.preventDefault();
     setEnrollError('');
@@ -408,15 +417,20 @@ export default function PortalView() {
                       ? 'Guest accounts are eligible for 1-Day daily passes only. Sign in with a permanent account to unlock multi-day passes.'
                       : 'Choose your desired recharge tier to generate an instant UPI payment QR code.'}
                   </p>
+                  {hiddenPlanCount > 0 && (
+                    <p className="text-[11px] text-purple-300/80 mt-1">
+                      {hiddenPlanCount} members-only plan{hiddenPlanCount > 1 ? 's' : ''} hidden for your group.
+                    </p>
+                  )}
                 </div>
 
-                {plans.length === 0 ? (
+                {visiblePlans.length === 0 ? (
                   <div className="text-center py-10 border border-dashed border-slate-800 rounded-2xl text-slate-400 text-xs">
-                    No active plans currently published. Contact support for details.
+                    No plans available for your account. Contact support for details.
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {plans.map((p) => {
+                    {visiblePlans.map((p) => {
                       const currSymbol = p.currency === 'INR' ? '₹' : p.currency === 'USD' ? '$' : p.currency + ' ';
                       const isGuestDisabled = authSession.is_guest && p.validity_days > 1;
                       const isPopular = p.validity_days === 30 || p.name.toLowerCase().includes('monthly');

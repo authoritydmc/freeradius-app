@@ -5,6 +5,7 @@ import {
   Zap, FileText, ArrowUpRight, Sparkles, Filter, Lock, Eye, Copy
 } from 'lucide-react';
 import { fetchJson, formatDateTime } from '../utils/api';
+import PlansManager from './PlansManager';
 
 export default function PaymentsTab({ onNotify, onJumpSettings }) {
   const [payments, setPayments] = useState([]);
@@ -66,6 +67,16 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
     loadData();
   }, [statusFilter, gatewayFilter]);
 
+  // Refresh pricing dropdowns after plan CRUD in PlansManager below
+  const reloadPlans = async () => {
+    try {
+      const plRes = await fetchJson('plans').catch(() => []);
+      setPlans(Array.isArray(plRes) ? plRes : []);
+    } catch {
+      // keep existing pricing on failure
+    }
+  };
+
   const handleSearch = (e) => {
     e.preventDefault();
     loadData();
@@ -92,6 +103,9 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
         })
       });
       onNotify?.(res.message || `Plan successfully activated for '${manualForm.username}'!`, 'success');
+      if (res.group_warning) {
+        onNotify?.(res.group_warning, 'warning');
+      }
       setShowManualModal(false);
       setManualForm({
         username: '',
@@ -246,6 +260,9 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
           </div>
         </div>
       </div>
+
+      {/* Wi-Fi Subscription Plans (what customers buy) */}
+      <PlansManager onNotify={onNotify} onPlansChanged={reloadPlans} />
 
       {/* Filter and Search Bar */}
       <div className="bg-slate-900/80 border border-slate-800 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3">
@@ -448,7 +465,7 @@ export default function PaymentsTab({ onNotify, onJumpSettings }) {
                     <option value="">Custom Plan / Manual Pass</option>
                     {plans.map(pl => (
                       <option key={pl.id} value={pl.id}>
-                        {pl.name} (₹{pl.price} · {pl.validity_days}d)
+                        {pl.name} (₹{pl.price} · {pl.validity_days}d{(pl.allowed_groups?.length || 0) > 0 ? ` · ${pl.allowed_groups.join(',')} only` : ''})
                       </option>
                     ))}
                   </select>

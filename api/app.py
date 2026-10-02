@@ -1181,6 +1181,9 @@ class PlanCreateRequest(BaseModel):
     validity_days: int = Field(default=1, ge=1)
     max_session_seconds: Optional[int] = 86400
     description: Optional[str] = None
+    # Group restriction: None = leave unchanged on update (all groups on create);
+    # [] = everyone; ["vip"] = VIP-only, etc. (RADIUS group names).
+    allowed_groups: Optional[List[str]] = None
 
 
 class ApplyPresetRequest(BaseModel):
@@ -2824,6 +2827,56 @@ def ensure_plans_table():
     except Exception as e:
         logger.debug("Could not ensure plans table: %s", e)
 
+def _normalize_group_list(groups) -> List[str]:
+    """Clean RADIUS group names for plan access lists (dedup, case-preserved)."""
+    seen = []
+    for g in groups or []:
+        name = str(g or "").strip()
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+def _plan_access_map(cur) -> Dict[int, List[str]]:
+    """plan_id -> allowed RADIUS groupnames. Missing table = all unrestricted."""
+    try:
+        cur.execute("SELECT plan_id, groupname FROM plan_group_access ORDER BY groupname ASC")
+        m: Dict[int, List[str]] = {}
+        for r in cur.fetchall():
+            m.setdefault(r["plan_id"], []).append(r["groupname"])
+        return m
+    except Exception:
+        return {}
+
+def _set_plan_groups(cur, plan_id: int, groups) -> List[str]:
+    """Replace a plan's group restriction list. Returns the stored list."""
+    clean = _normalize_group_list(groups)
+    try:
+        cur.execute("DELETE FROM plan_group_access WHERE plan_id = %s", (plan_id,))
+        for g in clean:
+            cur.execute(
+                "INSERT INTO plan_group_access (plan_id, groupname) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                (plan_id, g),
+            )
+    except Exception as e:
+        logger.debug("plan_group_access write skipped for plan %s: %s", plan_id, e)
+        return []
+    return clean
+
+def check_plan_group_access(plan_id: Optional[int], user_group: Optional[str], cur) -> tuple[bool, List[str]]:
+    """Is this plan buyable by a user in `user_group`?
+
+    No restriction rows → everyone allowed. Comparison is case-insensitive;
+    a missing group (None) only passes unrestricted plans.
+    """
+    if plan_id is None:
+        return True, []
+    allowed = _plan_access_map(cur).get(plan_id, [])
+    if not allowed:
+        return True, []
+    if user_group and any(user_group.strip().lower() == a.lower() for a in allowed):
+        return True, allowed
+    return False, allowed
+
 @app.get("/radius/api/plans", tags=["Plans & Pricing"])
 @app.get("/api/plans", tags=["Plans & Pricing"])
 def list_plans():
@@ -2834,6 +2887,7 @@ def list_plans():
         with conn.cursor() as cur:
             cur.execute("SELECT id, name, price, currency, validity_days, validity_seconds, max_session_seconds, description, created_at FROM plans ORDER BY price ASC, validity_days ASC")
             rows = cur.fetchall()
+            access = _plan_access_map(cur)
             out = []
             for r in rows:
                 out.append({
@@ -2844,16 +2898,17 @@ def list_plans():
                     "validity_days": r["validity_days"],
                     "validity_seconds": r["validity_seconds"],
                     "max_session_seconds": r["max_session_seconds"],
-                    "description": r["description"] or ""
+                    "description": r["description"] or "",
+                    "allowed_groups": access.get(r["id"], [])
                 })
             conn.close()
             return out
     except Exception:
-        # Fallback default plans in case DB offline
+        # Fallback default plans in case DB offline (unrestricted)
         return [
-            {"id": 1, "name": "1 Day Daily Pass", "price": 10.0, "currency": "INR", "validity_days": 1, "validity_seconds": 86400, "max_session_seconds": 86400, "description": "Emergency 24-hour unlimited high-speed access (₹10/day)"},
-            {"id": 2, "name": "7 Days Weekly Pass", "price": 30.0, "currency": "INR", "validity_days": 7, "validity_seconds": 604800, "max_session_seconds": 86400, "description": "7 Days high-speed broadband access (₹4.28/day — Save 57% vs Daily)"},
-            {"id": 3, "name": "30 Days Monthly Unlimited", "price": 51.35, "currency": "INR", "validity_days": 30, "validity_seconds": 2592000, "max_session_seconds": 86400, "description": "Best Value! Full 30 days unlimited Wi-Fi at ₹1.71/day (₹50 base + 2.7% PG gateway fee)"}
+            {"id": 1, "name": "1 Day Daily Pass", "price": 10.0, "currency": "INR", "validity_days": 1, "validity_seconds": 86400, "max_session_seconds": 86400, "description": "Emergency 24-hour unlimited high-speed access (₹10/day)", "allowed_groups": []},
+            {"id": 2, "name": "7 Days Weekly Pass", "price": 30.0, "currency": "INR", "validity_days": 7, "validity_seconds": 604800, "max_session_seconds": 86400, "description": "7 Days high-speed broadband access (₹4.28/day — Save 57% vs Daily)", "allowed_groups": []},
+            {"id": 3, "name": "30 Days Monthly Unlimited", "price": 51.35, "currency": "INR", "validity_days": 30, "validity_seconds": 2592000, "max_session_seconds": 86400, "description": "Best Value! Full 30 days unlimited Wi-Fi at ₹1.71/day (₹50 base + 2.7% PG gateway fee)", "allowed_groups": []}
         ]
 
 @app.post("/radius/api/plans", tags=["Plans & Pricing"])
@@ -2870,16 +2925,23 @@ def create_or_update_plan(payload: PlanCreateRequest, admin_user: str = Depends(
                     SET name = %s, price = %s, currency = %s, validity_days = %s, validity_seconds = %s, max_session_seconds = %s, description = %s
                     WHERE id = %s
                 """, (payload.name.strip(), payload.price, (payload.currency or "INR").upper(), payload.validity_days, validity_secs, payload.max_session_seconds or 86400, payload.description or "", payload.id))
+                plan_id = payload.id
                 action = "plan_update"
             else:
                 cur.execute("""
                     INSERT INTO plans (name, price, currency, validity_days, validity_seconds, max_session_seconds, description)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id
                 """, (payload.name.strip(), payload.price, (payload.currency or "INR").upper(), payload.validity_days, validity_secs, payload.max_session_seconds or 86400, payload.description or ""))
+                plan_id = cur.fetchone()["id"]
                 action = "plan_create"
+            stored_groups = None
+            if payload.allowed_groups is not None:
+                stored_groups = _set_plan_groups(cur, plan_id, payload.allowed_groups)
             conn.commit()
-            log_audit(admin_user, action, payload.name, f"price={payload.price} validity_days={payload.validity_days}")
-            return {"status": "success", "message": f"Plan '{payload.name}' saved successfully!"}
+            scope = f"groups={','.join(stored_groups)}" if stored_groups is not None else "groups=unchanged"
+            log_audit(admin_user, action, payload.name, f"price={payload.price} validity_days={payload.validity_days} {scope}")
+            return {"status": "success", "message": f"Plan '{payload.name}' saved successfully!", "plan_id": plan_id, "allowed_groups": stored_groups if stored_groups is not None else []}
     finally:
         conn.close()
 
@@ -3048,6 +3110,19 @@ def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: s
                     VALUES (%s, 'Cleartext-Password', ':=', %s)
                 """, (uname, generate_session_secret(16)))
 
+            # Group-restriction check: admins may override, but the override
+            # is surfaced (not silent) so VIP-only plans don't leak quietly.
+            group_warning = None
+            cur.execute("SELECT groupname FROM radusergroup WHERE username = %s LIMIT 1", (uname,))
+            grp_row = cur.fetchone()
+            user_group = grp_row["groupname"] if grp_row else None
+            ok, allowed = check_plan_group_access(effective_plan_id, user_group, cur)
+            if not ok:
+                group_warning = (
+                    f"Plan is restricted to group(s) {', '.join(allowed)}; "
+                    f"user '{uname}' is in '{user_group or 'no group'}' — applied as admin override."
+                )
+
             conn.commit()
 
         validity_secs = validity_days * 86400
@@ -3065,17 +3140,19 @@ def manual_activate_payment(payload: ManualPaymentActivateRequest, admin_user: s
             actor_type="ADMIN",
             ip="127.0.0.1"
         )
-        log_audit(admin_user, "MANUAL_PAYMENT_ACTIVATED", uname, f"amount={payload.amount} ref={payment_ref} plan_id={effective_plan_id} validity_days={validity_days}")
+        log_audit(admin_user, "MANUAL_PAYMENT_ACTIVATED", uname, f"amount={payload.amount} ref={payment_ref} plan_id={effective_plan_id} validity_days={validity_days}" + (f" OVERRIDE:{group_warning}" if group_warning else ""))
         if result.get("status") == "duplicate_acknowledged":
             return {
                 "status": "success",
                 "message": f"Payment '{payment_ref}' was already processed for user '{uname}' (idempotent replay).",
-                "details": result
+                "details": result,
+                "group_warning": group_warning
             }
         return {
             "status": "success",
             "message": f"Plan successfully activated for user '{uname}' (Ref: {payment_ref})",
-            "details": result
+            "details": result,
+            "group_warning": group_warning
         }
     finally:
         if conn is not None:
@@ -3166,8 +3243,26 @@ def scan_email_payments(payload: EmailScanRequest, admin_user: str = Depends(aut
                             pl = cur.fetchone()
                             if pl:
                                 plan_id = pl["id"]
+                        # Strict group check: auto-activation never overrides a
+                        # group-restricted plan (unlike the admin 1-click flow).
+                        cur.execute("SELECT groupname FROM radusergroup WHERE username = %s LIMIT 1", (uname,))
+                        grow = cur.fetchone()
+                        user_group = grow["groupname"] if grow else None
+                        grp_ok, grp_allowed = check_plan_group_access(plan_id, user_group, cur)
                         c.commit()
+                        if not grp_ok:
+                            processed_list.append({
+                                "utr": utr,
+                                "username": uname,
+                                "amount": amt,
+                                "status": "skipped_group_restriction",
+                                "reason": f"Plan restricted to {', '.join(grp_allowed)}; user in '{user_group or 'no group'}'"
+                            })
+                            logger.info("Skipped email auto-activation utr=%s user=%s: group-restricted plan", utr, uname)
                     c.close()
+
+                    if not grp_ok:
+                        continue
 
                     p_res = process_verified_payment(
                         gateway="EMAIL_IMAP",
