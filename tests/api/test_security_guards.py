@@ -454,6 +454,18 @@ def test_health_endpoint_registered_and_structure():
     assert "/health" in routes
     assert "/api/health" in routes
     assert "/radius/api/health" in routes
+    assert "/radius/api/system/storage-health" in routes
+    assert "/radius/api/system/storage-purge" in routes
+
+
+def test_storage_health_stats_structure():
+    stats = app.get_storage_health_stats()
+    assert "retention_policy" in stats
+    assert "radpostauth_days" in stats["retention_policy"]
+    assert "radpostauth_max_rows" in stats["retention_policy"]
+    assert stats["retention_policy"]["radpostauth_days"] <= 30
+    assert stats["retention_policy"]["radpostauth_max_rows"] <= 50000
+
 
 
 

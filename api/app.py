@@ -98,52 +98,187 @@ ADMIN_FALLBACK_PASS = os.getenv("RADIUS_ADMIN_PASSWORD") or os.getenv("ADMIN_FAL
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change_this_session_secret_in_production_32_chars!")
 
 
-# Table retention in days (issues #9, #30; 0 = keep forever). Purged at startup & daily.
-# NOTE: payments and subscriptions are the financial & entitlement audit ledger
-# and must NEVER be purged.
-AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "365") or 365)
-AUDIT_EVENT_RETENTION_DAYS = int(os.getenv("AUDIT_EVENT_RETENTION_DAYS", "180") or 180)
-ACCOUNTING_RETENTION_DAYS = int(os.getenv("ACCOUNTING_RETENTION_DAYS", "365") or 365)
-RADPOSTAUTH_RETENTION_DAYS = int(os.getenv("RADPOSTAUTH_RETENTION_DAYS", "90") or 90)
-REVOKED_CERTS_RETENTION_DAYS = int(os.getenv("REVOKED_CERTS_RETENTION_DAYS", "180") or 180)
+import shutil
 
-def purge_expired_tables() -> None:
-    """Best-effort purge so audit/accounting/auth log tables can't grow forever."""
-    jobs = []
-    if AUDIT_RETENTION_DAYS > 0:
-        jobs.append(("admin_audit_log", "ts", AUDIT_RETENTION_DAYS))
-    if AUDIT_EVENT_RETENTION_DAYS > 0:
-        jobs.append(("audit_events", "created_at", AUDIT_EVENT_RETENTION_DAYS))
-    if ACCOUNTING_RETENTION_DAYS > 0:
-        jobs.append(("radacct", "acctstarttime", ACCOUNTING_RETENTION_DAYS))
-    if RADPOSTAUTH_RETENTION_DAYS > 0:
-        jobs.append(("radpostauth", "authdate", RADPOSTAUTH_RETENTION_DAYS))
-    if REVOKED_CERTS_RETENTION_DAYS > 0:
-        jobs.append(("revoked_certificates", "revoked_at", REVOKED_CERTS_RETENTION_DAYS))
-    if not jobs:
-        return
+# Dynamic Adaptive Storage & Retention Controls
+# Leaner time-based horizons (14-60 days by default instead of multi-year sprawl)
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "60") or 60)
+AUDIT_EVENT_RETENTION_DAYS = int(os.getenv("AUDIT_EVENT_RETENTION_DAYS", "30") or 30)
+ACCOUNTING_RETENTION_DAYS = int(os.getenv("ACCOUNTING_RETENTION_DAYS", "30") or 30)
+RADPOSTAUTH_RETENTION_DAYS = int(os.getenv("RADPOSTAUTH_RETENTION_DAYS", "14") or 14)
+REVOKED_CERTS_RETENTION_DAYS = int(os.getenv("REVOKED_CERTS_RETENTION_DAYS", "60") or 60)
+
+# Hard Row Count Ceilings per table (FIFO pruning when high traffic exceeds quotas)
+RADPOSTAUTH_MAX_ROWS = int(os.getenv("RADPOSTAUTH_MAX_ROWS", "25000") or 25000)
+RADACCT_MAX_ROWS = int(os.getenv("RADACCT_MAX_ROWS", "25000") or 25000)
+AUDIT_EVENTS_MAX_ROWS = int(os.getenv("AUDIT_EVENTS_MAX_ROWS", "10000") or 10000)
+ADMIN_AUDIT_MAX_ROWS = int(os.getenv("ADMIN_AUDIT_MAX_ROWS", "5000") or 5000)
+
+# Automatic Storage Pressure Thresholds
+MAX_DB_SIZE_MB = int(os.getenv("MAX_DB_SIZE_MB", "500") or 500)
+MAX_DISK_USED_PCT = int(os.getenv("MAX_DISK_USED_PCT", "85") or 85)
+
+def get_storage_health_stats() -> Dict[str, Any]:
+    """Returns live PostgreSQL database size, table sizes, row counts, and disk usage."""
+    stats = {
+        "db_size_bytes": 0,
+        "db_size_mb": 0.0,
+        "disk_total_gb": 0.0,
+        "disk_free_gb": 0.0,
+        "disk_used_percent": 0.0,
+        "tables": {},
+        "under_pressure": False,
+        "retention_policy": {
+            "radpostauth_days": RADPOSTAUTH_RETENTION_DAYS,
+            "radpostauth_max_rows": RADPOSTAUTH_MAX_ROWS,
+            "accounting_days": ACCOUNTING_RETENTION_DAYS,
+            "accounting_max_rows": RADACCT_MAX_ROWS,
+            "audit_event_days": AUDIT_EVENT_RETENTION_DAYS,
+            "audit_events_max_rows": AUDIT_EVENTS_MAX_ROWS,
+            "admin_audit_days": AUDIT_RETENTION_DAYS,
+            "admin_audit_max_rows": ADMIN_AUDIT_MAX_ROWS,
+            "max_db_size_mb": MAX_DB_SIZE_MB,
+            "max_disk_used_pct": MAX_DISK_USED_PCT
+        }
+    }
+    # 1. Disk usage
+    try:
+        disk = shutil.disk_usage("/")
+        stats["disk_total_gb"] = round(disk.total / (1024**3), 2)
+        stats["disk_free_gb"] = round(disk.free / (1024**3), 2)
+        stats["disk_used_percent"] = round(((disk.total - disk.free) / disk.total) * 100, 1)
+        if stats["disk_used_percent"] >= MAX_DISK_USED_PCT or disk.free < 500 * 1024 * 1024:
+            stats["under_pressure"] = True
+    except Exception:
+        pass
+
+    # 2. PostgreSQL DB & table sizes
     try:
         conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_database_size(current_database()) AS db_bytes;")
+                row = cur.fetchone()
+                if row and row.get("db_bytes"):
+                    stats["db_size_bytes"] = int(row["db_bytes"])
+                    stats["db_size_mb"] = round(row["db_bytes"] / (1024**2), 2)
+                    if stats["db_size_mb"] >= MAX_DB_SIZE_MB:
+                        stats["under_pressure"] = True
+
+                cur.execute("""
+                    SELECT c.relname AS table_name,
+                           pg_total_relation_size(c.oid) AS total_bytes,
+                           c.reltuples::bigint AS est_rows
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public' AND c.relkind = 'r'
+                    ORDER BY total_bytes DESC;
+                """)
+                for r in cur.fetchall():
+                    tname = r["table_name"]
+                    stats["tables"][tname] = {
+                        "size_bytes": r["total_bytes"],
+                        "size_mb": round(r["total_bytes"] / (1024**2), 2),
+                        "estimated_rows": max(0, int(r["est_rows"]))
+                    }
+        finally:
+            conn.close()
     except Exception as e:
-        logger.warning("Retention purge skipped (DB unreachable): %s", e)
-        return
+        stats["error"] = str(e)
+
+    return stats
+
+
+def purge_expired_tables(force_aggressive: bool = False) -> Dict[str, Any]:
+    """Adaptive purge: enforces time limits, row ceilings, and emergency disk pressure cuts.
+    
+    NOTE: payments and subscriptions are the financial & entitlement audit ledger
+    and must NEVER be purged.
+    """
+    result = {"purged_rows": 0, "details": [], "aggressive_mode": False}
     try:
-        with conn.cursor() as cur:
-            for table, col, days in jobs:
-                try:
-                    cur.execute(
-                        f"DELETE FROM {table} WHERE {col} < NOW() - (%s || ' days')::interval",
-                        (str(days),),
-                    )
-                    n = cur.rowcount
-                    conn.commit()
-                    if n:
-                        logger.info("Retention purge: removed %s row(s) from %s older than %s days", n, table, days)
-                except Exception as e:
-                    conn.rollback()
-                    logger.warning("Retention purge failed for %s: %s", table, e)
-    finally:
-        conn.close()
+        health = get_storage_health_stats()
+        is_pressure = force_aggressive or health.get("under_pressure", False)
+        result["aggressive_mode"] = is_pressure
+
+        # Time-based multiplier (under pressure, cut retention to 25%)
+        scale = 0.25 if is_pressure else 1.0
+        postauth_days = max(2, int(RADPOSTAUTH_RETENTION_DAYS * scale))
+        acct_days = max(3, int(ACCOUNTING_RETENTION_DAYS * scale))
+        audit_days = max(7, int(AUDIT_RETENTION_DAYS * scale))
+        event_days = max(5, int(AUDIT_EVENT_RETENTION_DAYS * scale))
+        revoked_days = max(14, int(REVOKED_CERTS_RETENTION_DAYS * scale))
+
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                # 1. Time-based pruning
+                time_jobs = [
+                    ("admin_audit_log", "ts", audit_days),
+                    ("audit_events", "created_at", event_days),
+                    ("radacct", "acctstarttime", acct_days),
+                    ("radpostauth", "authdate", postauth_days),
+                    ("revoked_certificates", "revoked_at", revoked_days),
+                ]
+                for table, col, days in time_jobs:
+                    if days > 0:
+                        try:
+                            cur.execute(f"DELETE FROM {table} WHERE {col} < NOW() - (%s || ' days')::interval", (str(days),))
+                            n = cur.rowcount
+                            conn.commit()
+                            if n:
+                                result["purged_rows"] += n
+                                result["details"].append(f"Pruned {n} rows from {table} (older than {days}d)")
+                        except Exception as e:
+                            conn.rollback()
+                            logger.warning("Retention time purge failed for %s: %s", table, e)
+
+                # 2. Row count ceilings (FIFO trimming)
+                row_cap_multiplier = 0.5 if is_pressure else 1.0
+                row_caps = [
+                    ("radpostauth", "id", int(RADPOSTAUTH_MAX_ROWS * row_cap_multiplier)),
+                    ("radacct", "radacctid", int(RADACCT_MAX_ROWS * row_cap_multiplier), "acctstoptime IS NOT NULL"),
+                    ("audit_events", "id", int(AUDIT_EVENTS_MAX_ROWS * row_cap_multiplier)),
+                    ("admin_audit_log", "id", int(ADMIN_AUDIT_MAX_ROWS * row_cap_multiplier)),
+                ]
+                for item in row_caps:
+                    table = item[0]
+                    pk = item[1]
+                    max_rows = item[2]
+                    extra_where = item[3] if len(item) > 3 else "1=1"
+                    if max_rows > 0:
+                        try:
+                            cur.execute(f"SELECT COUNT(*) AS c FROM {table} WHERE {extra_where};")
+                            cnt = (cur.fetchone() or {}).get("c", 0)
+                            if cnt > max_rows:
+                                excess = cnt - max_rows
+                                cur.execute(f"""
+                                    DELETE FROM {table}
+                                    WHERE {pk} IN (
+                                        SELECT {pk} FROM {table}
+                                        WHERE {extra_where}
+                                        ORDER BY {pk} ASC
+                                        LIMIT %s
+                                    )
+                                """, (excess,))
+                                n = cur.rowcount
+                                conn.commit()
+                                if n:
+                                    result["purged_rows"] += n
+                                    result["details"].append(f"Trimmed {n} excess rows from {table} (quota {max_rows})")
+                        except Exception as e:
+                            conn.rollback()
+                            logger.warning("Retention row cap purge failed for %s: %s", table, e)
+        finally:
+            conn.close()
+
+        if result["purged_rows"]:
+            logger.info("Adaptive storage purge completed: removed %s row(s). Details: %s", result["purged_rows"], result["details"])
+    except Exception as e:
+        logger.warning("Storage retention purge skipped: %s", e)
+        result["error"] = str(e)
+
+    return result
 
 # ----------------------------------------------------------------------------
 # Startup secret hygiene (GitHub issue #5): refuse to boot on published defaults.
@@ -1020,8 +1155,8 @@ async def _periodic_expiry_worker_loop():
             if purged:
                 logger.info("Periodic expiry worker: auto-deleted %s expired guest account(s)", purged)
 
-            # Run daily retention purge once every 24 hours
-            if time.time() - last_retention_purge > 86400:
+            # Run adaptive retention purge once every 1 hour (or faster if storage pressure occurs)
+            if time.time() - last_retention_purge > 3600:
                 try:
                     purge_expired_tables()
                     last_retention_purge = time.time()
@@ -1673,6 +1808,27 @@ def public_health_check():
         "migrations": mig_info,
         "database": {"connected": db_ok, "error": db_error, "host": POSTGRES_HOST, "database": POSTGRES_DB},
         "freeradius_process": {"running": radius_ok}
+    }
+
+# Storage & Database Retention Diagnostics & Operations
+@app.get("/radius/api/system/storage-health", tags=["System"])
+@app.get("/api/system/storage-health", tags=["System"])
+def get_system_storage_health(_: str = Depends(authenticate_admin)):
+    """Returns database size, table sizes, estimated row counts, and retention policy status."""
+    return get_storage_health_stats()
+
+@app.post("/radius/api/system/storage-purge", tags=["System"])
+@app.post("/api/system/storage-purge", tags=["System"])
+def trigger_storage_retention_purge(aggressive: bool = False, admin_user: str = Depends(authenticate_admin)):
+    """Trigger an immediate adaptive database retention purge (optionally aggressive mode)."""
+    res = purge_expired_tables(force_aggressive=aggressive)
+    log_audit(admin_user, "STORAGE_PURGE", detail=f"Aggressive: {aggressive}. Purged: {res.get('purged_rows', 0)} rows.")
+    return {
+        "status": "success",
+        "purged_rows": res.get("purged_rows", 0),
+        "details": res.get("details", []),
+        "aggressive_mode": res.get("aggressive_mode", False),
+        "current_storage": get_storage_health_stats()
     }
 
 # Protected OpenAPI / Swagger Documentation
