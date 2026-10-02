@@ -3851,6 +3851,74 @@ def portal_download_cert(username: str, password: str = ""):
         raise HTTPException(status_code=404, detail="Certificate not found. Enroll first.")
     return FileResponse(p12_path, media_type="application/x-pkcs12", filename=f"RajLabs_{username}_Certificate.p12")
 
+
+@app.post("/radius/api/portal/login", tags=["Captive Portal"])
+@app.post("/api/portal/login", tags=["Captive Portal"])
+def portal_login(payload: PortalDownloadRequest):
+    """Verify user credentials for portal login."""
+    verify_portal_user(payload.username, payload.password)
+    # Fetch user's group
+    groupname = "users"
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT groupname FROM radusergroup WHERE username = %s ORDER BY priority ASC LIMIT 1", (payload.username,))
+            row = cur.fetchone()
+            if row and row.get("groupname"):
+                groupname = row["groupname"]
+    finally:
+        conn.close()
+    
+    return {
+        "status": "success",
+        "username": payload.username,
+        "group": groupname,
+        "is_guest": groupname == "guests" or payload.username.startswith("guest_")
+    }
+
+
+@app.post("/radius/api/portal/create-guest-pass", tags=["Captive Portal"])
+@app.post("/api/portal/create-guest-pass", tags=["Captive Portal"])
+def portal_create_guest_pass(request: Request):
+    """Generate a temporary 1-day guest account with random credentials."""
+    check_rate_limit(request, "guest-pass", 10)
+    guest_id = "guest_" + "".join(secrets.choice(string.digits) for _ in range(6))
+    guest_pass = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(8))
+    
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            # Insert radcheck Cleartext-Password
+            cur.execute(
+                "INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, 'Cleartext-Password', ':=', %s)",
+                (guest_id, guest_pass)
+            )
+            # Insert into radusergroup as 'guests'
+            cur.execute(
+                "INSERT INTO radusergroup (username, groupname, priority) VALUES (%s, 'guests', 1) "
+                "ON CONFLICT DO NOTHING",
+                (guest_id,)
+            )
+            # Add Max-Daily-Session or 24-hr session-timeout
+            cur.execute(
+                "INSERT INTO radcheck (username, attribute, op, value) VALUES (%s, 'Session-Timeout', ':=', '86400')",
+                (guest_id,)
+            )
+            conn.commit()
+    finally:
+        conn.close()
+        
+    return {
+        "status": "success",
+        "username": guest_id,
+        "password": guest_pass,
+        "validity_days": 1,
+        "max_session_hours": 24,
+        "group": "guests",
+        "is_guest": True,
+        "message": "Guest pass created successfully. Valid for 1-day plans only."
+    }
+
 # Static files & React SPA Mounts
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 DIST_DIR = os.path.join(STATIC_DIR, "dist")
