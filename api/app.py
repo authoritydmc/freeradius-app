@@ -1078,7 +1078,15 @@ def verify_certificate_and_get_admin(cert_pem_or_p12_bytes: bytes, p12_password:
     return cn
 
 def authenticate_admin(request: Request) -> str:
-    """Verifies admin status via Bearer Token, Admin Session Cookie, or HTTP Basic Auth."""
+    """Verifies admin status via Authentik SSO, Bearer Token, Admin Session Cookie, or HTTP Basic Auth."""
+    # 1. Check Authentik SSO ForwardAuth headers
+    authentik_user = request.headers.get("x-authentik-username") or request.headers.get("x-authentik-email")
+    if authentik_user:
+        groups = request.headers.get("x-authentik-groups", "").lower()
+        if "admin" in groups or "authentik admins" in groups or is_user_admin(authentik_user):
+            return authentik_user
+
+    # 2. Check Bearer Token or HTTP Basic Auth
     auth_header = request.headers.get("Authorization")
     if auth_header:
         if auth_header.startswith("Bearer "):
@@ -1096,6 +1104,7 @@ def authenticate_admin(request: Request) -> str:
             except Exception:
                 pass
 
+    # 3. Check Admin Session Cookie
     cookie_token = request.cookies.get("admin_session")
     if cookie_token:
         user = verify_session_token(cookie_token)
@@ -1104,17 +1113,23 @@ def authenticate_admin(request: Request) -> str:
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Unauthorized. FreeRADIUS Administrator credentials or certificate required.",
+        detail="Unauthorized. FreeRADIUS Administrator credentials, Authentik SSO, or certificate required.",
         headers={"WWW-Authenticate": 'Bearer realm="RajLabs FreeRADIUS Admin Area"'}
     )
 
 def authenticate_self(request: Request) -> str:
-    """Any valid session (admin token, user token, or session cookie).
+    """Any valid session (Authentik SSO, admin token, user token, or session cookie).
 
     Returns the caller's own username. Used by /me/* self-service endpoints so
     regular users can manage ONLY their own account — never anyone else's.
     Admins calling /me/* get their own dossier, not another user's.
     """
+    # 1. Check Authentik SSO ForwardAuth headers
+    authentik_user = request.headers.get("x-authentik-username") or request.headers.get("x-authentik-email")
+    if authentik_user:
+        return authentik_user
+
+    # 2. Check Bearer Token or Session Cookie
     auth_header = request.headers.get("Authorization", "")
     token = None
     if auth_header.startswith("Bearer "):
@@ -1131,8 +1146,9 @@ def authenticate_self(request: Request) -> str:
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Unauthorized. Please sign in to access your account."
+        detail="Unauthorized. Please sign in via Authentik SSO or account credentials to access your account."
     )
+
 
 class SelfPasswordChangeRequest(BaseModel):
     current_password: str = Field(..., min_length=1, max_length=128)
